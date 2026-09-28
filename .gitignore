@@ -27,6 +27,12 @@ target
 .ddl/doctor-cache.json
 .ddl/compatibility-cache.json
 
+# beads — global gitignore excludes .beads/; re-include the passive export
+!.beads/
+.beads/*
+!.beads/issues.jsonl
+!.beads/config.yaml
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
