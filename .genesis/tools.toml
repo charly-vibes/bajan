@@ -1,0 +1,6 @@
+[tools.testaruda]
+description = "Language-agnostic test selection engine"
+
+[tools.testaruda.detector]
+type = "file"
+path = "testaruda.toml"

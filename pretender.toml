@@ -1,0 +1,19 @@
+[pretender]
+mode = "tiered"
+languages = ["auto"]
+exclude = ["vendor/**", "node_modules/**", "**/*_generated.*"]
+
+[roles.test]
+paths = ["tests/**", "**/*_test.*", "spec/**"]
+
+[roles.library]
+paths = ["pkg/**", "lib/**"]
+
+[roles.script]
+paths = ["scripts/**", "examples/**"]
+
+[roles.generated]
+paths = ["**/*.pb.go", "**/*_generated.*"]
+
+[roles.vendor]
+paths = ["vendor/**", "node_modules/**"]

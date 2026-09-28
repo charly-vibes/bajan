@@ -3,19 +3,40 @@
 > This file is managed by `wai init`. Do not edit manually.
 > Changes will be overwritten on the next init.
 
+## When to Use What
+
+| Need | Tool | Example |
+|------|------|---------|
+| Record reasoning/research | wai | `wai add research "findings"` |
+| Capture design decisions | wai | `wai add design "architecture choice"` |
+| Session context transfer | wai | `wai handoff create <project>` |
+| Track work items/bugs | `bd` | `bd create --title="..." --type=task` |
+| Find available work | `bd` | `bd ready` |
+| Manage dependencies | `bd` | `bd dep add <blocked> <blocker>` |
+| Propose system changes | openspec | Read `openspec/AGENTS.md` |
+| Define requirements | openspec | `openspec validate --strict` |
+
+Key distinction:
+- **wai** = *why* decisions were made (reasoning, context, handoffs)
+- **`bd`** (beads) = *what* needs to be done (concrete tasks, status tracking)
+- **openspec** = *what the system should look like* (specs, requirements, proposals)
 
 ## Starting a Session
 
 1. Run `wai sync` to ensure all agent tools and skills are correctly projected.
 2. Run `wai status` to see active projects, current phase, and suggestions.
-3. Check the phase — it tells you what kind of work is expected:
+3. Run `bd ready` to find available work items.
+   Before claiming: read the relevant source files to confirm
+   the issue is not already implemented.
+4. Check `openspec list` for active change proposals.
+5. Check the phase — it tells you what kind of work is expected:
    - **research** → gather information, explore options
    - **design** → make architectural decisions
    - **plan** → break work into tasks
    - **implement** → write code, guided by research/plans
    - **review** → validate against plans
    - **archive** → wrap up
-4. Read existing artifacts with `wai search "<topic>"` before starting new work.
+6. Read existing artifacts with `wai search "<topic>"` before starting new work.
 
 ## Capturing Work
 
@@ -32,15 +53,31 @@ Use `--project <name>` if multiple projects exist. Otherwise wai picks the first
 
 Phases are a guide, not a gate. Use `wai phase show` / `wai phase next`.
 
+## Tracking Work Across Tools
+
+When beads and openspec are both active, keep them in sync:
+- When creating a beads ticket for an openspec task, include the task
+  reference in the description (format: `<change-id>:<phase>.<task>`,
+  e.g. `add-why-command:7.1`)
+- When closing a beads ticket linked to a task, also check the box
+  (`[x]`) in the change's `tasks.md`
+
 ## Ending a Session
 
 Before saying "done", run this checklist:
 
 ```
 [ ] wai handoff create <project>   # capture context for next session
+[ ] bd close <id>                  # close completed issues; also close parent epic if last sub-task
+[ ] openspec tasks.md — mark completed tasks [x]
+[ ] openspec list — archive any ✓ Complete changes (`openspec archive <id> --yes`)
 [ ] wai reflect                    # update CLAUDE.md with project patterns (every ~5 sessions)
 [ ] git add <files> && git commit  # commit code + handoff
 ```
+
+If beads needs any extra follow-up beyond `bd close`, run `bd` and use the
+commands your installed version offers. Do not assume a hard-coded sync
+subcommand.
 
 ### Autonomous Loop
 
@@ -93,6 +130,22 @@ wai doctor                    # Workspace health
 wai pipeline list             # List pipelines
 wai pipeline start <n> --topic=<t>  # Start a run; set WAI_PIPELINE_RUN=<id>
 wai pipeline next             # Advance to next step
+```
+
+### beads (CLI: `bd`)
+```bash
+bd ready                     # Available work
+bd show <id>                 # Issue details
+bd create --title="..."      # New issue
+bd update <id> --status=in_progress
+bd close <id>                # Complete work
+```
+
+### openspec
+Read `openspec/AGENTS.md` for full instructions.
+```bash
+openspec list              # Active changes
+openspec list --specs      # Capabilities
 ```
 
 ## Structure

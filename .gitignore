@@ -19,3 +19,16 @@ target
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# dulce-de-leche — data files (do not commit)
+.ddl/**/*.db
+.ddl/**/store/
+.ddl/install-log.json
+.ddl/doctor-cache.json
+.ddl/compatibility-cache.json
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.dont/
