@@ -18,9 +18,9 @@ TypeOK == vpc \in StateValues
 Init == vpc = "received"
 
 Next ==
-  \* accept: received -> persisted (guard: [[ingestion.contract.ic_no-format-parsing]])
+  \* accept: received -> persisted (guard: [[ingestion.contract.ic_verbatim]])
   \/ vpc = "received" /\ vpc' = "persisted"
-  \* reject: received -> rejected (guard: [[ingestion.contract.ic_no-format-parsing]])
+  \* reject: received -> rejected (guard: [[ingestion.contract.ic_malformed]])
   \/ vpc = "received" /\ vpc' = "rejected"
   \* reingest: persisted -> persisted (guard: [[ingestion.contract.ic_idempotent]])
   \/ vpc = "persisted" /\ vpc' = "persisted"

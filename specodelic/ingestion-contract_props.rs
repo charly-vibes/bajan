@@ -29,7 +29,7 @@ pub mod spec_gen {
 }
 
 proptest! {
-    // id: p.verbatim
+    // id: p_verbatim
     // generator: arbitrary episode records with random locator forms
     // predicate: persisted episode round-trips: stored text, locator, and metadata equal the submitted record
     #[test]
@@ -39,17 +39,17 @@ proptest! {
 }
 
 proptest! {
-    // id: p.idempotent
-    // generator: the same episode stream submitted twice in sequence
-    // predicate: graph hash after second ingest equals graph hash after first ingest
+    // id: p_idempotent
+    // generator: the same episode stream submitted twice in sequence, plus a mutated variant reusing an existing id with altered text
+    // predicate: re-ingest yields a graph identical to the one before it; a mutated re-submission either deterministically updates or is rejected — it never duplicates an episode
     #[test]
     fn p_idempotent() {
-        todo_predicate!("graph hash after second ingest equals graph hash after first ingest");
+        todo_predicate!("re-ingest yields a graph identical to the one before it; a mutated re-submission either deterministically updates or is rejected — it never duplicates an episode");
     }
 }
 
 proptest! {
-    // id: p.no-format-parsing
+    // id: p_no_format_parsing
     // generator: episode streams with arbitrary trailing format artifacts (frontmatter, page markers)
     // predicate: ingest output depends only on stream fields, never on unparsed bytes
     #[test]
@@ -59,7 +59,7 @@ proptest! {
 }
 
 proptest! {
-    // id: p.date-fidelity
+    // id: p_date_fidelity
     // generator: episodes with missing, malformed, and valid cutoff dates
     // predicate: stored cutoff equals source cutoff when present, `unknown` otherwise; never ingest time
     #[test]
@@ -69,7 +69,17 @@ proptest! {
 }
 
 proptest! {
-    // id: p.stream-schema
+    // id: p_malformed
+    // generator: episode records missing verbatim text, a stable id, or required metadata
+    // predicate: no malformed record reaches `persisted`; every malformed record is `rejected`
+    #[test]
+    fn p_malformed() {
+        todo_predicate!("no malformed record reaches `persisted`; every malformed record is `rejected`");
+    }
+}
+
+proptest! {
+    // id: p_stream_schema
     // generator: record instances sampled from the published schema
     // predicate: schema document validates every emitted record
     #[test]

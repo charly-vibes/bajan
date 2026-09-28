@@ -29,27 +29,27 @@ pub mod spec_gen {
 }
 
 proptest! {
-    // id: p.reified
-    // generator: arbitrary claim extractions over synthetic episode corpora
-    // predicate: every claim node in the resulting graph has at least one episode lineage edge; N-source claims have N edges
+    // id: p_reified
+    // generator: claims extracted from synthetic corpora with known source counts N in 1..4
+    // predicate: every claim node has exactly N lineage edges matching its known source count; a zero-source claim is never persisted
     #[test]
     fn p_reified() {
-        todo_predicate!("every claim node in the resulting graph has at least one episode lineage edge; N-source claims have N edges");
+        todo_predicate!("every claim node has exactly N lineage edges matching its known source count; a zero-source claim is never persisted");
     }
 }
 
 proptest! {
-    // id: p.lineage-survives
-    // generator: random sequences of invalidation and merge operations over a seeded graph
-    // predicate: after every operation: each surviving claim's episode edge count is greater than or equal to its pre-operation count minus deleted episodes
+    // id: p_lineage_survives
+    // generator: random sequences of invalidation and episode-deletion operations over a seeded graph
+    // predicate: after every operation: each surviving claim's episode edge count equals its supporting-episode count; a claim disappears only when its last supporting episode is deleted
     #[test]
     fn p_lineage_survives() {
-        todo_predicate!("after every operation: each surviving claim's episode edge count is greater than or equal to its pre-operation count minus deleted episodes");
+        todo_predicate!("after every operation: each surviving claim's episode edge count equals its supporting-episode count; a claim disappears only when its last supporting episode is deleted");
     }
 }
 
 proptest! {
-    // id: p.deterministic-er
+    // id: p_deterministic_er
     // generator: mention streams mixing known aliases, unmatched names, and near-duplicates
     // predicate: entity node count changes only via explicit new-node creation or reviewed merges; queue contents equal candidate pairs
     #[test]
@@ -59,7 +59,17 @@ proptest! {
 }
 
 proptest! {
-    // id: p.schema-v1
+    // id: p_merge_keeps
+    // generator: human-reviewed merge and rejection operations over seeded entity pairs
+    // predicate: approved merges preserve the union of both sides' lineage edges; rejected candidates lose only their `possible_duplicate_of` edge
+    #[test]
+    fn p_merge_keeps() {
+        todo_predicate!("approved merges preserve the union of both sides' lineage edges; rejected candidates lose only their `possible_duplicate_of` edge");
+    }
+}
+
+proptest! {
+    // id: p_schema_v1
     // generator: claim records with extra, missing, and mistyped fields
     // predicate: stored claim nodes expose exactly the seven schema fields with types preserved
     #[test]
@@ -69,7 +79,7 @@ proptest! {
 }
 
 proptest! {
-    // id: p.embedded-store
+    // id: p_embedded_store
     // generator: seeded graphs of arbitrary size
     // predicate: dump-then-recreate from episode stream plus extraction output reproduces the graph exactly
     #[test]
@@ -79,7 +89,7 @@ proptest! {
 }
 
 proptest! {
-    // id: p.hedge-anchor
+    // id: p_hedge_anchor
     // generator: episode texts containing hedged statements (may, signals, estimates)
     // predicate: no derived claim text drops a hedge marker present in its supporting episode
     #[test]
@@ -89,7 +99,7 @@ proptest! {
 }
 
 proptest! {
-    // id: p.relation-typing
+    // id: p_relation_typing
     // generator: edge records sampled from the published vocabulary
     // predicate: every edge label is a member of the published relation set
     #[test]

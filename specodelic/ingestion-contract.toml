@@ -3,7 +3,13 @@ source = "ingestion.contract"
 [[constraints]]
 id = "ic_verbatim"
 kind = "invariant"
-expr = "an episode persists its verbatim text plus a locator (heading anchor, text fragment, or page/slide) and immutable source metadata: stable id, source type, data cutoff, authority tier"
+expr = "an episode persists its verbatim text plus a locator (heading anchor, text fragment, page/slide, or the literal `unknown` when none is derivable) and immutable source metadata: stable id, source type, data cutoff, authority tier"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
+id = "ic_malformed"
+kind = "invariant"
+expr = "an episode missing verbatim text, a stable id, or required source metadata is rejected and never persisted"
 traces_to = "[[ingestion.contract]]"
 
 [[constraints]]
@@ -13,13 +19,13 @@ expr = "re-ingesting an already-ingested episode stream yields a graph identical
 traces_to = "[[ingestion.contract]]"
 
 [[constraints]]
-id = "ic_no-format-parsing"
+id = "ic_no_format_parsing"
 kind = "invariant"
 expr = "the ingest pipeline consumes only the normalized episode stream; it performs no format-specific parsing and derives no structure from file syntax"
 traces_to = "[[ingestion.contract]]"
 
 [[constraints]]
-id = "ic_date-fidelity"
+id = "ic_date_fidelity"
 kind = "advisory"
 expr = "a persisted episode's data cutoff is the source's cutoff when discoverable, `unknown` otherwise — never the ingest timestamp"
 traces_to = "[[ingestion.contract]]"

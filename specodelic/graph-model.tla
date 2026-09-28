@@ -6,7 +6,7 @@ MODULE graphmodel
 \* self-contained so any engine can open it.
 
 \* Each State becomes a value in the state variable's range.
-StateValues == {"proposed", "active", "invalid", "merged"}
+StateValues == {"proposed", "active", "invalid", "rejected"}
 
 VARIABLES vpc   \* the state variable (program counter)
 
@@ -20,11 +20,11 @@ Init == vpc = "proposed"
 Next ==
   \* adopt: proposed -> active (guard: [[graph.model.gm_reified]])
   \/ vpc = "proposed" /\ vpc' = "active"
-  \* invalidate: active -> invalid (guard: [[graph.model.gm_lineage-survives]])
+  \* discard: proposed -> rejected (guard: [[graph.model.gm_reified]])
+  \/ vpc = "proposed" /\ vpc' = "rejected"
+  \* invalidate: active -> invalid (guard: [[graph.model.gm_lineage_survives]])
   \/ vpc = "active" /\ vpc' = "invalid"
-  \* merge: active -> merged (guard: [[graph.model.gm_deterministic-er]])
-  \/ vpc = "active" /\ vpc' = "merged"
-  \* repropose: invalid -> proposed (guard: [[graph.model.gm_lineage-survives]])
+  \* repropose: invalid -> proposed (guard: [[graph.model.gm_lineage_survives]])
   \/ vpc = "invalid" /\ vpc' = "proposed"
 
 \* No state carries an `emits` field — Output is simply empty.
