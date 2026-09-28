@@ -1,0 +1,9 @@
+plugins = []
+
+[project]
+name = "bajan"
+version = "2026.7.28"
+description = ""
+tool_commit = "872c206"
+
+[llm]
