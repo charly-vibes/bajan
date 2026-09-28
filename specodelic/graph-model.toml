@@ -1,0 +1,43 @@
+source = "graph.model"
+
+[[constraints]]
+id = "gm_reified"
+kind = "invariant"
+expr = "every claim is a node with at least one `derived_from` edge to an episode node; a claim synthesized from N sources carries N lineage edges, one per episode"
+traces_to = "[[graph.model]]"
+
+[[constraints]]
+id = "gm_lineage-survives"
+kind = "invariant"
+expr = "invalidation sets `invalid_at` and never destroys lineage; a claim is deleted only when no episode supports it; entity merges preserve all lineage edges from both sides"
+traces_to = "[[graph.model]]"
+
+[[constraints]]
+id = "gm_deterministic-er"
+kind = "invariant"
+expr = "entity resolution is deterministic (normalization plus curated alias lists); unmatched mentions create new entity nodes; merge candidates enter a review queue via `possible_duplicate_of` edges; no silent or automatic merge"
+traces_to = "[[graph.model]]"
+
+[[constraints]]
+id = "gm_schema-v1"
+kind = "invariant"
+expr = "claim nodes carry exactly: text, valid_at, invalid_at, data_cutoff, status, scope, source_type — source_type inherited from the episode; no confidence field and no vector blob on any node"
+traces_to = "[[graph.model]]"
+
+[[constraints]]
+id = "gm_embedded-store"
+kind = "invariant"
+expr = "the graph persists as plain rows in a single embedded SQLite database and is fully rebuildable from the episode stream plus extraction output"
+traces_to = "[[graph.model]]"
+
+[[constraints]]
+id = "gm_hedge-anchor"
+kind = "advisory"
+expr = "epistemic strength lives only in verbatim episode text; derived artifacts must not upgrade a hedged source statement to an unhedged claim"
+traces_to = "[[graph.model]]"
+
+[[constraints]]
+id = "gm_relation-typing"
+kind = "extension_point"
+expr = "the claim relation vocabulary (`mentions`, `contradicts`, `supports`, `derived_from`, `possible_duplicate_of`) is published for query-tool specs to conform to"
+traces_to = "[[graph.model]]"
