@@ -40,13 +40,19 @@ deriving property land in the same commit so `spk lint`, `ah check`, and
 
 ## 2. graph-model implementation (schema v2)
 
-- [ ] 2.1 Write failing property test: claim nodes expose exactly the v2
-      field set (seven v1 fields + `evidence`) — red
-- [ ] 2.2 Add `evidence` to the claim-node schema/types; backfill
+- [x] 2.1 Write failing property test: claim nodes expose exactly the v2
+      field set (seven v1 fields + `evidence`) — red (3cf426d); green:
+      `ClaimNode` with `deny_unknown_fields`, extra/missing-required/
+      mistyped rejected; dated fields: absent key ≡ explicit-null (undated)
+- [x] 2.2 Add `evidence` to the claim-node schema/types; backfill
       migration sets `evidence = unknown` on existing nodes and reports
-      the count loudly — green
-- [ ] 2.3 Write failing test: evidence span preserves hedge markers from
-      the supporting episode text — red; enforce in span persistence — green
+      the count loudly — green: `migrate_v1_to_v2` → `MigrationReport`
+      (count rendered via Display; `reextraction_scheduled` pinned at 0)
+- [x] 2.3 Write failing test: evidence span preserves hedge markers from
+      the supporting episode text — red; enforce in span persistence —
+      green: `dropped_hedge_markers` + `ClaimStore::insert` rejecting
+      `HedgeMarkerDropped` (span must locate in episode, whitespace-
+      collapsed; containment supersedes at bajan-0hs.7)
 
 ## 3. Adoption actor (human-only adopt)
 
