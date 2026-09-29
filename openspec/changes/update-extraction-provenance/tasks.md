@@ -73,12 +73,15 @@ deriving property land in the same commit so `spk lint`, `ah check`, and
 
 ## 5. Run records + reasons
 
-- [ ] 5.1 Write failing test: every extraction call writes a run row
+- [x] 5.1 Write failing test: every extraction call writes a run row
       (episode id, extractor version, model id if any, timestamps, finish
       status); parked episodes and gate rejections carry machine-readable
       reasons; claim nodes carry no reason field — red
-- [ ] 5.2 Implement run-record store and reason plumbing beside the
-      existing `(episode id, extractor version)` cache — green
+- [x] 5.2 Implement run-record store and reason plumbing beside the
+      existing `(episode id, extractor version)` cache — green: `Reason`
+      (snake_case codes), `Finish` (failure outcomes carry reason
+      structurally), `ExtractionRun`, append-only `ExtractionRunStore`;
+      claim-nodes-expose-no-reason pinned by test
 
 ## 6. Evidence containment (typed gate)
 

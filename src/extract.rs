@@ -7,11 +7,92 @@
 //! implementation tickets.
 
 use crate::cli::BajanError;
+use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 use proptest::prelude::*;
 
 pub const SPEC: &str = "specs/extraction-claims.md";
+
+/// Machine-readable reason for a failure outcome (`ex_run_record`).
+///
+/// Reasons are stable snake_case codes stored on the run or rejection
+/// record — never on a claim node (`gm_schema_v2` field list stays
+/// closed). Each variant names the invariant that produces it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum Reason {
+    /// Episode parked in `rejected` after repeated call failure
+    /// (`ex_single_call`).
+    RepeatedCallFailure { attempts: u32 },
+    /// Candidate rejected at the validation gate because its evidence span
+    /// fails whitespace-collapsed containment (`ex_evidence_containment`,
+    /// enforced from bajan-0hs.7).
+    EvidenceNotContained,
+}
+
+impl Reason {
+    /// Stable machine-readable snake_case code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Reason::RepeatedCallFailure { .. } => "repeated_call_failure",
+            Reason::EvidenceNotContained => "evidence_not_contained",
+        }
+    }
+}
+
+/// Finish status of an extraction call (`ex_run_record`).
+///
+/// Failure outcomes carry their machine-readable reason structurally — a
+/// parked or gate-rejected run cannot exist without one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Finish {
+    /// Call succeeded; candidates reached the gate outcome.
+    Succeeded,
+    /// Episode parked in `rejected` after repeated call failure
+    /// (`ex_single_call` abort path).
+    Parked { reason: Reason },
+    /// Call succeeded but candidates were refused at the gate
+    /// (`ex_typed_gate` refuse path).
+    GateRejected { reason: Reason },
+}
+
+/// One run row per extraction call (`ex_run_record`): episode id,
+/// extractor version, model id when the extractor uses an LLM, started
+/// and finished timestamps (epoch millis), and finish status. Parallel
+/// to — and without changing — the `(episode id, extractor version)`
+/// cache economics: rows are additive telemetry, never cache entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractionRun {
+    pub episode_id: String,
+    pub extractor_version: String,
+    pub model_id: Option<String>,
+    pub started_at: u64,
+    pub finished_at: u64,
+    pub finish: Finish,
+}
+
+/// The run-record store: append-only, one row per extraction call
+/// (`ex_run_record`). Parallel to the `(episode id, extractor version)`
+/// cache — recording a run never creates, invalidates, or reuses a cache
+/// entry.
+#[derive(Debug, Default, Clone)]
+pub struct ExtractionRunStore {
+    rows: Vec<ExtractionRun>,
+}
+
+impl ExtractionRunStore {
+    /// Record exactly one run row for one extraction call.
+    pub fn record(&mut self, run: ExtractionRun) {
+        self.rows.push(run);
+    }
+
+    pub fn rows(&self) -> std::slice::Iter<'_, ExtractionRun> {
+        self.rows.iter()
+    }
+}
 
 /// Run extraction over persisted episodes.
 ///
@@ -63,8 +144,8 @@ mod tests {
             let mut rows = store.rows();
             let row = rows.next().expect("exactly one run row per call");
             prop_assert!(rows.next().is_none(), "exactly one run row per call");
-            prop_assert_eq!(row.episode_id, episode_id);
-            prop_assert_eq!(row.extractor_version, extractor_version);
+            prop_assert_eq!(&row.episode_id, &episode_id);
+            prop_assert_eq!(&row.extractor_version, &extractor_version);
             prop_assert_eq!(row.model_id.as_deref(), if has_model { Some("test-model") } else { None });
             prop_assert_eq!(row.started_at, started_at);
             prop_assert_eq!(row.finished_at, finished_at);
