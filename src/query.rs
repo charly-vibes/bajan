@@ -27,7 +27,10 @@ mod tests {
     fn stub_returns_not_implemented() {
         assert!(matches!(
             run(),
-            Err(BajanError::NotImplemented { module: "query", .. })
+            Err(BajanError::NotImplemented {
+                module: "query",
+                ..
+            })
         ));
     }
 }

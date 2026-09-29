@@ -118,10 +118,7 @@ pub fn run() -> Result<(), BajanError> {
 /// `evidence_not_contained`, never repaired. The typed absent marker
 /// passes: alignment-failure episodes persist, flagged by the reflection
 /// pass — containment does not apply to absence.
-pub fn check_evidence_containment(
-    evidence: &Evidence,
-    episode_text: &str,
-) -> Result<(), Reason> {
+pub fn check_evidence_containment(evidence: &Evidence, episode_text: &str) -> Result<(), Reason> {
     match evidence {
         Evidence::Span { text, .. } => {
             let span_c = crate::store::collapse(text);
@@ -167,7 +164,10 @@ mod tests {
     fn stub_returns_not_implemented() {
         assert!(matches!(
             run(),
-            Err(BajanError::NotImplemented { module: "extract", .. })
+            Err(BajanError::NotImplemented {
+                module: "extract",
+                ..
+            })
         ));
     }
 

@@ -6,7 +6,7 @@
 
 pub mod cli;
 pub mod extract;
-pub mod store;
 pub mod ingest;
 pub mod query;
 pub mod resolve;
+pub mod store;

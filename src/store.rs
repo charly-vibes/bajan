@@ -51,10 +51,7 @@ pub enum ClaimStatus {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Evidence {
     /// Verbatim span + episode locator.
-    Span {
-        text: String,
-        locator: String,
-    },
+    Span { text: String, locator: String },
     /// Typed absent marker: sentence alignment failed. Flagged, actionable
     /// later by the reflection pass — never a violation, never auto-repaired.
     Unknown,
@@ -232,7 +229,10 @@ pub enum StoreError {
         "evidence span drops hedge marker(s) {markers:?} present in the supporting episode text \
          (see {spec}, gm_hedge_anchor)"
     )]
-    HedgeMarkerDropped { markers: Vec<String>, spec: &'static str },
+    HedgeMarkerDropped {
+        markers: Vec<String>,
+        spec: &'static str,
+    },
 
     #[error("no claim node keyed {claim_key} in this store")]
     ClaimNotFound { claim_key: usize },
@@ -348,9 +348,7 @@ impl ClaimStore {
         let mut superseded = Vec::new();
         for key in 0..self.nodes.len() {
             let lineage = &self.lineage[key];
-            if lineage.episode_id != episode_id
-                || lineage.extractor_version == extractor_version
-            {
+            if lineage.episode_id != episode_id || lineage.extractor_version == extractor_version {
                 continue;
             }
             if self.nodes[key].status == ClaimStatus::Staged {
@@ -571,13 +569,26 @@ mod tests {
         assert_eq!(report.nodes.len(), 3, "no node dropped");
         assert_eq!(report.backfilled, 3);
         for node in &report.nodes {
-            assert_eq!(node.evidence, Evidence::Unknown, "backfilled as typed absent");
-            assert!(node.evidence.is_unknown(), "unknown spans are flagged, actionable later");
-            assert!(!node.evidence.is_violation(), "unknown is not a containment violation");
+            assert_eq!(
+                node.evidence,
+                Evidence::Unknown,
+                "backfilled as typed absent"
+            );
+            assert!(
+                node.evidence.is_unknown(),
+                "unknown spans are flagged, actionable later"
+            );
+            assert!(
+                !node.evidence.is_violation(),
+                "unknown is not a containment violation"
+            );
         }
         // Loud: the count is rendered in the report's text form.
         let rendered = report.to_string();
-        assert!(rendered.contains("3"), "count must be reported loudly, got: {rendered}");
+        assert!(
+            rendered.contains("3"),
+            "count must be reported loudly, got: {rendered}"
+        );
         // No re-extraction scheduling: the report carries no such surface.
         assert_eq!(report.reextraction_scheduled, 0);
     }
@@ -636,7 +647,10 @@ mod tests {
     }
 
     fn staged_node() -> ClaimNode {
-        ClaimNode { status: ClaimStatus::Staged, ..v2_node() }
+        ClaimNode {
+            status: ClaimStatus::Staged,
+            ..v2_node()
+        }
     }
 
     fn test_lineage() -> Lineage {
@@ -671,13 +685,22 @@ mod tests {
     #[test]
     fn adopt_refuses_non_staged_claims_without_audit() {
         let mut store = ClaimStore::default();
-        let active = ClaimNode { status: ClaimStatus::Active, ..staged_node() };
-        let rejected = ClaimNode { status: ClaimStatus::Rejected, ..staged_node() };
+        let active = ClaimNode {
+            status: ClaimStatus::Active,
+            ..staged_node()
+        };
+        let rejected = ClaimNode {
+            status: ClaimStatus::Rejected,
+            ..staged_node()
+        };
         store.insert(active, test_lineage(), "e").unwrap();
         store.insert(rejected, test_lineage(), "e").unwrap();
 
         assert!(store.adopt(0, "sasha", 1).is_err(), "active stays active");
-        assert!(store.adopt(1, "sasha", 1).is_err(), "no resurrection from rejected");
+        assert!(
+            store.adopt(1, "sasha", 1).is_err(),
+            "no resurrection from rejected"
+        );
         assert_eq!(store.nodes()[0].status, ClaimStatus::Active);
         assert_eq!(store.nodes()[1].status, ClaimStatus::Rejected);
         assert!(store.audit().is_empty(), "refused attempts write no audit");
@@ -817,13 +840,17 @@ mod tests {
         assert_eq!(store.nodes()[0].status, ClaimStatus::Rejected);
 
         // Same version as the tombstoned claim's own: no work, no change.
-        assert!(store
-            .supersede_prior_versions("ep-a", "0.1.0", 2)
-            .is_empty());
+        assert!(
+            store
+                .supersede_prior_versions("ep-a", "0.1.0", 2)
+                .is_empty()
+        );
         // Re-running the bump: nothing left to supersede, nothing revived.
-        assert!(store
-            .supersede_prior_versions("ep-a", "0.2.0", 3)
-            .is_empty());
+        assert!(
+            store
+                .supersede_prior_versions("ep-a", "0.2.0", 3)
+                .is_empty()
+        );
         assert_eq!(store.nodes()[0].status, ClaimStatus::Rejected);
         assert_eq!(store.supersessions().len(), 1, "no duplicate tombstones");
     }
@@ -836,7 +863,10 @@ mod tests {
         let mut store = ClaimStore::default();
         store
             .insert(
-                ClaimNode { status: ClaimStatus::Active, ..v2_node() },
+                ClaimNode {
+                    status: ClaimStatus::Active,
+                    ..v2_node()
+                },
                 Lineage {
                     episode_id: "ep-old".into(),
                     extractor_version: "0.1.0".into(),
@@ -848,7 +878,11 @@ mod tests {
         store
             .stage_invalidation_proposal(0, "ep-new")
             .expect("conflict stages a proposal");
-        assert_eq!(store.nodes()[0].status, ClaimStatus::Active, "claim untouched");
+        assert_eq!(
+            store.nodes()[0].status,
+            ClaimStatus::Active,
+            "claim untouched"
+        );
         assert_eq!(store.invalidations().len(), 1);
         assert_eq!(store.invalidations()[0].claim_key, 0);
         assert_eq!(store.invalidations()[0].causing_episode_id, "ep-new");
@@ -868,7 +902,13 @@ mod tests {
         let err = store
             .insert(node, test_lineage(), episode)
             .expect_err("dropped hedge marker must be rejected");
-        assert!(err.to_string().contains("may"), "error names the dropped marker: {err}");
-        assert!(err.to_string().contains(SPEC), "error carries the governing spec: {err}");
+        assert!(
+            err.to_string().contains("may"),
+            "error names the dropped marker: {err}"
+        );
+        assert!(
+            err.to_string().contains(SPEC),
+            "error carries the governing spec: {err}"
+        );
     }
 }
