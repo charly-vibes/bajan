@@ -9,6 +9,229 @@
 //! pickups, and migrated unknown spans are flagged for the reflection pass,
 //! never treated as violations and never scheduled for re-extraction.
 
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+pub const SPEC: &str = "specs/graph-model.md";
+
+/// Hedge markers anchored by `gm_hedge_anchor` / `p_hedge_anchor`
+/// (episode texts containing hedged statements: may, signals, estimates).
+/// Matched case-insensitively on word boundaries.
+pub const HEDGE_MARKERS: &[&str] = &[
+    "may",
+    "might",
+    "could",
+    "possibly",
+    "appears",
+    "seems",
+    "signals",
+    "estimates",
+    "reportedly",
+    "tentative",
+    "uncertain",
+];
+
+/// Claim lifecycle status (specs/extraction-claims.md model: staged,
+/// active, rejected; `staged` is that spec's dual view of `proposed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimStatus {
+    Staged,
+    Active,
+    Rejected,
+}
+
+/// Evidence carried by a v2 claim node (`gm_schema_v2`): a verbatim span
+/// of the supporting episode text plus its episode locator, or the typed
+/// absent marker when sentence alignment failed.
+///
+/// The absent marker is a tagged unit variant — it can never collide with
+/// a real span value, per the ingestion-contract absent-marker convention.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Evidence {
+    /// Verbatim span + episode locator.
+    Span {
+        text: String,
+        locator: String,
+    },
+    /// Typed absent marker: sentence alignment failed. Flagged, actionable
+    /// later by the reflection pass — never a violation, never auto-repaired.
+    Unknown,
+}
+
+impl Evidence {
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Evidence::Unknown)
+    }
+
+    /// Unknown spans are flagged by the reflection pass, not treated as
+    /// containment violations (`ex_evidence_containment`).
+    pub fn is_violation(&self) -> bool {
+        false
+    }
+}
+
+/// A claim node under `gm_schema_v2` — exactly eight fields, no confidence
+/// field and no vector blob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimNode {
+    pub text: String,
+    pub valid_at: Option<String>,
+    pub invalid_at: Option<String>,
+    pub data_cutoff: Option<String>,
+    pub status: ClaimStatus,
+    pub scope: String,
+    pub source_type: String,
+    pub evidence: Evidence,
+}
+
+/// A pre-v2 claim node — the seven frozen v1 fields (`gm_schema_v1`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct V1ClaimNode {
+    pub text: String,
+    pub valid_at: Option<String>,
+    pub invalid_at: Option<String>,
+    pub data_cutoff: Option<String>,
+    pub status: ClaimStatus,
+    pub scope: String,
+    pub source_type: String,
+}
+
+/// Result of the v1 → v2 migration. The backfill count is carried in data
+/// so callers can report it loudly (`to_string` renders it); migration
+/// never schedules re-extraction — `reextraction_scheduled` is pinned to
+/// zero by test.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationReport {
+    pub nodes: Vec<ClaimNode>,
+    pub backfilled: usize,
+    pub reextraction_scheduled: usize,
+}
+
+impl fmt::Display for MigrationReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "schema v1→v2 migration: backfilled evidence=unknown on {} claim node(s); \
+             unknown spans flagged for reflection, re-extraction NOT scheduled",
+            self.backfilled
+        )
+    }
+}
+
+/// Migrate pre-v2 claim nodes to v2: backfill `evidence = unknown` on every
+/// node and report the count loudly. No node is dropped or rewritten apart
+/// from the evidence backfill; no re-extraction is scheduled.
+pub fn migrate_v1_to_v2(nodes: Vec<V1ClaimNode>) -> MigrationReport {
+    let backfilled = nodes.len();
+    let nodes = nodes
+        .into_iter()
+        .map(|v1| ClaimNode {
+            evidence: Evidence::Unknown,
+            text: v1.text,
+            valid_at: v1.valid_at,
+            invalid_at: v1.invalid_at,
+            data_cutoff: v1.data_cutoff,
+            status: v1.status,
+            scope: v1.scope,
+            source_type: v1.source_type,
+        })
+        .collect();
+    MigrationReport {
+        nodes,
+        backfilled,
+        reextraction_scheduled: 0,
+    }
+}
+
+/// Hedge markers present in `text` (case-insensitive, word-boundary match).
+fn hedge_markers_in(text: &str) -> Vec<String> {
+    let lower = text.to_lowercase();
+    let mut found = Vec::new();
+    for marker in HEDGE_MARKERS {
+        let is_present = lower.match_indices(marker).any(|(i, _)| {
+            let before = lower[..i].ends_with(|c: char| !c.is_alphanumeric());
+            let after = lower[i + marker.len()..].starts_with(|c: char| !c.is_alphanumeric());
+            before && after
+        });
+        if is_present {
+            found.push((*marker).to_string());
+        }
+    }
+    found
+}
+
+/// Whitespace-collapsed form (the `ex_evidence_containment` normalization).
+fn collapse(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Hedge markers present in the episode text within the span's coverage
+/// but missing from the span (`gm_hedge_anchor`). A verbatim span drops
+/// nothing; a paraphrasing span that does not locate within the episode
+/// is checked against the whole episode — every hedge marker the span
+/// lacks is reported. Containment enforcement itself (`evidence-not-
+/// contained`) arrives with the typed gate (bajan-0hs.7) and supersedes.
+pub fn dropped_hedge_markers(span: &str, episode: &str) -> Vec<String> {
+    let span_c = collapse(span);
+    let episode_c = collapse(episode);
+
+    // A span that locates verbatim (whitespace-collapsed) in the episode
+    // cannot have dropped anything within its coverage.
+    if episode_c.contains(&span_c) {
+        return Vec::new();
+    }
+
+    hedge_markers_in(&episode_c)
+        .into_iter()
+        .filter(|m| !hedge_markers_in(&span_c).contains(m))
+        .collect()
+}
+
+/// Store-side error: every variant carries the governing spec so errors
+/// stay traceable to the invariant they guard.
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error(
+        "evidence span drops hedge marker(s) {markers:?} present in the supporting episode text \
+         (see {spec}, gm_hedge_anchor)"
+    )]
+    HedgeMarkerDropped { markers: Vec<String>, spec: &'static str },
+}
+
+/// The claim-graph store: persists claim nodes, enforcing hedge-marker
+/// preservation at span persistence (`gm_hedge_anchor`).
+#[derive(Debug, Default, Clone)]
+pub struct ClaimStore {
+    nodes: Vec<ClaimNode>,
+}
+
+impl ClaimStore {
+    /// Persist a claim node. `supporting_episode` is the verbatim text of
+    /// the episode backing the node's evidence span; span persistence
+    /// rejects spans that drop hedge markers present in it.
+    pub fn insert(&mut self, node: ClaimNode, supporting_episode: &str) -> Result<(), StoreError> {
+        if let Evidence::Span { text, .. } = &node.evidence {
+            let dropped = dropped_hedge_markers(text, supporting_episode);
+            if !dropped.is_empty() {
+                return Err(StoreError::HedgeMarkerDropped {
+                    markers: dropped,
+                    spec: SPEC,
+                });
+            }
+        }
+        self.nodes.push(node);
+        Ok(())
+    }
+
+    pub fn nodes(&self) -> &[ClaimNode] {
+        &self.nodes
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,11 +278,21 @@ mod tests {
         }
     }
 
+    /// Fields that must be present on every stored claim node. The three
+    /// dated fields (valid_at, invalid_at, data_cutoff) are Option-valued:
+    /// an absent key is semantically the explicit-null (undated) value, so
+    /// exactly-eight is enforced by serialization exposing all 8 keys.
+    const REQUIRED_FIELDS: [&str; 5] = ["text", "status", "scope", "source_type", "evidence"];
+
     // 2.1 — p_schema_v2: stored claim nodes expose exactly the eight schema
-    // fields with types preserved.
+    // fields with types preserved; extra, missing, and mistyped fields are
+    // rejected at the schema boundary.
     proptest! {
         #[test]
-        fn claim_nodes_expose_exactly_the_v2_field_set(n in 0u8..5) {
+        fn claim_nodes_expose_exactly_the_v2_field_set(
+            extra_key in "[a-zA-Z_]{1,20}",
+            remove_idx in 0usize..REQUIRED_FIELDS.len(),
+        ) {
             let node = v2_node();
             let serialized = serde_json::to_value(&node).expect("serialize");
             let obj = serialized.as_object().expect("claim node is a JSON object");
@@ -70,25 +303,44 @@ mod tests {
             prop_assert_eq!(keys, expected, "field set must be exactly v2 (8 fields, no extras)");
 
             // Types preserved across a roundtrip.
-            let round: ClaimNode = serde_json::from_value(serialized).expect("roundtrip");
+            let round: ClaimNode = serde_json::from_value(serialized.clone()).expect("roundtrip");
             prop_assert_eq!(round, node);
-            prop_assert_eq!(n, n); // deterministic generator anchor
+
+            // An extra field is rejected (skip names that collide with real fields).
+            prop_assume!(!V2_FIELDS.contains(&extra_key.as_str()));
+            let mut extra = serialized.clone();
+            extra[&extra_key] = json!(null);
+            prop_assert!(
+                serde_json::from_value::<ClaimNode>(extra).is_err(),
+                "extra field {extra_key} must be rejected"
+            );
+
+            // A missing required field is rejected — including missing
+            // evidence.
+            let mut missing = serialized.clone();
+            missing.as_object_mut().unwrap().remove(REQUIRED_FIELDS[remove_idx]);
+            prop_assert!(
+                serde_json::from_value::<ClaimNode>(missing).is_err(),
+                "missing {} must be rejected",
+                REQUIRED_FIELDS[remove_idx]
+            );
+
+            // An absent dated field is the explicit-null value.
+            let mut undated = serialized;
+            undated.as_object_mut().unwrap().remove("valid_at");
+            let undated: ClaimNode = serde_json::from_value(undated).expect("absent == null");
+            prop_assert_eq!(undated.valid_at, None);
         }
     }
 
     #[test]
-    fn schema_rejects_extra_missing_and_mistyped_fields() {
-        let mut extra = serde_json::to_value(v2_node()).unwrap();
-        extra["confidence"] = json!(0.9); // anti-goal: no confidence field
-        assert!(serde_json::from_value::<ClaimNode>(extra).is_err(), "extra field must be rejected");
-
-        let mut missing = serde_json::to_value(v2_node()).unwrap();
-        missing.as_object_mut().unwrap().remove("evidence");
-        assert!(serde_json::from_value::<ClaimNode>(missing).is_err(), "missing evidence must be rejected");
-
+    fn schema_rejects_mistyped_fields() {
         let mut mistyped = serde_json::to_value(v2_node()).unwrap();
         mistyped["status"] = json!("bogus-status");
-        assert!(serde_json::from_value::<ClaimNode>(mistyped).is_err(), "mistyped status must be rejected");
+        assert!(
+            serde_json::from_value::<ClaimNode>(mistyped).is_err(),
+            "mistyped status must be rejected"
+        );
     }
 
     #[test]
@@ -123,19 +375,21 @@ mod tests {
         }
         // Loud: the count is rendered in the report's text form.
         let rendered = report.to_string();
-        assert!(rendered.contains('3'), "count must be reported loudly, got: {rendered}");
+        assert!(rendered.contains("3"), "count must be reported loudly, got: {rendered}");
         // No re-extraction scheduling: the report carries no such surface.
         assert_eq!(report.reextraction_scheduled, 0);
     }
 
     // 2.3 — gm_hedge_anchor: an evidence span must not drop a hedge marker
     // present in the supporting episode text within the span's coverage.
+    // Subject/tail use the alphabet [a-f]: no hedge marker can occur in
+    // them, so any dropped marker is the generated one.
     proptest! {
         #[test]
         fn span_persistence_rejects_dropped_hedge_markers(
-            subject in "[a-z ]{3,20}",
+            subject in "[a-f]{3,20}",
             hedge in 0usize..HEDGE_MARKERS.len(),
-            tail in "[a-z ]{3,20}",
+            tail in "[a-f]{3,20}",
         ) {
             let hedge = HEDGE_MARKERS[hedge];
             let episode = format!("{subject} {hedge} {tail}");
@@ -145,9 +399,9 @@ mod tests {
             prop_assert!(dropped_hedge_markers(&verbatim, &episode).is_empty());
 
             // A span that silently drops the hedge marker is caught.
-            let mutilated = format!("{subject}  {tail}");
+            let mutilated = format!("{subject} {tail}");
             let dropped = dropped_hedge_markers(&mutilated, &episode);
-            prop_assert!(dropped.iter().any(|m| m == &hedge), "expected {hedge} in {dropped:?}");
+            prop_assert!(dropped.iter().any(|m| m == hedge), "expected {hedge} in {dropped:?}");
         }
     }
 
@@ -156,13 +410,23 @@ mod tests {
         let mut store = ClaimStore::default();
         let episode = "Throughput improved by 12 percent.";
         let ok = ClaimNode {
-            evidence: Evidence::Span { text: episode.into(), locator: "page:1".into() },
+            evidence: Evidence::Span {
+                text: episode.into(),
+                locator: "page:1".into(),
+            },
             ..v2_node()
         };
-        store.insert(ok).expect("hedge-free verbatim span persists");
+        store
+            .insert(ok, episode)
+            .expect("hedge-free verbatim span persists");
 
-        let unknown = ClaimNode { evidence: Evidence::Unknown, ..v2_node() };
-        store.insert(unknown).expect("typed-absent evidence persists flagged, not rejected");
+        let unknown = ClaimNode {
+            evidence: Evidence::Unknown,
+            ..v2_node()
+        };
+        store
+            .insert(unknown, episode)
+            .expect("typed-absent evidence persists flagged, not rejected");
     }
 
     #[test]
@@ -176,7 +440,10 @@ mod tests {
             },
             ..v2_node()
         };
-        let err = store.insert(node).expect_err("dropped hedge marker must be rejected");
+        let err = store
+            .insert(node, episode)
+            .expect_err("dropped hedge marker must be rejected");
         assert!(err.to_string().contains("may"), "error names the dropped marker: {err}");
+        assert!(err.to_string().contains(SPEC), "error carries the governing spec: {err}");
     }
 }
