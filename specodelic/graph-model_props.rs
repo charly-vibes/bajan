@@ -26,6 +26,10 @@ pub mod spec_gen {
         Just(GenVal("statements".into()))
     }
 
+    pub fn path() -> impl Strategy<Value = GenVal> {
+        Just(GenVal("path".into()))
+    }
+
 }
 
 proptest! {
@@ -69,12 +73,12 @@ proptest! {
 }
 
 proptest! {
-    // id: p_schema_v1
+    // id: p_schema_v2
     // generator: claim records with extra, missing, and mistyped fields
-    // predicate: stored claim nodes expose exactly the seven schema fields with types preserved
+    // predicate: stored claim nodes expose exactly the eight schema fields with types preserved; evidence is a verbatim span with locator or the typed absent marker
     #[test]
-    fn p_schema_v1() {
-        todo_predicate!("stored claim nodes expose exactly the seven schema fields with types preserved");
+    fn p_schema_v2() {
+        todo_predicate!("stored claim nodes expose exactly the eight schema fields with types preserved; evidence is a verbatim span with locator or the typed absent marker");
     }
 }
 
@@ -91,10 +95,20 @@ proptest! {
 proptest! {
     // id: p_hedge_anchor
     // generator: episode texts containing hedged statements (may, signals, estimates)
-    // predicate: no derived claim text drops a hedge marker present in its supporting episode
+    // predicate: no derived claim text drops a hedge marker present in its supporting episode; evidence spans preserve hedge markers within their coverage
     #[test]
     fn p_hedge_anchor(v0 in spec_gen::statements()) {
-        todo_predicate!("no derived claim text drops a hedge marker present in its supporting episode");
+        todo_predicate!("no derived claim text drops a hedge marker present in its supporting episode; evidence spans preserve hedge markers within their coverage");
+    }
+}
+
+proptest! {
+    // id: p_human_adopt
+    // generator: adopt attempts driven through every automated path (pipeline stage, re-ingest, merge) and through the human CLI, single and batch
+    // predicate: only explicit human accept actions move a claim to `active`; every transition record carries actor and timestamp, one per claim; automated attempts leave the claim `proposed`
+    #[test]
+    fn p_human_adopt(v0 in spec_gen::path()) {
+        todo_predicate!("only explicit human accept actions move a claim to `active`; every transition record carries actor and timestamp, one per claim; automated attempts leave the claim `proposed`");
     }
 }
 

@@ -7,16 +7,17 @@ deriving property land in the same commit so `spk lint`, `ah check`, and
 
 ## 1. Spec deltas (normative specodelic edits)
 
-- [ ] 1.1 `specs/graph-model.md`: add `gm_human_adopt` constraint
+- [x] 1.1 `specs/graph-model.md`: add `gm_human_adopt` constraint
       (human-only `adopt` actor, batch accept audited per claim) + deriving
-      property; update `adopt` transition guard — verify via `spk explain`
-      whether conjunction citations are representable, else use
-      `gm_human_adopt` as the sole guard (`gm_reified` already forbids
-      unlinked claims structurally)
-- [ ] 1.2 `specs/graph-model.md`: modify `gm_schema_v1` → `gm_schema_v2`
-      (eighth field `evidence`: verbatim span + locator, or literal
-      `unknown`); extend `gm_hedge_anchor` to evidence spans + deriving
-      property
+      property; update `adopt` transition guard — resolved 2026-07-29:
+      specodelic guards DO accept conjunction citations (`spk lint` green),
+      so the guard is the conjunction `[[gm_human_adopt]] [[gm_reified]]`,
+      not the sole-guard fallback
+- [x] 1.2 `specs/graph-model.md`: modify `gm_schema_v1` → `gm_schema_v2`
+      (eighth field `evidence`: verbatim span + locator, or the typed
+      absent marker per the ingestion-contract convention — never a literal
+      colliding with a real span); extend `gm_hedge_anchor` to evidence
+      spans + deriving property
 - [ ] 1.3 `specs/extraction-claims.md`: add `ex_supersession` constraint
       + deriving property (version-bump supersession of `proposed` claims
       only; `active`/`rejected` preserved; tombstone reason
@@ -29,9 +30,10 @@ deriving property land in the same commit so `spk lint`, `ah check`, and
       constraint + deriving property (whitespace-collapsed containment at
       the typed gate; `evidence-not-contained` reason; `unknown` spans
       flagged, not violated); amend `ex_typed_gate` to require evidence
-- [ ] 1.6 Run gates: `spk lint specs`, `ah check`, `dont check` all green
+- [x] 1.6 Run gates: `spk lint specs`, `ah check`, `dont check` all green
       (new constraints cite this change's docs / upstream fpa files as
-      provenance)
+      provenance) — all green 2026-09-29; specodelic artifacts for
+      graph-model regenerated in the same commit
 
 ## 2. graph-model implementation (schema v2)
 
