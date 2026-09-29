@@ -573,6 +573,146 @@ mod tests {
         }
     }
 
+    // 4.1 — p_supersession: a version-bump re-extract tombstones ONLY that
+    // episode's `staged` claims derived from prior extractor versions;
+    // active and rejected claims (any episode, any version) are never
+    // mutated; other episodes' claims are never mutated; lineage and
+    // evidence survive tombstoning (rejected, never deleted).
+    proptest! {
+        #[test]
+        fn version_bump_supersedes_only_prior_version_staged_claims(
+            episode in "[a-b]",
+            version_idx in 0usize..2,
+            status in 0usize..3,
+            superseded_at in 1_000u64..2_000,
+        ) {
+            let episode_id = format!("ep-{episode}");
+            let versions = ["0.1.0", "0.2.0"];
+            let extractor_version = versions[version_idx];
+            let status = [
+                ClaimStatus::Staged,
+                ClaimStatus::Active,
+                ClaimStatus::Rejected,
+            ][status];
+
+            let mut store = ClaimStore::default();
+            let node = ClaimNode { status, ..v2_node() };
+            let evidence_before = node.evidence.clone();
+            store
+                .insert(
+                    node,
+                    Lineage {
+                        episode_id: episode_id.clone(),
+                        extractor_version: extractor_version.into(),
+                    },
+                    "episode text",
+                )
+                .unwrap();
+
+            // Re-extract episode a at the bumped version 0.2.0.
+            let superseded =
+                store.supersede_prior_versions("ep-a", "0.2.0", superseded_at);
+
+            let is_target = episode_id == "ep-a"
+                && extractor_version != "0.2.0"
+                && status == ClaimStatus::Staged;
+            prop_assert_eq!(
+                superseded.len(),
+                usize::from(is_target),
+                "only prior-version staged claims of the re-extracted episode are superseded"
+            );
+
+            // Tombstone, not delete: the node survives with evidence and
+            // lineage intact; only its status moved to rejected.
+            prop_assert_eq!(store.nodes().len(), 1);
+            prop_assert_eq!(store.nodes()[0].evidence, evidence_before);
+            prop_assert_eq!(
+                store.lineage_of(0).map(|l| l.extractor_version.as_str()),
+                Some(extractor_version)
+            );
+            let expected_status = if is_target {
+                ClaimStatus::Rejected
+            } else {
+                status
+            };
+            prop_assert_eq!(store.nodes()[0].status, expected_status);
+
+            // Tombstone reason is machine-readable and only exists for
+            // superseded claims — never stored on the claim node.
+            prop_assert_eq!(store.supersessions().len(), usize::from(is_target));
+            if is_target {
+                let record = &store.supersessions()[0];
+                prop_assert_eq!(record.claim_key, 0);
+                prop_assert_eq!(record.reason.code(), "superseded_by_reextraction");
+                prop_assert_eq!(record.superseded_at, superseded_at);
+                prop_assert!(
+                    serde_json::to_value(&store.nodes()[0])
+                        .unwrap()
+                        .get("reason")
+                        .is_none(),
+                    "tombstone reason lives on the record, never on the claim node"
+                );
+            }
+        }
+    }
+
+    // 4.1 — no resurrection: a same-version re-ingest supersedes nothing
+    // (cache reuse, no new work) and re-running the bump never revives a
+    // tombstoned claim; re-entry to staged is explicit re-stage only.
+    #[test]
+    fn same_version_reingest_and_repeat_bump_resurrect_nothing() {
+        let mut store = ClaimStore::default();
+        store
+            .insert(
+                v2_node(),
+                Lineage {
+                    episode_id: "ep-a".into(),
+                    extractor_version: "0.1.0".into(),
+                },
+                "e",
+            )
+            .unwrap();
+        assert_eq!(store.supersede_prior_versions("ep-a", "0.2.0", 1), vec![0]);
+        assert_eq!(store.nodes()[0].status, ClaimStatus::Rejected);
+
+        // Same version as the tombstoned claim's own: no work, no change.
+        assert!(store
+            .supersede_prior_versions("ep-a", "0.1.0", 2)
+            .is_empty());
+        // Re-running the bump: nothing left to supersede, nothing revived.
+        assert!(store
+            .supersede_prior_versions("ep-a", "0.2.0", 3)
+            .is_empty());
+        assert_eq!(store.nodes()[0].status, ClaimStatus::Rejected);
+        assert_eq!(store.supersessions().len(), 1, "no duplicate tombstones");
+    }
+
+    // 4.2 — active-claim conflicts route through the invalidation-proposal
+    // mechanism (ex_mutation_proposal): the proposal carries causing-episode
+    // lineage; the active claim itself is never mutated by the extractor.
+    #[test]
+    fn active_conflict_stages_invalidation_proposal_without_mutating_claim() {
+        let mut store = ClaimStore::default();
+        store
+            .insert(
+                ClaimNode { status: ClaimStatus::Active, ..v2_node() },
+                Lineage {
+                    episode_id: "ep-old".into(),
+                    extractor_version: "0.1.0".into(),
+                },
+                "e",
+            )
+            .unwrap();
+
+        store
+            .stage_invalidation_proposal(0, "ep-new")
+            .expect("conflict stages a proposal");
+        assert_eq!(store.nodes()[0].status, ClaimStatus::Active, "claim untouched");
+        assert_eq!(store.invalidations().len(), 1);
+        assert_eq!(store.invalidations()[0].claim_key, 0);
+        assert_eq!(store.invalidations()[0].causing_episode_id, "ep-new");
+    }
+
     #[test]
     fn span_persistence_rejects_hedge_dropping_span() {
         let mut store = ClaimStore::default();
