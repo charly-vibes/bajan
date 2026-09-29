@@ -110,10 +110,13 @@ deriving property land in the same commit so `spk lint`, `ah check`, and
 
 ## 7. Validation & tidy
 
-- [ ] 7.1 Full gate run: `spk lint specs`, `ah check`, `dont check`,
-      `pretender` pre-commit, full test suite
-- [ ] 7.2 Tidy pass: extract shared span-normalization helper
+- [x] 7.1 Full gate run: `spk lint specs`, `ah check`, `dont check`,
+      `pretender` pre-commit, full test suite — all green (2026-09-29:
+      32 tests, 3 specs 0 findings, all claims grounded)
+- [x] 7.2 Tidy pass: extract shared span-normalization helper
       (whitespace collapse) if duplicated across gate and audit; separate
-      tidy commit
-- [ ] 7.3 Update `openspec/changes/update-extraction-provenance/tasks.md`
+      tidy commit — no duplication to extract: `store::collapse` made
+      `pub(crate)` and reused by the typed gate (`check_evidence_containment`)
+      and the hedge audit in the bajan-0hs.7 green commit
+- [x] 7.3 Update `openspec/changes/update-extraction-provenance/tasks.md`
       statuses; request review for archive
