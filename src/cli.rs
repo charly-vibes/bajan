@@ -201,6 +201,20 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn adopt_subcommand_parses_and_emits_ok_envelope() {
+        let cli = Cli::try_parse_from(["bajan", "adopt", "0", "--actor", "sasha"])
+            .expect("adopt parses");
+        assert!(matches!(cli.command, Command::Adopt { .. }));
+        // Meter: `bajan adopt ... --json` emits ok:true (3.2 green).
+        let v = envelope_of(Command::Adopt {
+            claims: vec![0],
+            actor: Some("sasha".into()),
+        });
+        assert_eq!(v["ok"].as_bool(), Some(true), "adopt emits ok envelope");
+    }
+
+    #[test]
     fn every_stub_errors_with_nonempty_remediation() {
         let cases = [
             (Command::Ingest, "specs/ingestion-contract.md"),

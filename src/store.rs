@@ -429,6 +429,67 @@ mod tests {
             .expect("typed-absent evidence persists flagged, not rejected");
     }
 
+    fn staged_node() -> ClaimNode {
+        ClaimNode { status: ClaimStatus::Staged, ..v2_node() }
+    }
+
+    // 3.1 — p_human_adopt: only explicit human accept actions move a claim
+    // to `active`. `ClaimStore::adopt` is the sole Active-setting API; every
+    // future automated path (supersession, reflection, re-ingest) mutates
+    // status only through non-Active transitions, so the refusal is
+    // structural — there is no other public route to Active.
+    #[test]
+    fn human_adopt_moves_staged_to_active_with_one_audit_record() {
+        let mut store = ClaimStore::default();
+        store.insert(staged_node(), "episode text").unwrap();
+
+        let audit = store.adopt(0, "sasha", 1_000).expect("human adopt");
+        assert_eq!(audit.claim_key, 0);
+        assert_eq!(store.nodes()[0].status, ClaimStatus::Active);
+        assert_eq!(store.audit().len(), 1, "one audit record per claim");
+        assert_eq!(store.audit()[0].actor, "sasha");
+        assert_eq!(store.audit()[0].adopted_at, 1_000);
+        assert_eq!(store.audit()[0].claim_key, 0);
+        let _ = audit;
+    }
+
+    #[test]
+    fn adopt_refuses_non_staged_claims_without_audit() {
+        let mut store = ClaimStore::default();
+        let active = ClaimNode { status: ClaimStatus::Active, ..staged_node() };
+        let rejected = ClaimNode { status: ClaimStatus::Rejected, ..staged_node() };
+        store.insert(active, "e").unwrap();
+        store.insert(rejected, "e").unwrap();
+
+        assert!(store.adopt(0, "sasha", 1).is_err(), "active stays active");
+        assert!(store.adopt(1, "sasha", 1).is_err(), "no resurrection from rejected");
+        assert_eq!(store.nodes()[0].status, ClaimStatus::Active);
+        assert_eq!(store.nodes()[1].status, ClaimStatus::Rejected);
+        assert!(store.audit().is_empty(), "refused attempts write no audit");
+    }
+
+    // 3.2 — batch accept loops with per-claim audit records: one session,
+    // N claims, N records each carrying actor and timestamp.
+    proptest! {
+        #[test]
+        fn batch_adopt_writes_one_audit_record_per_claim(n in 1usize..6) {
+            let mut store = ClaimStore::default();
+            for _ in 0..n {
+                store.insert(staged_node(), "e").unwrap();
+            }
+            let keys: Vec<usize> = (0..n).collect();
+            let audits = store.adopt_batch(&keys, "sasha", 7_000).expect("batch adopt");
+            prop_assert_eq!(audits.len(), n);
+            prop_assert_eq!(store.audit().len(), n);
+            for (i, audit) in store.audit().iter().enumerate() {
+                prop_assert_eq!(audit.claim_key, i);
+                prop_assert_eq!(&audit.actor, "sasha");
+                prop_assert_eq!(audit.adopted_at, 7_000);
+                prop_assert_eq!(store.nodes()[i].status, ClaimStatus::Active);
+            }
+        }
+    }
+
     #[test]
     fn span_persistence_rejects_hedge_dropping_span() {
         let mut store = ClaimStore::default();
