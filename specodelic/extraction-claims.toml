@@ -1,0 +1,49 @@
+source = "extraction.claims"
+
+[[constraints]]
+id = "ex_single_call"
+kind = "invariant"
+expr = "each persisted episode is processed by at most one LLM extraction call producing candidate claims and entities; re-ingest of a known episode id reuses the cached extraction output and starts no new call"
+traces_to = "[[extraction.claims]]"
+
+[[constraints]]
+id = "ex_typed_gate"
+kind = "invariant"
+expr = "a candidate claim persists only if it validates against the published claim schema and carries at least one episode lineage edge; invalid candidates are rejected, never repaired"
+traces_to = "[[extraction.claims]]"
+
+[[constraints]]
+id = "ex_no_llm_post"
+kind = "invariant"
+expr = "normalization, dedup, entity matching, and conflict detection after the extraction call are deterministic; normalization rules appear both as prompt instructions and in a deterministic post-pass, because prompts are not bulletproof"
+traces_to = "[[extraction.claims]]"
+
+[[constraints]]
+id = "ex_mutation_proposal"
+kind = "invariant"
+expr = "a candidate claim that conflicts with an existing active claim stages an invalidation proposal carrying its causing-episode lineage; the existing claim is not mutated by the extractor"
+traces_to = "[[extraction.claims]]"
+
+[[constraints]]
+id = "ex_reflection"
+kind = "advisory"
+expr = "extraction includes a bounded reflection sub-step verifying candidate claims against the episode text and enriching change lineage; it flags unsupported candidates and never introduces new ones"
+traces_to = "[[extraction.claims]]"
+
+[[constraints]]
+id = "ex_tag_inheritance"
+kind = "invariant"
+expr = "workspace tags and source metadata on an episode are inherited by every claim derived from it"
+traces_to = "[[extraction.claims]]"
+
+[[constraints]]
+id = "ex_deterministic_structure"
+kind = "invariant"
+expr = "structure the converter already supplied (heading anchors, section boundaries, links) is consumed deterministically and never re-extracted by the LLM"
+traces_to = "[[extraction.claims]]"
+
+[[constraints]]
+id = "ex_output_schema"
+kind = "extension_point"
+expr = "the candidate-claim record schema (field names, types, requiredness) is published for eval-harness specs to conform to"
+traces_to = "[[extraction.claims]]"

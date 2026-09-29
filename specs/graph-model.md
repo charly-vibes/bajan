@@ -16,8 +16,8 @@ earlier knowledge-assistant spec (`docs/knowledge-assistant-ears-spec.md`)
 while carrying over its defect classes as graph invariants: verbatim
 evidence, source-faithful dating, no silent merges, deletion only by
 lineage walk. Claims are proposed from the episode stream published by the
-`ingestion.contract` spec; how extraction proposes claims is out of scope
-here and specced separately.
+`ingestion.contract` spec; the proposal mechanism is specced in
+`extraction.claims` and out of scope here.
 
 ## Constraints
 
