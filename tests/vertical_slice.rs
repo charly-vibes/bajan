@@ -64,7 +64,24 @@ proptest! {
     #[test]
     fn dump_then_recreate_reproduces_the_graph(
         ids in proptest::collection::vec("[a-z0-9-]{3,12}", 1..5),
-        texts in proptest::collection::vec("[a-z0-9 .,!?-]{10,60}", 1..5),
+        // bajan-15i generator extension: alongside the original long
+        // ASCII shape, episodes now include SHORT texts (EDGE-002:
+        // simhash is unreliable below a length threshold — exact-match
+        // territory) and NON-ENGLISH texts (EDGE-001: UAX #29 is the
+        // language-neutral default; Spanish/German diacritics exercise
+        // it). None of the branches can produce whitespace-only text,
+        // so `ic_malformed` never rejects a generated episode.
+        texts in proptest::collection::vec(
+            prop_oneof![
+                // Long ASCII (original shape).
+                "[a-z0-9 .,!?-]{10,60}",
+                // Short episode, incl. accented characters.
+                "[a-záéíóúñüß]{1,5}",
+                // Non-English (Spanish/German diacritics), long.
+                "[a-záéíóúñA-ZÁÉÍÓÚÑÜÄäÖöß .,!?-]{10,60}",
+            ],
+            1..5,
+        ),
     ) {
         let db = SqliteStore::open_in_memory().expect("open");
         let n = ids.len().min(texts.len());

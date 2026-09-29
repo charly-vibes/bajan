@@ -122,6 +122,12 @@ pub struct ExtractReport {
 /// future LLM extractor — the proposer differs, the contract does not.
 /// Episodes are cached as extracted even when the gate refuses everything
 /// (absence of claims is data, not failure).
+///
+/// CORR-001 (bajan-15i design note): when a future LLM extractor chunks
+/// input, chunking is *assembly for exactly one call* — chunks are
+/// concatenated into one multi-part prompt and the output is cached under
+/// the single (episode id, extractor version) key. Never one call per
+/// chunk (`ex_single_call`, specs/extraction-claims.md).
 pub fn run_extract(
     db: &crate::store::sqlite::SqliteStore,
     extractor_version: &str,
@@ -339,6 +345,36 @@ mod tests {
                 check_evidence_containment(&foreign, &episode),
                 Err(Reason::EvidenceNotContained),
             );
+        }
+    }
+
+    // 6.1 — whole-episode spans (bajan-15i review note): a span equal to
+    // the entire episode text — byte-identical or modulo whitespace runs,
+    // and with non-ASCII content — passes the gate after collapse; the
+    // collapse never mangles accents (EDGE-001: language-neutral default).
+    proptest! {
+        #[test]
+        fn gate_passes_whole_episode_spans(
+            head in "[a-záéíóúñüß]{3,20}",
+            tail in "[a-záéíóúñüß]{3,20}",
+            ws in "[ \t\n]{1,4}",
+        ) {
+            let episode = format!("{head}{ws}{tail}");
+
+            // Byte-identical whole-episode span: contained.
+            let identical = Evidence::Span {
+                text: episode.clone(),
+                locator: "h:whole".into(),
+            };
+            prop_assert_eq!(check_evidence_containment(&identical, &episode), Ok(()));
+
+            // Whole-episode span modulo a whitespace run: collapse on both
+            // sides makes containment hold — accepted, never repaired.
+            let wobbled = Evidence::Span {
+                text: format!("{head} {tail}"),
+                locator: "h:whole".into(),
+            };
+            prop_assert_eq!(check_evidence_containment(&wobbled, &episode), Ok(()));
         }
     }
 
