@@ -144,7 +144,11 @@ fn stub_envelope(result: &Result<(), BajanError>) -> serde_json::Value {
 /// Success data carries the per-claim audit records; refusal, unknown
 /// claim keys, or an empty session store emit a spec-traced error envelope
 /// citing specs/graph-model.md.
-fn adopt_envelope(store: &mut ClaimStore, claims: &[usize], actor: Option<&str>) -> serde_json::Value {
+fn adopt_envelope(
+    store: &mut ClaimStore,
+    claims: &[usize],
+    actor: Option<&str>,
+) -> serde_json::Value {
     let actor = actor
         .map(str::to_string)
         .or_else(|| std::env::var("USER").ok())
@@ -191,8 +195,9 @@ fn adopt_error_envelope(err: &StoreError) -> serde_json::Value {
 /// through here, so the envelope contract cannot be bypassed.
 pub fn run(command: Command) -> String {
     let value = match &command {
-        Command::Version => serde_json::to_value(version_envelope())
-            .expect("envelope serialization cannot fail"),
+        Command::Version => {
+            serde_json::to_value(version_envelope()).expect("envelope serialization cannot fail")
+        }
         Command::Ingest => stub_envelope(&ingest::run()),
         Command::Extract => stub_envelope(&extract::run()),
         Command::Resolve => stub_envelope(&resolve::run()),
@@ -213,8 +218,43 @@ pub fn run(command: Command) -> String {
 /// never see success for an error envelope (bajan-aan).
 pub fn exit_code(json: &str) -> i32 {
     let v: serde_json::Value =
-        serde_json::from_str(json).expect("run() always emits valid JSON");
-    if v["ok"].as_bool().unwrap_or(false) { 0 } else { 1 }
+        serde_json::from_str(json).expect("bajan always emits valid JSON envelopes");
+    if v["ok"].as_bool().unwrap_or(false) {
+        0
+    } else {
+        1
+    }
+}
+
+/// Human-readable one-line message from a clap error (bajan-3w1):
+/// - `DisplayHelpOnMissingArgumentOrSubcommand` (bare `bajan`) renders the
+///   about line first — that's the tool's purpose, not the mistake, so
+///   substitute an explicit "subcommand required" message.
+/// - Other kinds render `error: <summary>` then detail lines; the summary
+///   alone is often useless ("the following required arguments were not
+///   provided:"), so take the first *paragraph* (up to the blank line
+///   separating message from usage), newline-collapsed to one line.
+fn clap_error_message(err: &clap::Error) -> String {
+    if err.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand {
+        return "a subcommand is required (run bajan --help)".to_string();
+    }
+    let rendered = err.to_string();
+    let paragraph = rendered
+        .split("\n\n")
+        .next()
+        .unwrap_or(&rendered)
+        .trim_start_matches("error: ");
+    let mut message = String::new();
+    for (i, line) in paragraph.lines().enumerate() {
+        if i > 0 {
+            message.push_str("; ");
+        }
+        message.push_str(line.trim());
+    }
+    if message.is_empty() {
+        return "argument error".to_string();
+    }
+    message
 }
 
 /// Envelope for clap parse failures (bajan-ts6): the envelope is the single
@@ -222,13 +262,7 @@ pub fn exit_code(json: &str) -> i32 {
 /// clap's plain-text usage error. `spec_ref` is `None`: argument errors are
 /// governed by the genesis envelope contract itself, not a pipeline spec.
 pub fn argument_error_envelope(err: &clap::Error) -> String {
-    let message = err
-        .to_string()
-        .lines()
-        .next()
-        .unwrap_or("argument error")
-        .trim_start_matches("error: ")
-        .to_string();
+    let message = clap_error_message(err);
     serde_json::to_string(&spec_error_envelope(
         "argument_error",
         &message,
@@ -247,8 +281,7 @@ pub fn argument_error_envelope(err: &clap::Error) -> String {
 /// Text mode is a convenience rendering of the same envelope — never a
 /// second output format with different content.
 pub fn render_text(json: &str) -> String {
-    let v: serde_json::Value =
-        serde_json::from_str(json).expect("run() always emits valid JSON");
+    let v: serde_json::Value = serde_json::from_str(json).expect("run() always emits valid JSON");
     if v["ok"].as_bool().unwrap_or(false) {
         format!(
             "{} v{} ({})",
@@ -319,8 +352,8 @@ mod tests {
 
     #[test]
     fn adopt_subcommand_parses() {
-        let cli = Cli::try_parse_from(["bajan", "adopt", "0", "--actor", "sasha"])
-            .expect("adopt parses");
+        let cli =
+            Cli::try_parse_from(["bajan", "adopt", "0", "--actor", "sasha"]).expect("adopt parses");
         assert!(matches!(cli.command, Command::Adopt { .. }));
     }
 
@@ -338,8 +371,7 @@ mod tests {
                 "e",
             )
             .unwrap();
-        let v =
-            serde_json::to_value(adopt_envelope(&mut store, &[0], Some("sasha"))).unwrap();
+        let v = serde_json::to_value(adopt_envelope(&mut store, &[0], Some("sasha"))).unwrap();
         assert_eq!(v["ok"].as_bool(), Some(true), "adopt emits ok envelope");
     }
 

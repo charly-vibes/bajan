@@ -34,8 +34,8 @@ fn stub_error_path_exits_non_zero() {
 #[test]
 fn argument_error_emits_envelope() {
     let (code, stdout) = bajan(&["nosuchcmd"]);
-    let v: serde_json::Value = serde_json::from_str(&stdout)
-        .expect("argument errors still emit a parseable envelope");
+    let v: serde_json::Value =
+        serde_json::from_str(&stdout).expect("argument errors still emit a parseable envelope");
     assert_eq!(v["envelope_version"].as_str(), Some("0.1"));
     assert_eq!(v["ok"].as_bool(), Some(false));
     assert_eq!(v["envelope_kind"].as_str(), Some("error"));
