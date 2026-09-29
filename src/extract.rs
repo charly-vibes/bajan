@@ -186,6 +186,72 @@ mod tests {
         }
     }
 
+    // 6.1 — p_evidence_containment at the typed gate: a candidate's span
+    // evidence must survive whitespace-collapsed containment against the
+    // episode text (all whitespace runs → single space, both sides); a
+    // failing span is rejected with `evidence_not_contained`, never
+    // repaired; the typed absent marker passes the gate (it persists
+    // flagged by reflection, per ex_evidence_containment).
+    proptest! {
+        #[test]
+        fn gate_rejects_spans_failing_collapsed_containment(
+            episode_head in "[a-f]{3,20}",
+            episode_tail in "[a-f]{3,20}",
+            span in "[g-z]{5,30}",
+            ws_episode in "[ \t\n]{1,4}",
+            ws_span in "[ \t\n]{1,4}",
+            locator in "[a-z:0-9]{3,15}",
+        ) {
+            let episode = format!("{episode_head}{ws_episode}{episode_tail}");
+            let contained = Evidence::Span {
+                text: format!("{episode_head}{ws_span}{episode_tail}"),
+                locator: locator.clone(),
+            };
+            // Same span modulo whitespace runs: contained after collapse.
+            prop_assert_eq!(
+                check_evidence_containment(&contained, &episode),
+                Ok(()),
+            );
+
+            // A span that does not locate in the episode is rejected, and
+            // rejection is the reason — the span is never repaired.
+            let foreign = Evidence::Span { text: span, locator };
+            prop_assert_eq!(
+                check_evidence_containment(&foreign, &episode),
+                Err(Reason::EvidenceNotContained),
+            );
+        }
+    }
+
+    // 6.1 — the typed absent marker passes the gate: alignment-failure
+    // episodes persist. Containment does not apply to absence.
+    #[test]
+    fn gate_passes_typed_absent_marker_through() {
+        assert_eq!(
+            check_evidence_containment(&Evidence::Unknown, "any episode text"),
+            Ok(()),
+        );
+    }
+
+    // 6.2 — unknown-span flagging rides the deterministic reflection pass
+    // (ex_reflection extended): exactly one flag for an absent marker,
+    // none for a real span; the pass returns flags only — it can never
+    // reject or repair, so no second audit mechanism exists.
+    proptest! {
+        #[test]
+        fn reflection_flags_unknown_spans_only(
+            text in "[a-z ]{5,40}",
+            locator in "[a-z:0-9]{3,15}",
+        ) {
+            let span = Evidence::Span { text, locator };
+            prop_assert!(reflection_flags(&span).is_empty(), "contained spans are not flagged");
+
+            let flags = reflection_flags(&Evidence::Unknown);
+            prop_assert_eq!(flags.len(), 1);
+            prop_assert_eq!(flags[0], ReflectionFlag::UnknownEvidenceSpan);
+        }
+    }
+
     #[test]
     fn reason_codes_are_machine_readable() {
         assert_eq!(
