@@ -1,0 +1,7 @@
+# Purpose: cargo workspace config for bajan.
+# Responsibilities: route cargo's git fetches through the git CLI.
+# Rationale: dependencies on github.com/charly-vibes/* are rewritten to the
+# `git@cv:` SSH alias by ~/.config/git/private; libgit2 cannot resolve that
+# alias, so cargo must fetch with the git CLI (which reads ~/.ssh/config).
+[net]
+git-fetch-with-cli = true
