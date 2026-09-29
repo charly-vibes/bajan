@@ -87,6 +87,37 @@ pub struct ClaimNode {
     pub evidence: Evidence,
 }
 
+/// Lineage provenance for a stored claim (`gm_reified`): the episode it
+/// derives from and the extractor version that produced it. Kept parallel
+/// to the node — the claim-node schema (`gm_schema_v2`) stays closed, and
+/// supersession targets claims by (episode, version) provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lineage {
+    pub episode_id: String,
+    pub extractor_version: String,
+}
+
+/// Tombstone record for a superseded claim (`ex_supersession`): the
+/// machine-readable reason lives here, never on the claim node (the
+/// schema field list stays closed). The tombstoned node keeps its
+/// lineage and evidence — a tombstone, not a delete (`gm_lineage_survives`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupersessionRecord {
+    pub claim_key: usize,
+    pub reason: crate::extract::Reason,
+    pub superseded_at: u64,
+}
+
+/// An invalidation proposal staged by a candidate claim that conflicts
+/// with an existing active claim (`ex_mutation_proposal`): carries the
+/// causing-episode lineage; the active claim itself is never mutated by
+/// the extractor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvalidationProposal {
+    pub claim_key: usize,
+    pub causing_episode_id: String,
+}
+
 /// A pre-v2 claim node — the seven frozen v1 fields (`gm_schema_v1`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -235,14 +266,25 @@ pub struct AuditRecord {
 #[derive(Debug, Default, Clone)]
 pub struct ClaimStore {
     nodes: Vec<ClaimNode>,
+    lineage: Vec<Lineage>,
     audits: Vec<AuditRecord>,
+    supersessions: Vec<SupersessionRecord>,
+    invalidations: Vec<InvalidationProposal>,
 }
 
 impl ClaimStore {
-    /// Persist a claim node. `supporting_episode` is the verbatim text of
-    /// the episode backing the node's evidence span; span persistence
-    /// rejects spans that drop hedge markers present in it.
-    pub fn insert(&mut self, node: ClaimNode, supporting_episode: &str) -> Result<(), StoreError> {
+    /// Persist a claim node with its lineage provenance. The node is
+    /// stored under (episode id, extractor version) provenance so a
+    /// version-bump re-extract can target it (`ex_supersession`);
+    /// `supporting_episode` is the verbatim text of the episode backing
+    /// the node's evidence span, and span persistence rejects spans that
+    /// drop hedge markers present in it.
+    pub fn insert(
+        &mut self,
+        node: ClaimNode,
+        lineage: Lineage,
+        supporting_episode: &str,
+    ) -> Result<(), StoreError> {
         if let Evidence::Span { text, .. } = &node.evidence {
             let dropped = dropped_hedge_markers(text, supporting_episode);
             if !dropped.is_empty() {
@@ -253,6 +295,7 @@ impl ClaimStore {
             }
         }
         self.nodes.push(node);
+        self.lineage.push(lineage);
         Ok(())
     }
 
@@ -260,10 +303,84 @@ impl ClaimStore {
         &self.nodes
     }
 
+    /// Lineage provenance of a stored claim, by claim key (`gm_reified`).
+    pub fn lineage_of(&self, claim_key: usize) -> Option<&Lineage> {
+        self.lineage.get(claim_key)
+    }
+
+    /// Tombstone trail of superseded claims (`ex_supersession`).
+    pub fn supersessions(&self) -> &[SupersessionRecord] {
+        &self.supersessions
+    }
+
+    /// Staged invalidation proposals (`ex_mutation_proposal`).
+    pub fn invalidations(&self) -> &[InvalidationProposal] {
+        &self.invalidations
+    }
+
     /// Audit trail of human accept actions, one record per adopted claim
     /// (`gm_human_adopt`).
     pub fn audit(&self) -> &[AuditRecord] {
         &self.audits
+    }
+
+    /// Supersede on version-bump re-extraction (`ex_supersession`):
+    /// tombstones — moves to `rejected` — only this episode's `staged`
+    /// claims derived from extractor versions other than the re-extract
+    /// version, writing one supersession record per claim with reason
+    /// `superseded_by_reextraction`. Lineage and evidence stay intact.
+    /// `active` and `rejected` claims (any episode, any version) and other
+    /// episodes' claims are never touched; a superseded claim re-enters
+    /// `staged` only through an explicit re-stage action. Same-version
+    /// provenance is never superseded — re-ingest at the same version
+    /// reuses cached output and resurrects nothing. Claims newer than the
+    /// re-extract version cannot exist (the pipeline re-extracts in
+    /// version order), so provenance inequality is the honest prior-version
+    /// test.
+    pub fn supersede_prior_versions(
+        &mut self,
+        episode_id: &str,
+        extractor_version: &str,
+        superseded_at: u64,
+    ) -> Vec<usize> {
+        let mut superseded = Vec::new();
+        for key in 0..self.nodes.len() {
+            let lineage = &self.lineage[key];
+            if lineage.episode_id != episode_id
+                || lineage.extractor_version == extractor_version
+            {
+                continue;
+            }
+            if self.nodes[key].status == ClaimStatus::Staged {
+                self.nodes[key].status = ClaimStatus::Rejected;
+                self.supersessions.push(SupersessionRecord {
+                    claim_key: key,
+                    reason: crate::extract::Reason::SupersededByReextraction,
+                    superseded_at,
+                });
+                superseded.push(key);
+            }
+        }
+        superseded
+    }
+
+    /// Route a candidate's conflict with an existing active claim through
+    /// the invalidation-proposal mechanism (`ex_mutation_proposal`): the
+    /// proposal carries the causing-episode lineage and the active claim
+    /// is not mutated here. Unknown claim keys are refused.
+    pub fn stage_invalidation_proposal(
+        &mut self,
+        claim_key: usize,
+        causing_episode_id: &str,
+    ) -> Result<(), StoreError> {
+        if claim_key >= self.nodes.len() {
+            return Err(StoreError::ClaimNotFound { claim_key });
+        }
+        self.invalidations.push(InvalidationProposal {
+            claim_key,
+            causing_episode_id: causing_episode_id.to_string(),
+        });
+        Ok(())
     }
 
     /// Explicit human accept action: the sole path from `proposed`/`staged`
@@ -492,6 +609,10 @@ mod tests {
     fn span_persistence_hedge_free_spans_and_unknown_pass() {
         let mut store = ClaimStore::default();
         let episode = "Throughput improved by 12 percent.";
+        let lineage = Lineage {
+            episode_id: "ep-a".into(),
+            extractor_version: "0.1.0".into(),
+        };
         let ok = ClaimNode {
             evidence: Evidence::Span {
                 text: episode.into(),
@@ -500,7 +621,7 @@ mod tests {
             ..v2_node()
         };
         store
-            .insert(ok, episode)
+            .insert(ok, lineage.clone(), episode)
             .expect("hedge-free verbatim span persists");
 
         let unknown = ClaimNode {
@@ -508,12 +629,19 @@ mod tests {
             ..v2_node()
         };
         store
-            .insert(unknown, episode)
+            .insert(unknown, lineage, episode)
             .expect("typed-absent evidence persists flagged, not rejected");
     }
 
     fn staged_node() -> ClaimNode {
         ClaimNode { status: ClaimStatus::Staged, ..v2_node() }
+    }
+
+    fn test_lineage() -> Lineage {
+        Lineage {
+            episode_id: "ep-a".into(),
+            extractor_version: "0.1.0".into(),
+        }
     }
 
     // 3.1 — p_human_adopt: only explicit human accept actions move a claim
@@ -524,7 +652,9 @@ mod tests {
     #[test]
     fn human_adopt_moves_staged_to_active_with_one_audit_record() {
         let mut store = ClaimStore::default();
-        store.insert(staged_node(), "episode text").unwrap();
+        store
+            .insert(staged_node(), test_lineage(), "episode text")
+            .unwrap();
 
         let audit = store.adopt(0, "sasha", 1_000).expect("human adopt");
         assert_eq!(audit.claim_key, 0);
@@ -541,8 +671,8 @@ mod tests {
         let mut store = ClaimStore::default();
         let active = ClaimNode { status: ClaimStatus::Active, ..staged_node() };
         let rejected = ClaimNode { status: ClaimStatus::Rejected, ..staged_node() };
-        store.insert(active, "e").unwrap();
-        store.insert(rejected, "e").unwrap();
+        store.insert(active, test_lineage(), "e").unwrap();
+        store.insert(rejected, test_lineage(), "e").unwrap();
 
         assert!(store.adopt(0, "sasha", 1).is_err(), "active stays active");
         assert!(store.adopt(1, "sasha", 1).is_err(), "no resurrection from rejected");
@@ -557,8 +687,17 @@ mod tests {
         #[test]
         fn batch_adopt_writes_one_audit_record_per_claim(n in 1usize..6) {
             let mut store = ClaimStore::default();
-            for _ in 0..n {
-                store.insert(staged_node(), "e").unwrap();
+            for i in 0..n {
+                store
+                    .insert(
+                        staged_node(),
+                        Lineage {
+                            episode_id: format!("ep-{i}"),
+                            extractor_version: "0.1.0".into(),
+                        },
+                        "e",
+                    )
+                    .unwrap();
             }
             let keys: Vec<usize> = (0..n).collect();
             let audits = store.adopt_batch(&keys, "sasha", 7_000).expect("batch adopt");
@@ -625,7 +764,7 @@ mod tests {
             // Tombstone, not delete: the node survives with evidence and
             // lineage intact; only its status moved to rejected.
             prop_assert_eq!(store.nodes().len(), 1);
-            prop_assert_eq!(store.nodes()[0].evidence, evidence_before);
+            prop_assert_eq!(store.nodes()[0].evidence.clone(), evidence_before);
             prop_assert_eq!(
                 store.lineage_of(0).map(|l| l.extractor_version.as_str()),
                 Some(extractor_version)
@@ -725,7 +864,7 @@ mod tests {
             ..v2_node()
         };
         let err = store
-            .insert(node, episode)
+            .insert(node, test_lineage(), episode)
             .expect_err("dropped hedge marker must be rejected");
         assert!(err.to_string().contains("may"), "error names the dropped marker: {err}");
         assert!(err.to_string().contains(SPEC), "error carries the governing spec: {err}");

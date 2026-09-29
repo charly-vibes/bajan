@@ -294,7 +294,16 @@ mod tests {
     fn adopt_envelope_is_ok_for_seeded_store() {
         // Meter (3.2): adopt emits ok:true once the store holds the claim.
         let mut store = ClaimStore::default();
-        store.insert(staged_seed_node(), "e").unwrap();
+        store
+            .insert(
+                staged_seed_node(),
+                crate::store::Lineage {
+                    episode_id: "ep-seed".into(),
+                    extractor_version: "0.1.0".into(),
+                },
+                "e",
+            )
+            .unwrap();
         let v =
             serde_json::to_value(adopt_envelope(&mut store, &[0], Some("sasha"))).unwrap();
         assert_eq!(v["ok"].as_bool(), Some(true), "adopt emits ok envelope");

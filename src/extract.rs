@@ -29,6 +29,10 @@ pub enum Reason {
     /// fails whitespace-collapsed containment (`ex_evidence_containment`,
     /// enforced from bajan-0hs.7).
     EvidenceNotContained,
+    /// Prior-version `staged` claim tombstoned by a version-bump
+    /// re-extraction (`ex_supersession`). Carried on the supersession
+    /// record in the claim store — never on the claim node.
+    SupersededByReextraction,
 }
 
 impl Reason {
@@ -37,6 +41,7 @@ impl Reason {
         match self {
             Reason::RepeatedCallFailure { .. } => "repeated_call_failure",
             Reason::EvidenceNotContained => "evidence_not_contained",
+            Reason::SupersededByReextraction => "superseded_by_reextraction",
         }
     }
 }
