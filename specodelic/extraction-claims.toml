@@ -3,13 +3,13 @@ source = "extraction.claims"
 [[constraints]]
 id = "ex_single_call"
 kind = "invariant"
-expr = "each persisted episode is processed by at most one LLM extraction call producing candidate claims and entities; re-ingest of a known episode id reuses the cached extraction output and starts no new call"
+expr = "each persisted episode id receives exactly one successful LLM extraction call producing candidate claims and entities; failed calls retry with backoff and park the episode in `rejected` after repeated failure; re-ingest of a successfully extracted episode reuses the (episode id, extractor version)-keyed cached output and starts no new call"
 traces_to = "[[extraction.claims]]"
 
 [[constraints]]
 id = "ex_typed_gate"
 kind = "invariant"
-expr = "a candidate claim persists only if it validates against the published claim schema and carries at least one episode lineage edge; invalid candidates are rejected, never repaired"
+expr = "a candidate claim persists only if it validates against the published claim schema and carries at least one episode lineage edge; invalid candidates are rejected, never repaired; an episode with zero valid candidates is legitimately extracted and cached as empty"
 traces_to = "[[extraction.claims]]"
 
 [[constraints]]
@@ -27,13 +27,13 @@ traces_to = "[[extraction.claims]]"
 [[constraints]]
 id = "ex_reflection"
 kind = "advisory"
-expr = "extraction includes a bounded reflection sub-step verifying candidate claims against the episode text and enriching change lineage; it flags unsupported candidates and never introduces new ones"
+expr = "the single extraction call includes a self-check that verifies candidate claims against the episode text and enriches change lineage, rendered as flags by a deterministic pass; it flags unsupported candidates and never introduces new ones, and it is not a second LLM call"
 traces_to = "[[extraction.claims]]"
 
 [[constraints]]
 id = "ex_tag_inheritance"
 kind = "invariant"
-expr = "workspace tags and source metadata on an episode are inherited by every claim derived from it"
+expr = "workspace tags and source metadata on an episode are inherited by every claim derived from it as a projection — the union over its lineage edges, resolved by walking `derived_from` at query time — and are never stored on the claim node"
 traces_to = "[[extraction.claims]]"
 
 [[constraints]]

@@ -3,7 +3,7 @@ source = "ingestion.contract"
 [[constraints]]
 id = "ic_verbatim"
 kind = "invariant"
-expr = "an episode persists its verbatim text plus a locator (heading anchor, text fragment, page/slide, or the literal `unknown` when none is derivable) and immutable source metadata: stable id, source type, data cutoff, authority tier, and optional workspace tags"
+expr = "an episode persists its verbatim text plus a locator (heading anchor, text fragment, page/slide, or the literal `unknown` when none is derivable), immutable source metadata (stable id, source type, data cutoff, authority tier, optional workspace tags), and any converter-supplied structure markers (section boundaries, links)"
 traces_to = "[[ingestion.contract]]"
 
 [[constraints]]

@@ -30,21 +30,21 @@ pub mod spec_gen {
 
 proptest! {
     // id: p_single_call
-    // generator: episode corpora ingested, then re-ingested unchanged
-    // predicate: exactly one extraction call per persisted episode id; re-ingest produces no new call and reuses cached output
+    // generator: episode corpora ingested, re-ingested unchanged, and re-ingested with a bumped extractor version
+    // predicate: exactly one successful call per (episode id, extractor version); re-ingest at the same version produces no new call and reuses cached output; a version bump re-extracts
     #[test]
     fn p_single_call() {
-        todo_predicate!("exactly one extraction call per persisted episode id; re-ingest produces no new call and reuses cached output");
+        todo_predicate!("exactly one successful call per (episode id, extractor version); re-ingest at the same version produces no new call and reuses cached output; a version bump re-extracts");
     }
 }
 
 proptest! {
     // id: p_typed_gate
-    // generator: candidate records mixing schema-valid, schema-violating, and lineage-less claims
-    // predicate: only schema-valid lineage-bearing candidates reach `staged`; every violation lands in `rejected` unmodified
+    // generator: candidate records mixing schema-valid, schema-violating, lineage-less, and zero-candidate episodes
+    // predicate: only schema-valid lineage-bearing candidates reach `staged`; every violation lands in `rejected` unmodified; a zero-candidate episode caches as legitimately empty
     #[test]
     fn p_typed_gate() {
-        todo_predicate!("only schema-valid lineage-bearing candidates reach `staged`; every violation lands in `rejected` unmodified");
+        todo_predicate!("only schema-valid lineage-bearing candidates reach `staged`; every violation lands in `rejected` unmodified; a zero-candidate episode caches as legitimately empty");
     }
 }
 
@@ -80,11 +80,11 @@ proptest! {
 
 proptest! {
     // id: p_tag_inheritance
-    // generator: episodes with varying tag sets and derived claim sets
-    // predicate: every derived claim carries exactly its source episode's tag set
+    // generator: episodes with varying tag sets, derived claim sets, and multi-source claims
+    // predicate: every derived claim resolves to exactly the union of its supporting episodes' tag sets via lineage walk; no tag is stored on the claim node
     #[test]
     fn p_tag_inheritance() {
-        todo_predicate!("every derived claim carries exactly its source episode's tag set");
+        todo_predicate!("every derived claim resolves to exactly the union of its supporting episodes' tag sets via lineage walk; no tag is stored on the claim node");
     }
 }
 

@@ -22,7 +22,7 @@ will point at it with `satisfies`.
 
 | id | kind | expr | traces_to |
 |----|------|------|-----------|
-| ic_verbatim | invariant | an episode persists its verbatim text plus a locator (heading anchor, text fragment, page/slide, or the literal `unknown` when none is derivable) and immutable source metadata: stable id, source type, data cutoff, authority tier, and optional workspace tags | [[ingestion.contract]] |
+| ic_verbatim | invariant | an episode persists its verbatim text plus a locator (heading anchor, text fragment, page/slide, or the literal `unknown` when none is derivable), immutable source metadata (stable id, source type, data cutoff, authority tier, optional workspace tags), and any converter-supplied structure markers (section boundaries, links) | [[ingestion.contract]] |
 | ic_malformed | invariant | an episode missing verbatim text, a stable id, or required source metadata is rejected and never persisted | [[ingestion.contract]] |
 | ic_idempotent | invariant | re-ingesting an already-ingested episode stream yields a graph identical to the one it produced before — no duplicate episodes, no mutated provenance | [[ingestion.contract]] |
 | ic_no_format_parsing | invariant | the ingest pipeline consumes only the normalized episode stream; it performs no format-specific parsing and derives no structure from file syntax | [[ingestion.contract]] |

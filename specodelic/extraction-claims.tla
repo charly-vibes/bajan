@@ -22,6 +22,8 @@ Next ==
   \/ vpc = "pending" /\ vpc' = "extracted"
   \* gate: extracted -> validated (guard: [[extraction.claims.ex_typed_gate]])
   \/ vpc = "extracted" /\ vpc' = "validated"
+  \* abort: pending -> rejected (guard: [[extraction.claims.ex_single_call]])
+  \/ vpc = "pending" /\ vpc' = "rejected"
   \* refuse: extracted -> rejected (guard: [[extraction.claims.ex_typed_gate]])
   \/ vpc = "extracted" /\ vpc' = "rejected"
   \* stage: validated -> staged (guard: [[extraction.claims.ex_no_llm_post]])
