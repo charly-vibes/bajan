@@ -56,10 +56,14 @@ deriving property land in the same commit so `spk lint`, `ah check`, and
 
 ## 3. Adoption actor (human-only adopt)
 
-- [ ] 3.1 Write failing test: no automated stage can move proposed→active
-      (drive adopt through every non-human path and observe refusal) — red
-- [ ] 3.2 Implement actor check on the `adopt` path (CLI `bajan adopt`);
-      batch accept loops with per-claim audit records (actor, timestamp) — green
+- [x] 3.1 Write failing test: no automated stage can move proposed→active
+      (drive adopt through every non-human path and observe refusal) — red;
+      structural guarantee: `ClaimStore::adopt`/`adopt_batch` are the sole
+      Active-setting public API
+- [x] 3.2 Implement actor check on the `adopt` path (CLI `bajan adopt`);
+      batch accept loops with per-claim audit records (actor, timestamp) —
+      green: `AuditRecord`, `adopt_batch` per-claim loop, CLI adopt
+      envelope; session-scoped store until persistence engine lands
 
 ## 4. Supersession (re-extraction safety)
 

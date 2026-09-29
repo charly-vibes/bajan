@@ -1,0 +1,6 @@
+run_id: tdd-ro5-2026-09-29-bajan-0hs-4-human-only-adopt-path
+pipeline: tdd-ro5
+topic: bajan-0hs.4 human-only adopt path
+created_at: '2026-09-29T19:34:50.526780200+00:00'
+current_step: 8
+approvals: {}
