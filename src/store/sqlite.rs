@@ -57,6 +57,25 @@ CREATE TABLE IF NOT EXISTS audits (
 );
 ";
 
+/// Row mapper shared by `episodes()` and `get_episode()`: reconstructs a
+/// normalized episode record from the `episodes` table (`ic_verbatim`).
+fn episode_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EpisodeRecord> {
+    let locator_kind: String = row.get(2)?;
+    let locator: Option<String> = row.get(3)?;
+    Ok(EpisodeRecord {
+        id: row.get(0)?,
+        text: row.get(1)?,
+        locator: Locator::from_parts(&locator_kind, locator),
+        source: crate::ingest::SourceMeta {
+            source_type: row.get(4)?,
+            data_cutoff: row.get(5)?,
+            authority_tier: row.get(6)?,
+            tags: serde_json::from_str(&row.get::<_, String>(7)?)
+                .expect("tags column is a JSON array"),
+        },
+    })
+}
+
 /// One persisted claim with its full lineage, in dump form
 /// (`p_embedded_store`): claims serialize losslessly, so dump-then-recreate
 /// reproduces the graph exactly.
@@ -137,24 +156,26 @@ impl SqliteStore {
             )
             .expect("episodes query prepares");
         let rows = stmt
-            .query_map([], |row| {
-                let locator_kind: String = row.get(2)?;
-                let locator: Option<String> = row.get(3)?;
-                Ok(EpisodeRecord {
-                    id: row.get(0)?,
-                    text: row.get(1)?,
-                    locator: Locator::from_parts(&locator_kind, locator),
-                    source: crate::ingest::SourceMeta {
-                        source_type: row.get(4)?,
-                        data_cutoff: row.get(5)?,
-                        authority_tier: row.get(6)?,
-                        tags: serde_json::from_str(&row.get::<_, String>(7)?)
-                            .expect("tags column is a JSON array"),
-                    },
-                })
-            })
+            .query_map([], episode_from_row)
             .expect("episodes query maps");
         rows.map(|r| r.expect("episode row decodes")).collect()
+    }
+
+    /// One persisted episode by stable id, or `None` when absent. Used by
+    /// the ingest boundary to distinguish an unchanged re-submission from
+    /// a mutated one (`ic_mutated_resubmit` vs `ic_idempotent`).
+    pub fn get_episode(&self, id: &str) -> Option<EpisodeRecord> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, text, locator_kind, locator, source_type, data_cutoff,
+                        authority_tier, tags FROM episodes WHERE id = ?1",
+            )
+            .expect("episode query prepares");
+        let mut rows = stmt
+            .query_map([id], episode_from_row)
+            .expect("episode query maps");
+        rows.next().map(|r| r.expect("episode row decodes"))
     }
 
     /// Persisted episode ids — the persisted-episode set for the lineage

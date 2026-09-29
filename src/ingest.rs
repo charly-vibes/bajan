@@ -78,7 +78,9 @@ pub struct EpisodeRecord {
 }
 
 /// Machine-readable rejection reason (`ic_outcome_schema`): why a record
-/// was refused at the ingest boundary. Stable snake_case codes.
+/// was refused at the ingest boundary. Stable snake_case codes. The
+/// conflict/duplicate pair (`ic_mutated_resubmit`, `ic_batch_duplicate`)
+/// arrived with the resubmission-policy decisions (bajan-6sw).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RejectReason {
@@ -88,6 +90,14 @@ pub enum RejectReason {
     MissingText,
     /// Required source metadata missing (`ic_malformed`).
     MissingMetadata,
+    /// A stable id already persisted was re-submitted with mutated text,
+    /// locator, or source metadata (`ic_mutated_resubmit`) — the persisted
+    /// episode is never updated in place.
+    Conflict,
+    /// A later occurrence of a stable id within the same submitted stream
+    /// (`ic_batch_duplicate`) — first occurrence wins, later ones are
+    /// rejected per record.
+    Duplicate,
 }
 
 impl RejectReason {
@@ -97,6 +107,8 @@ impl RejectReason {
             RejectReason::MissingId => "missing_id",
             RejectReason::MissingText => "missing_text",
             RejectReason::MissingMetadata => "missing_metadata",
+            RejectReason::Conflict => "conflict",
+            RejectReason::Duplicate => "duplicate",
         }
     }
 }
@@ -152,11 +164,50 @@ pub fn persist(
     let inserted = db
         .insert_episode(&canonical)
         .map_err(|e| BajanError::Store(e.to_string()))?;
-    Ok(if inserted {
-        IngestOutcome::Persisted
+    if inserted {
+        return Ok(IngestOutcome::Persisted);
+    }
+    // ic_mutated_resubmit vs ic_idempotent: the id already exists — compare
+    // the submitted record against the persisted row verbatim. Unchanged →
+    // `already_persisted`; any difference in text, locator, or source
+    // metadata → rejected with the machine-readable `conflict` reason. The
+    // persisted episode is never updated in place and never duplicated.
+    let persisted = db
+        .get_episode(&canonical.id)
+        .ok_or_else(|| BajanError::Store("insert ignored but episode missing".to_string()))?;
+    if persisted == canonical {
+        Ok(IngestOutcome::AlreadyPersisted)
     } else {
-        IngestOutcome::AlreadyPersisted
-    })
+        Ok(IngestOutcome::Rejected {
+            reason: RejectReason::Conflict,
+        })
+    }
+}
+
+/// Ingest a whole submitted stream (`ic_batch_duplicate`): per-record
+/// outcomes in submission order; the first occurrence of a stable id goes
+/// through the normal acceptance path and every later occurrence of that
+/// id in the same stream is rejected with the machine-readable `duplicate`
+/// reason — rejection is per record and never extends to other episodes
+/// in the batch.
+pub fn persist_stream(
+    db: &crate::store::sqlite::SqliteStore,
+    records: &[EpisodeRecord],
+) -> Vec<Result<IngestOutcome, BajanError>> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    records
+        .iter()
+        .map(|record| {
+            // Same NFC-normalized id as `persist`'s identity decision.
+            let normalized_id: String = record.id.nfc().collect();
+            if !seen.insert(normalized_id) {
+                return Ok(IngestOutcome::Rejected {
+                    reason: RejectReason::Duplicate,
+                });
+            }
+            persist(db, record)
+        })
+        .collect()
 }
 
 /// Read back the full persisted episode stream (`gm_embedded_store`:

@@ -314,10 +314,12 @@ fn ingest_with(db: &crate::store::sqlite::SqliteStore, stream: &str) -> serde_js
             );
         }
     };
+    let results = ingest::persist_stream(db, &records);
     let outcomes: Vec<serde_json::Value> = records
         .iter()
-        .map(|record| {
-            let outcome = match ingest::persist(db, record) {
+        .zip(results)
+        .map(|(record, result)| {
+            let outcome = match result {
                 Ok(outcome) => serde_json::to_value(outcome).expect("ingest outcome serializes"),
                 Err(err) => {
                     serde_json::json!({ "outcome": "store_error", "message": err.to_string() })
@@ -613,6 +615,34 @@ mod tests {
         let v = query_with(&db, "parser", 1);
         assert_eq!(v["data"]["status"], "budget-exhausted");
         assert_eq!(v["data"]["hits"].as_array().map(Vec::len), Some(1));
+    }
+
+    // ic_batch_duplicate: within one stream the first occurrence persists,
+    // later ones are rejected with the machine-readable duplicate reason.
+    #[test]
+    fn ingest_reports_duplicate_reason_for_intra_batch_repeats() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        let record = serde_json::to_value(seed_episode()).expect("seed serializes");
+        let stream = serde_json::to_string(&[record.clone(), record]).expect("stream serializes");
+        let v = ingest_with(&db, &stream);
+        assert_eq!(v["ok"].as_bool(), Some(true));
+        let outcomes = v["data"]["outcomes"].as_array().expect("outcomes array");
+        assert_eq!(outcomes.len(), 2, "one outcome per submitted episode");
+        assert_eq!(outcomes[0]["outcome"]["outcome"], "persisted");
+        assert_eq!(outcomes[1]["outcome"]["outcome"], "rejected");
+        assert_eq!(outcomes[1]["outcome"]["reason"], "duplicate");
+        assert_eq!(db.episodes().len(), 1);
+    }
+
+    // ic_empty_stream: a zero-episode stream is a valid no-op, never an
+    // error — ok envelope, zero outcome records, unchanged graph.
+    #[test]
+    fn empty_stream_is_a_valid_noop() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        let v = ingest_with(&db, "[]");
+        assert_eq!(v["ok"].as_bool(), Some(true));
+        assert_eq!(v["data"]["outcomes"].as_array().map(Vec::len), Some(0));
+        assert_eq!(db.episodes().len(), 0);
     }
 
     #[test]

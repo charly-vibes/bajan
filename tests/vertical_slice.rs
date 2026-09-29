@@ -8,7 +8,7 @@
 //! p_malformed, p_idempotent, p_bounded_traversal, p_lineage_traceable,
 //! p_readonly); written red before the implementation.
 
-use bajan::ingest::{self, EpisodeRecord, IngestOutcome, Locator, SourceMeta};
+use bajan::ingest::{self, EpisodeRecord, IngestOutcome, Locator, RejectReason, SourceMeta};
 use bajan::query::{self, BudgetStatus};
 use bajan::store::sqlite::SqliteStore;
 use bajan::store::{ClaimNode, ClaimStatus, Evidence, Lineage};
@@ -161,15 +161,193 @@ fn reingest_is_idempotent_and_never_duplicates() {
         ingest::persist(&db, &good),
         Ok(IngestOutcome::Persisted)
     ));
-    // Same id, mutated text: still exactly one episode — the re-submission
-    // is refused as already persisted, never duplicating or mutating.
+    // ic_mutated_resubmit: same id, mutated text → rejected with a
+    // machine-readable conflict reason — never updated in place, never
+    // duplicated (updating would orphan claims whose lineage text no
+    // longer matches).
     let mutated = episode("ep-ok", "mutated text");
     assert!(matches!(
         ingest::persist(&db, &mutated),
-        Ok(IngestOutcome::AlreadyPersisted)
+        Ok(IngestOutcome::Rejected {
+            reason: RejectReason::Conflict,
+        })
     ));
     assert_eq!(db.episodes().len(), 1);
     assert_eq!(db.episodes()[0].text, "Cache hits are cheap.");
+    // ic_idempotent: an *unchanged* re-submission is still already_persisted.
+    assert!(matches!(
+        ingest::persist(&db, &good),
+        Ok(IngestOutcome::AlreadyPersisted)
+    ));
+    assert_eq!(db.episodes().len(), 1);
+}
+
+// ---- ic_mutated_resubmit (p_mutated_resubmit): every mutation class —
+// altered text, altered locator, altered metadata — is rejected with the
+// conflict reason; the graph before and after is identical. ----
+
+#[test]
+fn mutated_resubmissions_are_rejected_with_conflict() {
+    let db = SqliteStore::open_in_memory().expect("open");
+    let original = episode("ep-ok", "Cache hits are cheap.");
+    assert!(matches!(
+        ingest::persist(&db, &original),
+        Ok(IngestOutcome::Persisted)
+    ));
+
+    // Altered text.
+    let altered_text = episode("ep-ok", "mutated text");
+    assert!(matches!(
+        ingest::persist(&db, &altered_text),
+        Ok(IngestOutcome::Rejected {
+            reason: RejectReason::Conflict,
+        })
+    ));
+    // Altered locator.
+    let mut altered_locator = episode("ep-ok", "Cache hits are cheap.");
+    altered_locator.locator = Locator::Span("heading:Other".into());
+    assert!(matches!(
+        ingest::persist(&db, &altered_locator),
+        Ok(IngestOutcome::Rejected {
+            reason: RejectReason::Conflict,
+        })
+    ));
+    // Altered source metadata.
+    let mut altered_meta = episode("ep-ok", "Cache hits are cheap.");
+    altered_meta.source.authority_tier = 3;
+    assert!(matches!(
+        ingest::persist(&db, &altered_meta),
+        Ok(IngestOutcome::Rejected {
+            reason: RejectReason::Conflict,
+        })
+    ));
+
+    // The graph is unchanged and never duplicated through all rejections.
+    assert_eq!(db.episodes().len(), 1);
+    assert_eq!(db.episodes()[0], original);
+}
+
+// ---- ic_batch_duplicate (p_batch_duplicate): within one submitted
+// stream, the first occurrence of a stable id persists and every later
+// occurrence is rejected with a duplicate reason — per record, never
+// extending to other episodes in the batch. ----
+
+#[test]
+fn intra_batch_duplicate_is_first_wins() {
+    let db = SqliteStore::open_in_memory().expect("open");
+    let first = episode("ep-dup", "first payload");
+    let second = episode("ep-dup", "second payload differs");
+    let other = episode("ep-other", "An unaffected episode.");
+    let results = ingest::persist_stream(&db, &[first, second, other]);
+    assert!(matches!(results[0], Ok(IngestOutcome::Persisted),));
+    assert!(matches!(
+        results[1],
+        Ok(IngestOutcome::Rejected {
+            reason: RejectReason::Duplicate,
+        }),
+    ));
+    assert!(matches!(results[2], Ok(IngestOutcome::Persisted),));
+    // Exactly the first payload persisted; the second never overwrote it.
+    assert_eq!(db.episodes().len(), 2);
+    let persisted = db.get_episode("ep-dup").expect("ep-dup persisted");
+    assert_eq!(persisted.text, "first payload");
+}
+
+// ---- ic_corrected_resubmit (p_corrected_resubmit): a rejected id may be
+// re-submitted corrected; it persists through the normal acceptance path
+// exactly once. ----
+
+#[test]
+fn corrected_resubmission_persists_through_normal_path() {
+    let db = SqliteStore::open_in_memory().expect("open");
+    let malformed = episode("ep-fix", "   ");
+    assert!(matches!(
+        ingest::persist(&db, &malformed),
+        Ok(IngestOutcome::Rejected {
+            reason: RejectReason::MissingText,
+        })
+    ));
+    assert_eq!(db.episodes().len(), 0, "rejected never persisted");
+
+    let corrected = episode("ep-fix", "Cache hits are cheap.");
+    assert!(matches!(
+        ingest::persist(&db, &corrected),
+        Ok(IngestOutcome::Persisted)
+    ));
+    assert_eq!(db.episodes().len(), 1, "persists exactly once");
+}
+
+// ---- ic_order_insensitive (p_order_insensitive): any episode order of
+// the same stream yields an identical graph, fresh and as re-ingest. ----
+
+/// Fisher-Yates over a xorshift64* PRNG — dependency-free deterministic
+/// shuffle seeded by the proptest-generated `seed`.
+fn shuffle_with_seed(records: &mut [EpisodeRecord], seed: u64) {
+    let mut state = seed | 1;
+    let mut next = move || {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    };
+    for i in (1..records.len()).rev() {
+        let j = (next() % (i as u64 + 1)) as usize;
+        records.swap(i, j);
+    }
+}
+
+/// The graph content without insertion-order claim keys: (node, lineage)
+/// pairs sorted — key numbering is an implementation detail of row order.
+fn claims_multiset(db: &SqliteStore) -> Vec<(bajan::store::ClaimNode, Vec<bajan::store::Lineage>)> {
+    let mut claims: Vec<_> = db
+        .claims_with_lineage()
+        .into_iter()
+        .map(|(_, node, lineage)| (node, lineage))
+        .collect();
+    // ClaimNode/Lineage derive Eq but not Ord; the deterministic JSON form
+    // is a total order (struct field order is fixed by the schema).
+    claims.sort_by_key(|pair| serde_json::to_string(pair).expect("claim serializes"));
+    claims
+}
+
+proptest! {
+    #[test]
+    fn order_insensitive_ingest_yields_identical_graph(
+        n in 1usize..6,
+        seed in proptest::num::u64::ANY,
+    ) {
+        // Distinct ids: intra-batch first-wins would make "identical graph"
+        // ill-defined across orders when payloads differ.
+        let records: Vec<EpisodeRecord> = (0..n)
+            .map(|i| episode(&format!("ep-{i:03}"), &format!("Episode number {i} recorded verbatim.")))
+            .collect();
+        let mut shuffled = records.clone();
+        shuffle_with_seed(&mut shuffled, seed);
+
+        let a = SqliteStore::open_in_memory().expect("open a");
+        let b = SqliteStore::open_in_memory().expect("open b");
+        for record in &records {
+            ingest::persist(&a, record).expect("persist a");
+        }
+        for record in &shuffled {
+            ingest::persist(&b, record).expect("persist b");
+        }
+        // Re-ingest the shuffled stream over the already-ingested store.
+        for record in &shuffled {
+            ingest::persist(&a, record).expect("re-ingest a");
+        }
+
+        bajan::extract::run_extract(&a, "0.1.0").expect("extract a");
+        bajan::extract::run_extract(&b, "0.1.0").expect("extract b");
+
+        prop_assert_eq!(a.episodes(), b.episodes());
+        prop_assert_eq!(claims_multiset(&a), claims_multiset(&b));
+        let mut extracted_a = a.dump_extraction_output().extracted;
+        let mut extracted_b = b.dump_extraction_output().extracted;
+        extracted_a.sort();
+        extracted_b.sort();
+        prop_assert_eq!(extracted_a, extracted_b);
+    }
 }
 
 // ---- extract: the thin deterministic proposer feeds the typed gate ----
