@@ -7,7 +7,7 @@
 //! implementation tickets.
 
 use crate::cli::BajanError;
-use crate::store::Evidence;
+use crate::store::{ClaimNode, Evidence, Lineage};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
@@ -100,9 +100,78 @@ impl ExtractionRunStore {
     }
 }
 
-/// Run extraction over persisted episodes.
+/// The vertical-slice extractor report: one deterministic single-call
+/// pass over pending episodes (`ex_single_call`), one candidate per
+/// episode, typed at the door by the gate (`ex_typed_gate`), cached per
+/// (episode id, extractor version), zero-candidate episodes legitimately
+/// cached as empty (absence of claims is data, not failure).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExtractReport {
+    pub episodes_processed: usize,
+    pub candidates_proposed: usize,
+    pub gate_rejected: usize,
+}
+
+/// Run the deterministic extraction pass over every persisted episode
+/// without extraction output cached at `extractor_version`.
 ///
-/// Scaffold: always `NotImplemented`.
+/// Each pending episode yields one candidate: the whole episode text as
+/// the claim text with a verbatim-span evidence (locator from the episode
+/// record when derivable, typed absent marker otherwise). Candidates pass
+/// through the same typed gate + hedge-anchor persistence checks as any
+/// future LLM extractor — the proposer differs, the contract does not.
+/// Episodes are cached as extracted even when the gate refuses everything
+/// (absence of claims is data, not failure).
+pub fn run_extract(
+    db: &crate::store::sqlite::SqliteStore,
+    extractor_version: &str,
+) -> Result<ExtractReport, BajanError> {
+    let pending = db.pending_episodes(extractor_version);
+    let mut report = ExtractReport {
+        episodes_processed: pending.len(),
+        candidates_proposed: 0,
+        gate_rejected: 0,
+    };
+    for episode in &pending {
+        let evidence = match &episode.locator {
+            crate::ingest::Locator::Span(locator) => Evidence::Span {
+                text: episode.text.clone(),
+                locator: locator.clone(),
+            },
+            crate::ingest::Locator::Absent => Evidence::Unknown,
+        };
+        let candidate = ClaimNode {
+            text: episode.text.clone(),
+            valid_at: None,
+            invalid_at: None,
+            data_cutoff: episode.source.data_cutoff.clone(),
+            status: crate::store::ClaimStatus::Staged,
+            // The slice scope: the episode's own workspace tags projected
+            // onto the proposed claim (ex_tag_inheritance refines later;
+            // untagged episodes stay unscoped rather than invented).
+            scope: episode
+                .source
+                .tags
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "workspace:unscoped".into()),
+            source_type: episode.source.source_type.clone(),
+            evidence,
+        };
+        let lineage = Lineage {
+            episode_id: episode.id.clone(),
+            extractor_version: extractor_version.to_string(),
+        };
+        match db.insert_claim(&candidate, &[lineage], &episode.text) {
+            Ok(_key) => report.candidates_proposed += 1,
+            Err(_) => report.gate_rejected += 1,
+        }
+        db.mark_extracted(&episode.id, extractor_version);
+    }
+    Ok(report)
+}
+
+/// Scaffold stub: the CLI seam for extraction remains `NotImplemented`.
 pub fn run() -> Result<(), BajanError> {
     Err(BajanError::NotImplemented {
         module: "extract",

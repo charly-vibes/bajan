@@ -69,6 +69,9 @@ pub enum BajanError {
         module: &'static str,
         spec: &'static str,
     },
+
+    #[error("{0}")]
+    Store(String),
 }
 
 /// Version metadata carried in the `version` envelope's `data`.
@@ -121,22 +124,33 @@ fn stub_envelope(result: &Result<(), BajanError>) -> serde_json::Value {
         Ok(()) => unreachable!("scaffold stubs always fail; wire success only when implemented"),
         Err(e) => e,
     };
-    let (module, spec) = match err {
-        BajanError::NotImplemented { module, spec } => (*module, *spec),
-    };
-    spec_error_envelope(
-        "not_implemented",
-        &format!("{module} is not implemented in this scaffold"),
-        Some(spec),
-        module,
-        vec![RemediationEntry {
-            command: format!("cat {spec}"),
-            description: format!(
-                "Read the governing spec for {module}; implementation arrives via the \
-                 gated beads tickets (`bd ready`)."
-            ),
-        }],
-    )
+    match err {
+        BajanError::NotImplemented { module, spec } => spec_error_envelope(
+            "not_implemented",
+            &format!("{module} is not implemented in this scaffold"),
+            Some(spec),
+            module,
+            vec![RemediationEntry {
+                command: format!("cat {spec}"),
+                description: format!(
+                    "Read the governing spec for {module}; implementation arrives via the \
+                     gated beads tickets (`bd ready`)."
+                ),
+            }],
+        ),
+        BajanError::Store(message) => spec_error_envelope(
+            "store_error",
+            message,
+            Some("specs/graph-model.md"),
+            "store",
+            vec![RemediationEntry {
+                command: "bajan --help".into(),
+                description: "The embedded store failed; check the database path and \
+                              permissions (gm_embedded_store)."
+                    .into(),
+            }],
+        ),
+    }
 }
 
 /// Envelope for the human adopt path (`gm_human_adopt`).
@@ -399,7 +413,7 @@ mod tests {
             (Command::Ingest, "specs/ingestion-contract.md"),
             (Command::Extract, "specs/extraction-claims.md"),
             (Command::Resolve, "specs/extraction-claims.md"),
-            (Command::Query, "specs/graph-model.md"),
+            (Command::Query, "specs/query-tools.md"),
         ];
         for (command, spec) in cases {
             let v = envelope_of(command);
