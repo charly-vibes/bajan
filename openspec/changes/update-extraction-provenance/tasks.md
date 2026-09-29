@@ -67,13 +67,20 @@ deriving property land in the same commit so `spk lint`, `ah check`, and
 
 ## 4. Supersession (re-extraction safety)
 
-- [ ] 4.1 Write failing property test: version-bump re-extract supersedes
+- [x] 4.1 Write failing property test: version-bump re-extract supersedes
       only that episode's `proposed` claims from prior versions; active and
       rejected claims unchanged; lineage/evidence survive tombstoning — red
-- [ ] 4.2 Implement supersession on the re-extract path (reject with
+      (755aa7d)
+- [x] 4.2 Implement supersession on the re-extract path (reject with
       reason `superseded-by-reextraction`, keep lineage); route
       active-claim conflicts through the existing invalidation-proposal
-      mechanism — green
+      mechanism — green: `ClaimStore::supersede_prior_versions` over
+      `Lineage` provenance (episode id + extractor version, parallel to
+      the closed node schema), `SupersessionRecord` tombstones with
+      `Reason::SupersededByReextraction` (`superseded_by_reextraction`),
+      `stage_invalidation_proposal`/`InvalidationProposal` for
+      `ex_mutation_proposal`; same-version re-ingest and repeat bumps
+      resurrect nothing (no duplicate tombstones)
 
 ## 5. Run records + reasons
 
