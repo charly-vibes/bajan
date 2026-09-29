@@ -200,13 +200,42 @@ pub enum StoreError {
          (see {spec}, gm_hedge_anchor)"
     )]
     HedgeMarkerDropped { markers: Vec<String>, spec: &'static str },
+
+    #[error("no claim node keyed {claim_key} in this store")]
+    ClaimNotFound { claim_key: usize },
+
+    #[error(
+        "claim {claim_key} is in status {current:?}; adopt moves proposed/staged claims only \
+         (see {spec}, gm_human_adopt)"
+    )]
+    AdoptRefused {
+        claim_key: usize,
+        current: ClaimStatus,
+        spec: &'static str,
+    },
+}
+
+/// Audit record for one human accept action (`gm_human_adopt`): exactly
+/// one per adopted claim, carrying the operator identity and timestamp.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditRecord {
+    pub claim_key: usize,
+    pub actor: String,
+    pub adopted_at: u64,
 }
 
 /// The claim-graph store: persists claim nodes, enforcing hedge-marker
-/// preservation at span persistence (`gm_hedge_anchor`).
+/// preservation at span persistence (`gm_hedge_anchor`) and human-only
+/// adoption (`gm_human_adopt`).
+///
+/// Status discipline: `adopt`/`adopt_batch` are the *only* public API that
+/// sets `ClaimStatus::Active` — every future automated path (supersession,
+/// reflection, re-ingest) must leave `active` unreachable, making the
+/// refusal structural rather than a convention.
 #[derive(Debug, Default, Clone)]
 pub struct ClaimStore {
     nodes: Vec<ClaimNode>,
+    audits: Vec<AuditRecord>,
 }
 
 impl ClaimStore {
@@ -229,6 +258,60 @@ impl ClaimStore {
 
     pub fn nodes(&self) -> &[ClaimNode] {
         &self.nodes
+    }
+
+    /// Audit trail of human accept actions, one record per adopted claim
+    /// (`gm_human_adopt`).
+    pub fn audit(&self) -> &[AuditRecord] {
+        &self.audits
+    }
+
+    /// Explicit human accept action: the sole path from `proposed`/`staged`
+    /// to `active` (`gm_human_adopt`). Writes exactly one audit record for
+    /// the adopted claim. Non-staged claims are refused — `active` and
+    /// `rejected` claims are never touched (per-claim reversibility; no
+    /// resurrection from `rejected`).
+    pub fn adopt(
+        &mut self,
+        claim_key: usize,
+        actor: &str,
+        adopted_at: u64,
+    ) -> Result<AuditRecord, StoreError> {
+        let node = self
+            .nodes
+            .get_mut(claim_key)
+            .ok_or(StoreError::ClaimNotFound { claim_key })?;
+        if node.status != ClaimStatus::Staged {
+            return Err(StoreError::AdoptRefused {
+                claim_key,
+                current: node.status,
+                spec: SPEC,
+            });
+        }
+        node.status = ClaimStatus::Active;
+        let record = AuditRecord {
+            claim_key,
+            actor: actor.to_string(),
+            adopted_at,
+        };
+        self.audits.push(record.clone());
+        Ok(record)
+    }
+
+    /// Batch accept of multiple claims in one session (`gm_human_adopt`):
+    /// a loop over `adopt`, so each claim is individually audited and
+    /// individually reversible. Not transactional — a refusal aborts the
+    /// batch with earlier adoptions standing, each already audited.
+    pub fn adopt_batch(
+        &mut self,
+        claim_keys: &[usize],
+        actor: &str,
+        adopted_at: u64,
+    ) -> Result<Vec<AuditRecord>, StoreError> {
+        claim_keys
+            .iter()
+            .map(|&key| self.adopt(key, actor, adopted_at))
+            .collect()
     }
 }
 

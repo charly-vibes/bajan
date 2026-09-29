@@ -14,6 +14,7 @@ use crate::extract;
 use crate::ingest;
 use crate::query;
 use crate::resolve;
+use crate::store::{ClaimStore, StoreError};
 
 /// Top-level CLI: `bajan [--json] <subcommand>`.
 #[derive(Debug, Parser)]
@@ -43,6 +44,15 @@ pub enum Command {
     Resolve,
     /// Read-side queries over the claim graph (stub).
     Query,
+    /// Human accept action: move staged claims to active (one audit record
+    /// per claim).
+    Adopt {
+        /// Claim keys to accept (batch permitted, per-claim audited).
+        claims: Vec<usize>,
+        /// Operator identity; defaults to $USER.
+        #[arg(long)]
+        actor: Option<String>,
+    },
 }
 
 /// Error type shared by all bajan pipeline modules.
@@ -118,6 +128,57 @@ fn stub_envelope(result: &Result<(), BajanError>) -> Envelope<ErrorResult> {
     Envelope::error(env!("CARGO_PKG_VERSION"), error, vec![])
 }
 
+/// Envelope for the human adopt path (`gm_human_adopt`).
+///
+/// Success data carries the per-claim audit records; refusal, unknown
+/// claim keys, or an empty session store emit a spec-traced error envelope
+/// citing specs/graph-model.md.
+fn adopt_envelope(store: &mut ClaimStore, claims: &[usize], actor: Option<&str>) -> serde_json::Value {
+    let actor = actor
+        .map(str::to_string)
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+
+    match store.adopt_batch(claims, &actor, now) {
+        Ok(audits) => serde_json::to_value(Envelope::success(
+            env!("CARGO_PKG_VERSION"),
+            EnvelopeKind::Ok,
+            audits,
+            vec![],
+            vec![],
+        ))
+        .expect("envelope serialization cannot fail"),
+        Err(err) => adopt_error_envelope(&err),
+    }
+}
+
+/// Error envelope for a refused adoption — remediation non-empty by
+/// construction (Invariant 3.2.5).
+fn adopt_error_envelope(err: &StoreError) -> serde_json::Value {
+    let error = ErrorResult::new(
+        "adopt_refused",
+        &err.to_string(),
+        None,
+        Some("specs/graph-model.md"),
+        Some("adopt"),
+        vec![],
+        vec![RemediationEntry {
+            command: "bajan adopt <claims>... --actor <id>".into(),
+            description:
+                "Adopt accepts staged (proposed) claims only; active and rejected claims are \
+                 never touched, and no automated path can set active (gm_human_adopt)."
+                    .into(),
+        }],
+    )
+    .expect("remediation is non-empty by construction (Invariant 3.2.5)");
+    serde_json::to_value(Envelope::error(env!("CARGO_PKG_VERSION"), error, vec![]))
+        .expect("envelope serialization cannot fail")
+}
+
 /// Run a command and return its suite envelope as JSON.
 ///
 /// This is the single serialization point: every command's output passes
@@ -134,6 +195,13 @@ pub fn run(command: Command) -> String {
             .expect("envelope serialization cannot fail"),
         Command::Query => serde_json::to_value(stub_envelope(&query::run()))
             .expect("envelope serialization cannot fail"),
+        Command::Adopt { claims, actor } => {
+            // Session-scoped store: no persistence engine yet (vertical-slice
+            // ticket wires SQLite), so the CLI adopt path is honest about an
+            // empty store — refusal, never fake success.
+            let mut store = ClaimStore::default();
+            adopt_envelope(&mut store, claims, actor.as_deref())
+        }
     };
     serde_json::to_string(&value).expect("envelope serialization cannot fail")
 }
@@ -201,17 +269,49 @@ mod tests {
     }
 
     #[test]
-    #[test]
-    fn adopt_subcommand_parses_and_emits_ok_envelope() {
+    fn adopt_subcommand_parses() {
         let cli = Cli::try_parse_from(["bajan", "adopt", "0", "--actor", "sasha"])
             .expect("adopt parses");
         assert!(matches!(cli.command, Command::Adopt { .. }));
-        // Meter: `bajan adopt ... --json` emits ok:true (3.2 green).
+    }
+
+    #[test]
+    fn adopt_envelope_is_ok_for_seeded_store() {
+        // Meter (3.2): adopt emits ok:true once the store holds the claim.
+        let mut store = ClaimStore::default();
+        store
+            .insert(
+                crate::store::ClaimNode {
+                    status: crate::store::ClaimStatus::Staged,
+                    ..crate::store::ClaimNode {
+                        text: "t".into(),
+                        valid_at: None,
+                        invalid_at: None,
+                        data_cutoff: None,
+                        status: crate::store::ClaimStatus::Staged,
+                        scope: "s".into(),
+                        source_type: "episode".into(),
+                        evidence: crate::store::Evidence::Unknown,
+                    }
+                },
+                "e",
+            )
+            .unwrap();
+        let v =
+            serde_json::to_value(adopt_envelope(&mut store, &[0], Some("sasha"))).unwrap();
+        assert_eq!(v["ok"].as_bool(), Some(true), "adopt emits ok envelope");
+    }
+
+    #[test]
+    fn adopt_cli_on_empty_store_is_honest_error() {
+        // No persistence engine yet: a session store holds nothing, so the
+        // CLI adopt path must emit a spec-traced error, never fake success.
         let v = envelope_of(Command::Adopt {
             claims: vec![0],
             actor: Some("sasha".into()),
         });
-        assert_eq!(v["ok"].as_bool(), Some(true), "adopt emits ok envelope");
+        assert_eq!(v["ok"].as_bool(), Some(false));
+        assert_eq!(v["data"]["spec_ref"], "specs/graph-model.md");
     }
 
     #[test]
