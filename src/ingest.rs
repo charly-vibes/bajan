@@ -165,31 +165,9 @@ pub fn dump_stream(db: &crate::store::sqlite::SqliteStore) -> Vec<EpisodeRecord>
     db.episodes()
 }
 
-/// Run the ingest pipeline: persist a normalized episode stream verbatim.
-///
-/// Scaffold: the stream source (stdin/file) arrives with CLI wiring; the
-/// pipeline seam stays `NotImplemented` until then.
-pub fn run() -> Result<(), BajanError> {
-    Err(BajanError::NotImplemented {
-        module: "ingest",
-        spec: SPEC,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stub_returns_not_implemented() {
-        assert!(matches!(
-            run(),
-            Err(BajanError::NotImplemented {
-                module: "ingest",
-                ..
-            })
-        ));
-    }
 
     // ic_outcome_schema: reasons are machine-readable snake_case codes.
     #[test]

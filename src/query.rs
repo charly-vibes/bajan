@@ -116,31 +116,9 @@ pub fn search(
 #[error("query failed: {0}")]
 pub struct BajanQueryError(pub String);
 
-/// Run a read-side query over the claim graph.
-///
-/// Scaffold: the query command surface (pattern, budget args) arrives with
-/// CLI wiring; the module seam stays `NotImplemented` until then.
-pub fn run() -> Result<(), crate::cli::BajanError> {
-    Err(crate::cli::BajanError::NotImplemented {
-        module: "query",
-        spec: SPEC,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stub_returns_not_implemented() {
-        assert!(matches!(
-            run(),
-            Err(crate::cli::BajanError::NotImplemented {
-                module: "query",
-                ..
-            })
-        ));
-    }
 
     // qt_query-schema: the budget-status vocabulary is exactly the two
     // published variants — complete and budget-exhausted.

@@ -103,11 +103,14 @@ fn version_envelope() -> Envelope<VersionData> {
         VersionData {
             name: "bajan",
             version: env!("CARGO_PKG_VERSION"),
-            status: "scaffold",
+            status: "vertical-slice",
             specs: vec![
                 "specs/ingestion-contract.md",
                 "specs/extraction-claims.md",
                 "specs/graph-model.md",
+                "specs/query-tools.md",
+                "specs/entity-review.md",
+                "specs/eval-claims.md",
             ],
         },
         vec![],
@@ -361,7 +364,7 @@ fn extract_with(db: &crate::store::sqlite::SqliteStore) -> serde_json::Value {
     }
 }
 
-/// Run the first read query and emit the result record (qt_query-schema: and emit the result record (qt_query-schema:
+/// Run the first read query and emit the result record (qt_query-schema:
 /// budget-status vocabulary complete/budget-exhausted, hits carry status
 /// verbatim and their persisted-episode lineage).
 fn query_envelope(db_path: &str, pattern: &str, budget: usize) -> serde_json::Value {
@@ -588,14 +591,27 @@ mod tests {
         assert_eq!(result["data"]["hits"][0]["episodes"][0], "ep-seed");
     }
 
-    // qt_bounded_traversal: a truncated CLI search reports budget-exhausted.
+    // qt_bounded_traversal: a truncated CLI search reports budget-exhausted —
+    // two matching claims seeded, budget 1: the walk must stop early and say
+    // so rather than report a silently partial `complete`.
     #[test]
     fn query_envelope_reports_budget_exhaustion_honestly() {
         let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
         ingest_with(&db, &stream_json());
         extract_with(&db);
+        // A second matching claim so the budget (1) stops the walk with
+        // claims remaining — the precondition `budget-exhausted` exists to
+        // report.
+        let (mut node, lineage) = staged_seed_node();
+        node.text = "The parser resolves spans predictably.".into();
+        db.insert_claim(&node, &[lineage], "ep-seed-2").unwrap();
+        db.insert_episode(&EpisodeRecord {
+            id: "ep-seed-2".into(),
+            ..seed_episode()
+        })
+        .unwrap();
         let v = query_with(&db, "parser", 1);
-        assert_eq!(v["data"]["status"], "complete");
+        assert_eq!(v["data"]["status"], "budget-exhausted");
         assert_eq!(v["data"]["hits"].as_array().map(Vec::len), Some(1));
     }
 

@@ -177,14 +177,6 @@ pub fn run_extract(
     Ok(report)
 }
 
-/// Scaffold stub: the CLI seam for extraction remains `NotImplemented`.
-pub fn run() -> Result<(), BajanError> {
-    Err(BajanError::NotImplemented {
-        module: "extract",
-        spec: SPEC,
-    })
-}
-
 /// Typed-gate containment check (`ex_evidence_containment`): a candidate's
 /// span evidence is accepted only if it survives whitespace-collapsed
 /// containment against the episode text — all whitespace runs become a
@@ -234,17 +226,6 @@ pub fn reflection_flags(evidence: &Evidence) -> Vec<ReflectionFlag> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stub_returns_not_implemented() {
-        assert!(matches!(
-            run(),
-            Err(BajanError::NotImplemented {
-                module: "extract",
-                ..
-            })
-        ));
-    }
 
     // 5.1 — p_run_record: every extraction call writes exactly one run row
     // with episode id, extractor version, model id when present, timestamps,
