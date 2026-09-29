@@ -105,11 +105,11 @@ fn version_envelope() -> Envelope<VersionData> {
 fn spec_error_envelope(
     code: &str,
     message: &str,
-    spec: &str,
+    spec: Option<&str>,
     module: &str,
     remediation: Vec<RemediationEntry>,
 ) -> serde_json::Value {
-    let error = ErrorResult::new(code, message, None, Some(spec), Some(module), vec![], remediation)
+    let error = ErrorResult::new(code, message, None, spec, Some(module), vec![], remediation)
         .expect("remediation is non-empty by construction (Invariant 3.2.5)");
     serde_json::to_value(Envelope::error(env!("CARGO_PKG_VERSION"), error, vec![]))
         .expect("envelope serialization cannot fail")
@@ -127,7 +127,7 @@ fn stub_envelope(result: &Result<(), BajanError>) -> serde_json::Value {
     spec_error_envelope(
         "not_implemented",
         &format!("{module} is not implemented in this scaffold"),
-        spec,
+        Some(spec),
         module,
         vec![RemediationEntry {
             command: format!("cat {spec}"),
@@ -173,7 +173,7 @@ fn adopt_error_envelope(err: &StoreError) -> serde_json::Value {
     spec_error_envelope(
         "adopt_refused",
         &err.to_string(),
-        "specs/graph-model.md",
+        Some("specs/graph-model.md"),
         "adopt",
         vec![RemediationEntry {
             command: "bajan adopt <claims>... --actor <id>".into(),
@@ -215,6 +215,31 @@ pub fn exit_code(json: &str) -> i32 {
     let v: serde_json::Value =
         serde_json::from_str(json).expect("run() always emits valid JSON");
     if v["ok"].as_bool().unwrap_or(false) { 0 } else { 1 }
+}
+
+/// Envelope for clap parse failures (bajan-ts6): the envelope is the single
+/// output format, so a bad invocation must still emit ok:false JSON — never
+/// clap's plain-text usage error. `spec_ref` is `None`: argument errors are
+/// governed by the genesis envelope contract itself, not a pipeline spec.
+pub fn argument_error_envelope(err: &clap::Error) -> String {
+    let message = err
+        .to_string()
+        .lines()
+        .next()
+        .unwrap_or("argument error")
+        .trim_start_matches("error: ")
+        .to_string();
+    serde_json::to_string(&spec_error_envelope(
+        "argument_error",
+        &message,
+        None,
+        "cli",
+        vec![RemediationEntry {
+            command: "bajan --help".into(),
+            description: "Run with --help for the accepted subcommands and flags.".into(),
+        }],
+    ))
+    .expect("envelope serialization cannot fail")
 }
 
 /// Render an envelope JSON string as a short human-readable line.

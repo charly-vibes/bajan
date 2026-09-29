@@ -9,7 +9,25 @@ use bajan::cli::{self, Cli};
 use clap::Parser;
 
 fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            // Help/version output is not a failure: print clap's text and
+            // exit 0 — only real argument errors get the envelope treatment.
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) {
+                err.print().expect("help/version output prints");
+                std::process::exit(0);
+            }
+            // bajan-ts6: a bad invocation must still emit the suite envelope,
+            // never clap's plain-text usage — JSON on stdout, exit non-zero.
+            let json = cli::argument_error_envelope(&err);
+            println!("{json}");
+            std::process::exit(cli::exit_code(&json));
+        }
+    };
     let json = cli::run(cli.command);
     if cli.json {
         println!("{json}");
