@@ -29,6 +29,22 @@ fn stub_error_path_exits_non_zero() {
     assert_eq!(v["ok"].as_bool(), Some(false));
 }
 
+// bajan-ts6: a bad subcommand must still emit the suite envelope — no
+// plain-text clap usage error bypassing the single-output-format invariant.
+#[test]
+fn argument_error_emits_envelope() {
+    let (code, stdout) = bajan(&["nosuchcmd"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .expect("argument errors still emit a parseable envelope");
+    assert_eq!(v["envelope_version"].as_str(), Some("0.1"));
+    assert_eq!(v["ok"].as_bool(), Some(false));
+    assert_eq!(v["envelope_kind"].as_str(), Some("error"));
+    assert_eq!(v["data"]["code"].as_str(), Some("argument_error"));
+    let remediation = v["data"]["remediation"].as_array().expect("remediation");
+    assert!(!remediation.is_empty(), "Invariant 3.2.5");
+    assert_ne!(code, 0, "argument errors exit non-zero");
+}
+
 #[test]
 fn version_ok_path_exits_zero() {
     let (code, stdout) = bajan(&["version", "--json"]);
