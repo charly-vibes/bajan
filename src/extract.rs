@@ -7,6 +7,7 @@
 //! implementation tickets.
 
 use crate::cli::BajanError;
+use crate::store::Evidence;
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
@@ -107,6 +108,55 @@ pub fn run() -> Result<(), BajanError> {
         module: "extract",
         spec: SPEC,
     })
+}
+
+/// Typed-gate containment check (`ex_evidence_containment`): a candidate's
+/// span evidence is accepted only if it survives whitespace-collapsed
+/// containment against the episode text — all whitespace runs become a
+/// single space on both sides (exact containment is unimplementable over
+/// converter-extracted text). A failing span is rejected with reason
+/// `evidence_not_contained`, never repaired. The typed absent marker
+/// passes: alignment-failure episodes persist, flagged by the reflection
+/// pass — containment does not apply to absence.
+pub fn check_evidence_containment(
+    evidence: &Evidence,
+    episode_text: &str,
+) -> Result<(), Reason> {
+    match evidence {
+        Evidence::Span { text, .. } => {
+            let span_c = crate::store::collapse(text);
+            let episode_c = crate::store::collapse(episode_text);
+            if episode_c.contains(&span_c) {
+                Ok(())
+            } else {
+                Err(Reason::EvidenceNotContained)
+            }
+        }
+        Evidence::Unknown => Ok(()),
+    }
+}
+
+/// Deterministic reflection-pass flag (`ex_reflection`, extended by the
+/// evidence-containment decision): the single output of the pass is flags,
+/// so it can never reject, repair, or introduce claims — no second audit
+/// mechanism exists by construction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "flag", rename_all = "snake_case")]
+pub enum ReflectionFlag {
+    /// Evidence is the typed absent marker (sentence alignment failed):
+    /// actionable later, never a violation, never scheduled for
+    /// re-extraction by this pass.
+    UnknownEvidenceSpan,
+}
+
+/// Flag a candidate's evidence for the deterministic reflection pass.
+/// Real spans are never flagged here; the typed absent marker yields
+/// exactly one `UnknownEvidenceSpan` flag.
+pub fn reflection_flags(evidence: &Evidence) -> Vec<ReflectionFlag> {
+    match evidence {
+        Evidence::Span { .. } => Vec::new(),
+        Evidence::Unknown => vec![ReflectionFlag::UnknownEvidenceSpan],
+    }
 }
 
 #[cfg(test)]
@@ -248,7 +298,7 @@ mod tests {
 
             let flags = reflection_flags(&Evidence::Unknown);
             prop_assert_eq!(flags.len(), 1);
-            prop_assert_eq!(flags[0], ReflectionFlag::UnknownEvidenceSpan);
+            prop_assert_eq!(&flags[0], &ReflectionFlag::UnknownEvidenceSpan);
         }
     }
 

@@ -195,8 +195,10 @@ fn hedge_markers_in(text: &str) -> Vec<String> {
     found
 }
 
-/// Whitespace-collapsed form (the `ex_evidence_containment` normalization).
-fn collapse(text: &str) -> String {
+/// Whitespace-collapsed form (the `ex_evidence_containment` normalization:
+/// all whitespace runs become a single space). Shared by the typed gate
+/// (extract) and span persistence (`gm_hedge_anchor`).
+pub(crate) fn collapse(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
