@@ -55,8 +55,14 @@ Best practices the tool encodes (from the report):
   dropped on merge).
 
 ### Git Workflow
-- trunk-based; conventional commits; beads for task tracking; openspec for
-  proposals (`openspec/changes/`).
+- trunk-based; conventional commits; beads for task tracking; **specodelic
+  specs are the normative requirements format** (`specs/*.md`, one file =
+  one spec, four layers, `specodelic lint specs` must stay clean);
+  openspec (`openspec/changes/`) remains available for larger change
+  proposals when a spec needs a design doc alongside it.
+- Behavioral acceptance oracle: `docs/knowledge-assistant-ears-spec.md`
+  (the superseded system's defect classes); domain synthesis:
+  `knowledge-graphs-report.md`.
 
 ## Domain Context
 
