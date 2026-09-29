@@ -87,6 +87,15 @@ pub enum BajanError {
     Store(String),
 }
 
+/// Store errors surface as envelope-carried store failures (bajan-2sj):
+/// every `?` over a read/write path converts spec-traced store errors into
+/// the error type the CLI envelopes emit.
+impl From<crate::store::StoreError> for BajanError {
+    fn from(err: crate::store::StoreError) -> Self {
+        BajanError::Store(err.to_string())
+    }
+}
+
 /// Version metadata carried in the `version` envelope's `data`.
 #[derive(Debug, Serialize)]
 struct VersionData {
@@ -200,7 +209,13 @@ fn adopt_with(
     for &claim_key in claims {
         match db.adopt(claim_key, &actor, now) {
             Ok(()) => {
-                if let Some(record) = db.audit().iter().rev().find(|a| a.claim_key == claim_key) {
+                // Read the audit trail back (bajan-2sj: read failures emit
+                // the envelope, never a panic).
+                let trail = match db.audit() {
+                    Ok(trail) => trail,
+                    Err(err) => return adopt_read_error_envelope(&err),
+                };
+                if let Some(record) = trail.iter().rev().find(|a| a.claim_key == claim_key) {
                     audits.push(record.clone());
                 }
             }
@@ -215,6 +230,25 @@ fn adopt_with(
         vec![],
     ))
     .expect("envelope serialization cannot fail")
+}
+
+/// Error envelope for a store read failure during adopt (bajan-2sj): a
+/// corrupt store surfaces as `ok:false` with the governing spec — never a
+/// process panic.
+fn adopt_read_error_envelope(err: &StoreError) -> serde_json::Value {
+    spec_error_envelope(
+        "store_read_failed",
+        &err.to_string(),
+        Some(crate::store::sqlite::SPEC),
+        "adopt",
+        vec![RemediationEntry {
+            command: "bajan adopt <claims>... --actor <id>".into(),
+            description: "The store file failed a read; verify it is intact (specs/\
+                          graph-model.md) or rebuild it from the episode stream plus extraction \
+                          output (gm_embedded_store)."
+                .into(),
+        }],
+    )
 }
 
 /// Error envelope for a refused adoption — spec-traced via the shared
@@ -635,7 +669,7 @@ mod tests {
         assert_eq!(outcomes[0]["outcome"]["outcome"], "persisted");
         assert_eq!(outcomes[1]["outcome"]["outcome"], "rejected");
         assert_eq!(outcomes[1]["outcome"]["reason"], "duplicate");
-        assert_eq!(db.episodes().len(), 1);
+        assert_eq!(db.episodes().expect("episodes read").len(), 1);
     }
 
     // ic_empty_stream: a zero-episode stream is a valid no-op, never an
@@ -646,7 +680,7 @@ mod tests {
         let v = ingest_with(&db, "[]");
         assert_eq!(v["ok"].as_bool(), Some(true));
         assert_eq!(v["data"]["outcomes"].as_array().map(Vec::len), Some(0));
-        assert_eq!(db.episodes().len(), 0);
+        assert_eq!(db.episodes().expect("episodes read").len(), 0);
     }
 
     #[test]

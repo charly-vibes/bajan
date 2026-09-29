@@ -81,3 +81,40 @@ fn version_ok_path_exits_zero() {
     let v: serde_json::Value = serde_json::from_str(&stdout).expect("envelope on stdout");
     assert_eq!(v["ok"].as_bool(), Some(true));
 }
+
+// bajan-2sj (Rule-of-5 CORR-003): a deliberately corrupted store file must
+// emit the suite error envelope on stdout with exit 1 — never a panic with
+// no envelope (single-output-format contract, bajan-aan/bajan-ts6).
+#[test]
+fn corrupt_store_emits_error_envelope_and_exits_one() {
+    let dir = std::env::temp_dir().join(format!("bajan-2sj-cli-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let db_path = dir.join("corrupt.db");
+    let db_str = db_path.to_str().expect("utf8 path").to_string();
+
+    // First run creates the store file with its schema (no episodes yet).
+    let (code, _) = bajan(&["extract", "--db", &db_str, "--json"]);
+    assert_eq!(code, 0);
+    assert!(db_path.exists(), "extract created the store file");
+
+    // Seed one episode row with valid tags, then corrupt the tags column
+    // with raw SQL — the store API never writes non-JSON tags, so this
+    // simulates external corruption.
+    let conn = rusqlite::Connection::open(&db_path).expect("reopen raw");
+    conn.execute(
+        "INSERT INTO episodes
+         (id, text, locator_kind, locator, source_type, data_cutoff, authority_tier, tags)
+         VALUES ('ep-1', 'alpha beta', 'absent', NULL, 'note', NULL, 1, '[\"t\"]')",
+        [],
+    )
+    .expect("seed episode row");
+    conn.execute("UPDATE episodes SET tags = 'not json'", [])
+        .expect("corrupt tags column");
+
+    let (code, stdout) = bajan(&["extract", "--db", &db_str, "--json"]);
+    assert_eq!(code, 1, "corrupt-store read exits 1");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("envelope on stdout");
+    assert_eq!(v["ok"].as_bool(), Some(false));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

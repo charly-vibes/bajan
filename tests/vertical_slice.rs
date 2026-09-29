@@ -11,7 +11,7 @@
 use bajan::ingest::{self, EpisodeRecord, IngestOutcome, Locator, RejectReason, SourceMeta};
 use bajan::query::{self, BudgetStatus};
 use bajan::store::sqlite::SqliteStore;
-use bajan::store::{ClaimNode, ClaimStatus, Evidence, Lineage};
+use bajan::store::{ClaimNode, ClaimStatus, Evidence, Lineage, StoreError};
 use proptest::prelude::*;
 
 /// Episode text used by the search tests: hedge-free, and a prefix of it
@@ -102,8 +102,8 @@ proptest! {
         }
 
         // Dump: the episode stream plus extraction output.
-        let stream = ingest::dump_stream(&db);
-        let extraction = db.dump_extraction_output();
+        let stream = ingest::dump_stream(&db).expect("stream read");
+        let extraction = db.dump_extraction_output().expect("dump read");
 
         // Recreate a fresh store from the dumps alone.
         let fresh = SqliteStore::open_in_memory().expect("open");
@@ -114,10 +114,13 @@ proptest! {
             .restore_extraction_output(&extraction)
             .expect("restore succeeds");
 
-        prop_assert_eq!(fresh.episodes().len(), n);
-        prop_assert_eq!(fresh.dump_extraction_output(), db.dump_extraction_output());
+        prop_assert_eq!(fresh.episodes().expect("episodes read").len(), n);
+        prop_assert_eq!(
+            fresh.dump_extraction_output().expect("fresh dump read"),
+            db.dump_extraction_output().expect("db dump read")
+        );
         for (i, text) in texts.iter().take(n).enumerate() {
-            prop_assert_eq!(fresh.claim_text(i), Some(text.clone()));
+            prop_assert_eq!(fresh.claim_text(i).expect("claim text read"), Some(text.clone()));
         }
     }
 }
@@ -172,14 +175,17 @@ fn reingest_is_idempotent_and_never_duplicates() {
             reason: RejectReason::Conflict,
         })
     ));
-    assert_eq!(db.episodes().len(), 1);
-    assert_eq!(db.episodes()[0].text, "Cache hits are cheap.");
+    assert_eq!(db.episodes().expect("episodes read").len(), 1);
+    assert_eq!(
+        db.episodes().expect("episodes read")[0].text,
+        "Cache hits are cheap."
+    );
     // ic_idempotent: an *unchanged* re-submission is still already_persisted.
     assert!(matches!(
         ingest::persist(&db, &good),
         Ok(IngestOutcome::AlreadyPersisted)
     ));
-    assert_eq!(db.episodes().len(), 1);
+    assert_eq!(db.episodes().expect("episodes read").len(), 1);
 }
 
 // ---- ic_mutated_resubmit (p_mutated_resubmit): every mutation class —
@@ -223,8 +229,8 @@ fn mutated_resubmissions_are_rejected_with_conflict() {
     ));
 
     // The graph is unchanged and never duplicated through all rejections.
-    assert_eq!(db.episodes().len(), 1);
-    assert_eq!(db.episodes()[0], original);
+    assert_eq!(db.episodes().expect("episodes read").len(), 1);
+    assert_eq!(db.episodes().expect("episodes read")[0], original);
 }
 
 // ---- ic_batch_duplicate (p_batch_duplicate): within one submitted
@@ -248,8 +254,11 @@ fn intra_batch_duplicate_is_first_wins() {
     ));
     assert!(matches!(results[2], Ok(IngestOutcome::Persisted),));
     // Exactly the first payload persisted; the second never overwrote it.
-    assert_eq!(db.episodes().len(), 2);
-    let persisted = db.get_episode("ep-dup").expect("ep-dup persisted");
+    assert_eq!(db.episodes().expect("episodes read").len(), 2);
+    let persisted = db
+        .get_episode("ep-dup")
+        .expect("episode read")
+        .expect("ep-dup persisted");
     assert_eq!(persisted.text, "first payload");
 }
 
@@ -267,14 +276,22 @@ fn corrected_resubmission_persists_through_normal_path() {
             reason: RejectReason::MissingText,
         })
     ));
-    assert_eq!(db.episodes().len(), 0, "rejected never persisted");
+    assert_eq!(
+        db.episodes().expect("episodes read").len(),
+        0,
+        "rejected never persisted"
+    );
 
     let corrected = episode("ep-fix", "Cache hits are cheap.");
     assert!(matches!(
         ingest::persist(&db, &corrected),
         Ok(IngestOutcome::Persisted)
     ));
-    assert_eq!(db.episodes().len(), 1, "persists exactly once");
+    assert_eq!(
+        db.episodes().expect("episodes read").len(),
+        1,
+        "persists exactly once"
+    );
 }
 
 // ---- ic_order_insensitive (p_order_insensitive): any episode order of
@@ -301,6 +318,7 @@ fn shuffle_with_seed(records: &mut [EpisodeRecord], seed: u64) {
 fn claims_multiset(db: &SqliteStore) -> Vec<(bajan::store::ClaimNode, Vec<bajan::store::Lineage>)> {
     let mut claims: Vec<_> = db
         .claims_with_lineage()
+        .expect("claims read")
         .into_iter()
         .map(|(_, node, lineage)| (node, lineage))
         .collect();
@@ -342,10 +360,10 @@ proptest! {
         bajan::extract::run_extract(&a, "0.1.0", &mut runs_a).expect("extract a");
         bajan::extract::run_extract(&b, "0.1.0", &mut runs_b).expect("extract b");
 
-        prop_assert_eq!(a.episodes(), b.episodes());
+        prop_assert_eq!(a.episodes().expect("episodes a"), b.episodes().expect("episodes b"));
         prop_assert_eq!(claims_multiset(&a), claims_multiset(&b));
-        let mut extracted_a = a.dump_extraction_output().extracted;
-        let mut extracted_b = b.dump_extraction_output().extracted;
+        let mut extracted_a = a.dump_extraction_output().expect("dump a").extracted;
+        let mut extracted_b = b.dump_extraction_output().expect("dump b").extracted;
         extracted_a.sort();
         extracted_b.sort();
         prop_assert_eq!(extracted_a, extracted_b);
@@ -420,7 +438,7 @@ fn infrastructure_failure_propagates_and_episode_stays_retryable() {
 
     let db = SqliteStore::open(db_path.to_str().expect("utf8 path")).expect("reopen");
     assert_eq!(
-        db.pending_episodes("0.1.0").len(),
+        db.pending_episodes("0.1.0").expect("pending read").len(),
         1,
         "episode pending before the run"
     );
@@ -432,7 +450,7 @@ fn infrastructure_failure_propagates_and_episode_stays_retryable() {
         "infrastructure failures propagate; they are never reported as gate rejections"
     );
     assert_eq!(
-        db.pending_episodes("0.1.0").len(),
+        db.pending_episodes("0.1.0").expect("pending read").len(),
         1,
         "a failed call never caches the episode: retryable at the same version"
     );
@@ -441,6 +459,52 @@ fn infrastructure_failure_propagates_and_episode_stays_retryable() {
     let mut perms = std::fs::metadata(&db_path).expect("stat").permissions();
     perms.set_mode(0o644);
     std::fs::set_permissions(&db_path, perms).expect("chmod back");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- bajan-2sj: corrupt-store reads surface as StoreError, never panics ----
+
+// A corrupted tags column (raw SQL UPDATE to a non-JSON value) must make
+// the read path return `StoreError::Sqlite` carrying specs/graph-model.md
+// instead of aborting the process with a panic — every invocation emits
+// the suite envelope (bajan-aan/bajan-ts6 single-output-format contract),
+// and a panic on a read path bypasses it. Corrupts with raw SQL because
+// the store API itself never writes non-JSON tags.
+#[test]
+fn corrupt_store_reads_error_instead_of_panic() {
+    let dir = std::env::temp_dir().join(format!("bajan-2sj-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let db_path = dir.join("corrupt.db");
+    {
+        let db = SqliteStore::open(db_path.to_str().expect("utf8 path")).expect("open");
+        ingest::persist(&db, &episode("ep-c", EPISODE_TEXT)).expect("persist");
+    }
+    let conn = rusqlite::Connection::open(&db_path).expect("reopen raw");
+    conn.execute("UPDATE episodes SET tags = 'not json'", [])
+        .expect("corrupt tags column");
+
+    let db = SqliteStore::open(db_path.to_str().expect("utf8 path")).expect("reopen");
+    let err = db
+        .episodes()
+        .expect_err("corrupt tags read errors instead of panicking");
+    match err {
+        StoreError::Sqlite { message, spec } => {
+            assert_eq!(spec, "specs/graph-model.md");
+            assert!(!message.is_empty(), "the decode failure is in the message");
+        }
+        other => panic!("expected StoreError::Sqlite, got {other:?}"),
+    }
+
+    // Downstream read paths propagate the same store error: extraction
+    // (pending_episodes) and any caller over episodes()/claims read the
+    // corrupt rows.
+    let mut runs = bajan::extract::ExtractionRunStore::default();
+    assert!(
+        bajan::extract::run_extract(&db, "0.1.0", &mut runs).is_err(),
+        "extraction over a corrupt store errors, never panics"
+    );
+
+    // Restore permissions so the temp file is removable.
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -480,9 +544,9 @@ proptest! {
         }
 
         // qt_readonly: no state transition, audit, or edge written.
-        let before = db.dump_extraction_output();
+        let before = db.dump_extraction_output().expect("dump read");
         let _ = query::search(&db, "alpha", total);
-        prop_assert_eq!(db.dump_extraction_output(), before);
+        prop_assert_eq!(db.dump_extraction_output().expect("dump read"), before);
     }
 }
 

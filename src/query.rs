@@ -64,13 +64,20 @@ pub fn search(
     pattern: &str,
     budget: usize,
 ) -> Result<SearchResult, BajanQueryError> {
-    let mut persisted = db.episode_ids();
+    let mut persisted = db
+        .episode_ids()
+        .map_err(|e| BajanQueryError(e.to_string()))?;
     persisted.sort();
     let needle = pattern.to_lowercase();
     let mut hits = Vec::new();
     let mut truncated = false;
 
-    for (walked, (claim_key, node, lineage)) in db.claims_with_lineage().into_iter().enumerate() {
+    for (walked, (claim_key, node, lineage)) in db
+        .claims_with_lineage()
+        .map_err(|e| BajanQueryError(e.to_string()))?
+        .into_iter()
+        .enumerate()
+    {
         if walked >= budget {
             truncated = true;
             break;

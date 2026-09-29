@@ -180,7 +180,7 @@ pub fn run_extract(
     extractor_version: &str,
     runs: &mut ExtractionRunStore,
 ) -> Result<ExtractReport, BajanError> {
-    let pending = db.pending_episodes(extractor_version);
+    let pending = db.pending_episodes(extractor_version)?;
     let mut report = ExtractReport {
         episodes_processed: pending.len(),
         candidates_proposed: 0,
@@ -232,7 +232,7 @@ pub fn run_extract(
         let finish = match outcome {
             Ok(()) => {
                 report.candidates_proposed += 1;
-                db.mark_extracted(&episode.id, extractor_version);
+                db.mark_extracted(&episode.id, extractor_version)?;
                 Finish::Succeeded
             }
             Err(reason) => {

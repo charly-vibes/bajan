@@ -2,7 +2,10 @@
 //! embedded database (`gm_embedded_store`) — episodes, claim nodes, lineage
 //! edges, extraction-cache markers, and adoption audit records.
 //! Responsibilities: durable persistence; the dump/recreate round-trip
-//! (`p_embedded_store`); SQL-level adopt (`gm_human_adopt`).
+//! (`p_embedded_store`); SQL-level adopt (`gm_human_adopt`); read-path
+//! error discipline (bajan-2sj) — every read maps failures to
+//! `StoreError::Sqlite` carrying the governing spec, so a corrupt store
+//! surfaces as an envelope, never a process panic.
 //! Rationale: plain rows in one SQLite file, fully rebuildable from the
 //! episode stream plus extraction output — dump-then-recreate reproduces
 //! the graph exactly, so the store never becomes a second source of truth.
@@ -59,21 +62,78 @@ CREATE TABLE IF NOT EXISTS audits (
 
 /// Row mapper shared by `episodes()` and `get_episode()`: reconstructs a
 /// normalized episode record from the `episodes` table (`ic_verbatim`).
-fn episode_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EpisodeRecord> {
-    let locator_kind: String = row.get(2)?;
-    let locator: Option<String> = row.get(3)?;
+/// Read-path errors — including a corrupted tags column — map to
+/// `StoreError::Sqlite` carrying the governing spec (bajan-2sj), never a
+/// panic: every invocation must emit the suite envelope.
+fn episode_from_row(row: &rusqlite::Row<'_>) -> Result<EpisodeRecord, StoreError> {
+    let id: String = row.get(0).map_err(sql_err)?;
+    let text: String = row.get(1).map_err(sql_err)?;
+    let locator_kind: String = row.get(2).map_err(sql_err)?;
+    let locator: Option<String> = row.get(3).map_err(sql_err)?;
+    let source_type: String = row.get(4).map_err(sql_err)?;
+    let data_cutoff: Option<String> = row.get(5).map_err(sql_err)?;
+    let authority_tier: u8 = row.get(6).map_err(sql_err)?;
+    let tags_raw: String = row.get(7).map_err(sql_err)?;
+    let tags = serde_json::from_str(&tags_raw).map_err(|e| StoreError::Sqlite {
+        message: format!("tags column decode failed for episode {id}: {e}"),
+        spec: SPEC,
+    })?;
     Ok(EpisodeRecord {
-        id: row.get(0)?,
-        text: row.get(1)?,
+        id,
+        text,
         locator: Locator::from_parts(&locator_kind, locator),
         source: crate::ingest::SourceMeta {
-            source_type: row.get(4)?,
-            data_cutoff: row.get(5)?,
-            authority_tier: row.get(6)?,
-            tags: serde_json::from_str(&row.get::<_, String>(7)?)
-                .expect("tags column is a JSON array"),
+            source_type,
+            data_cutoff,
+            authority_tier,
+            tags,
         },
     })
+}
+
+/// Claim-row mapper shared by `claims_with_lineage()`: same read-path
+/// error discipline as `episode_from_row` (bajan-2sj).
+fn claim_from_row(row: &rusqlite::Row<'_>) -> Result<(usize, ClaimNode), StoreError> {
+    let claim_key: i64 = row.get(0).map_err(sql_err)?;
+    let text: String = row.get(1).map_err(sql_err)?;
+    let valid_at: Option<String> = row.get(2).map_err(sql_err)?;
+    let invalid_at: Option<String> = row.get(3).map_err(sql_err)?;
+    let data_cutoff: Option<String> = row.get(4).map_err(sql_err)?;
+    let status_raw: String = row.get(5).map_err(sql_err)?;
+    let scope: String = row.get(6).map_err(sql_err)?;
+    let source_type: String = row.get(7).map_err(sql_err)?;
+    let evidence_kind: String = row.get(8).map_err(sql_err)?;
+    let evidence = match evidence_kind.as_str() {
+        "span" => Evidence::Span {
+            text: row
+                .get::<_, Option<String>>(9)
+                .map_err(sql_err)?
+                .unwrap_or_default(),
+            locator: row
+                .get::<_, Option<String>>(10)
+                .map_err(sql_err)?
+                .unwrap_or_default(),
+        },
+        _ => Evidence::Unknown,
+    };
+    let status = match status_raw.as_str() {
+        "active" => ClaimStatus::Active,
+        "rejected" => ClaimStatus::Rejected,
+        _ => ClaimStatus::Staged,
+    };
+    Ok((
+        claim_key as usize,
+        ClaimNode {
+            text,
+            valid_at,
+            invalid_at,
+            data_cutoff,
+            status,
+            scope,
+            source_type,
+            evidence,
+        },
+    ))
 }
 
 /// One persisted claim with its full lineage, in dump form
@@ -146,46 +206,51 @@ impl SqliteStore {
         Ok(inserted > 0)
     }
 
-    /// Every persisted episode, in stable id order.
-    pub fn episodes(&self) -> Vec<EpisodeRecord> {
+    /// Every persisted episode, in stable id order. Read-path errors map
+    /// to `StoreError::Sqlite` (bajan-2sj) — a corrupt store must surface
+    /// as an envelope, never a panic.
+    pub fn episodes(&self) -> Result<Vec<EpisodeRecord>, StoreError> {
         let mut stmt = self
             .conn
             .prepare(
                 "SELECT id, text, locator_kind, locator, source_type, data_cutoff,
                         authority_tier, tags FROM episodes ORDER BY id",
             )
-            .expect("episodes query prepares");
-        let rows = stmt
-            .query_map([], episode_from_row)
-            .expect("episodes query maps");
-        rows.map(|r| r.expect("episode row decodes")).collect()
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push(episode_from_row(row)?);
+        }
+        Ok(out)
     }
 
     /// One persisted episode by stable id, or `None` when absent. Used by
     /// the ingest boundary to distinguish an unchanged re-submission from
     /// a mutated one (`ic_mutated_resubmit` vs `ic_idempotent`).
-    pub fn get_episode(&self, id: &str) -> Option<EpisodeRecord> {
+    pub fn get_episode(&self, id: &str) -> Result<Option<EpisodeRecord>, StoreError> {
         let mut stmt = self
             .conn
             .prepare(
                 "SELECT id, text, locator_kind, locator, source_type, data_cutoff,
                         authority_tier, tags FROM episodes WHERE id = ?1",
             )
-            .expect("episode query prepares");
-        let mut rows = stmt
-            .query_map([id], episode_from_row)
-            .expect("episode query maps");
-        rows.next().map(|r| r.expect("episode row decodes"))
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([id]).map_err(sql_err)?;
+        match rows.next().map_err(sql_err)? {
+            Some(row) => Ok(Some(episode_from_row(row)?)),
+            None => Ok(None),
+        }
     }
 
     /// Persisted episode ids — the persisted-episode set for the lineage
     /// walk (`qt_lineage_traceable`).
-    pub fn episode_ids(&self) -> Vec<String> {
-        self.episodes().into_iter().map(|e| e.id).collect()
+    pub fn episode_ids(&self) -> Result<Vec<String>, StoreError> {
+        Ok(self.episodes()?.into_iter().map(|e| e.id).collect())
     }
 
     /// Verbatim text of a persisted episode, by stable id.
-    pub fn episode_text(&self, episode_id: &str) -> Option<String> {
+    pub fn episode_text(&self, episode_id: &str) -> Result<Option<String>, StoreError> {
         self.conn
             .query_row(
                 "SELECT text FROM episodes WHERE id = ?1",
@@ -193,8 +258,7 @@ impl SqliteStore {
                 |row| row.get(0),
             )
             .optional()
-            .expect("episode lookup queries")
-            .flatten()
+            .map_err(sql_err)
     }
 
     /// Persist a claim node with one or more lineage edges and the
@@ -247,7 +311,7 @@ impl SqliteStore {
                 ],
             )
             .map_err(sql_err)?;
-        let claim_key = self.claim_count() - 1;
+        let claim_key = self.claim_count()? - 1;
         self.insert_lineage(claim_key, lineage)?;
         Ok(claim_key)
     }
@@ -267,17 +331,17 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn claim_count(&self) -> usize {
+    fn claim_count(&self) -> Result<usize, StoreError> {
         self.conn
             .query_row("SELECT COUNT(*) FROM claims", [], |row| {
                 row.get::<_, i64>(0)
             })
             .map(|n| n as usize)
-            .expect("claim count queries")
+            .map_err(sql_err)
     }
 
     /// Text of a stored claim, by key.
-    pub fn claim_text(&self, claim_key: usize) -> Option<String> {
+    pub fn claim_text(&self, claim_key: usize) -> Result<Option<String>, StoreError> {
         self.conn
             .query_row(
                 "SELECT text FROM claims WHERE claim_key = ?1",
@@ -285,22 +349,23 @@ impl SqliteStore {
                 |row| row.get(0),
             )
             .optional()
-            .expect("claim lookup queries")
-            .flatten()
+            .map_err(sql_err)
     }
 
     /// Lineage edges of a stored claim, by claim key (`gm_reified`).
-    pub fn lineage_of(&self, claim_key: usize) -> Vec<Lineage> {
-        self.claims_with_lineage()
+    pub fn lineage_of(&self, claim_key: usize) -> Result<Vec<Lineage>, StoreError> {
+        Ok(self
+            .claims_with_lineage()?
             .into_iter()
             .find(|(key, _, _)| *key == claim_key)
             .map(|(_, _, lineage)| lineage)
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 
     /// All claims in key order with their full lineage — the raw read
-    /// surface the query walk traverses.
-    pub fn claims_with_lineage(&self) -> Vec<(usize, ClaimNode, Vec<Lineage>)> {
+    /// surface the query walk traverses. Read-path errors map to
+    /// `StoreError::Sqlite` (bajan-2sj), never a panic.
+    pub fn claims_with_lineage(&self) -> Result<Vec<(usize, ClaimNode, Vec<Lineage>)>, StoreError> {
         let mut stmt = self
             .conn
             .prepare(
@@ -308,99 +373,89 @@ impl SqliteStore {
                         source_type, evidence_kind, evidence_text, evidence_locator
                  FROM claims ORDER BY claim_key",
             )
-            .expect("claims query prepares");
-        let rows = stmt
-            .query_map([], |row| {
-                let evidence_kind: String = row.get(8)?;
-                let evidence = match evidence_kind.as_str() {
-                    "span" => Evidence::Span {
-                        text: row.get::<_, Option<String>>(9)?.unwrap_or_default(),
-                        locator: row.get::<_, Option<String>>(10)?.unwrap_or_default(),
-                    },
-                    _ => Evidence::Unknown,
-                };
-                let status = match row.get::<_, String>(5)?.as_str() {
-                    "active" => ClaimStatus::Active,
-                    "rejected" => ClaimStatus::Rejected,
-                    _ => ClaimStatus::Staged,
-                };
-                Ok((
-                    row.get::<_, i64>(0)? as usize,
-                    ClaimNode {
-                        text: row.get(1)?,
-                        valid_at: row.get(2)?,
-                        invalid_at: row.get(3)?,
-                        data_cutoff: row.get(4)?,
-                        status,
-                        scope: row.get(6)?,
-                        source_type: row.get(7)?,
-                        evidence,
-                    },
-                ))
-            })
-            .expect("claims query prepares");
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
         let mut out = Vec::new();
-        for row in rows {
-            let (claim_key, node) = row.expect("claim row decodes");
-            out.push((claim_key, node, self.lineage_rows(claim_key)));
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            let (claim_key, node) = claim_from_row(row)?;
+            out.push((claim_key, node, self.lineage_rows(claim_key)?));
         }
-        out
+        Ok(out)
     }
 
-    fn lineage_rows(&self, claim_key: usize) -> Vec<Lineage> {
+    fn lineage_rows(&self, claim_key: usize) -> Result<Vec<Lineage>, StoreError> {
         let mut stmt = self
             .conn
             .prepare(
                 "SELECT episode_id, extractor_version FROM lineage
                  WHERE claim_key = ?1 ORDER BY rowid",
             )
-            .expect("lineage query prepares");
-        let rows = stmt
-            .query_map(params![claim_key as i64], |row| {
-                Ok(Lineage {
-                    episode_id: row.get(0)?,
-                    extractor_version: row.get(1)?,
-                })
-            })
-            .expect("lineage query maps");
-        rows.map(|r| r.expect("lineage row decodes")).collect()
+            .map_err(sql_err)?;
+        let mut rows = stmt.query(params![claim_key as i64]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push(Lineage {
+                episode_id: row.get(0).map_err(sql_err)?,
+                extractor_version: row.get(1).map_err(sql_err)?,
+            });
+        }
+        Ok(out)
     }
 
     /// Mark (episode, version) extraction as done — the per-(episode,
     /// version) cache entry. Same-version re-extraction is a no-op.
-    pub fn mark_extracted(&self, episode_id: &str, extractor_version: &str) {
+    pub fn mark_extracted(
+        &self,
+        episode_id: &str,
+        extractor_version: &str,
+    ) -> Result<(), StoreError> {
         self.conn
             .execute(
                 "INSERT OR IGNORE INTO extracted (episode_id, extractor_version) VALUES (?1, ?2)",
                 params![episode_id, extractor_version],
             )
-            .expect("cache marker writes");
+            .map_err(sql_err)?;
+        Ok(())
     }
 
     /// Whether (episode, version) extraction output is already cached.
-    pub fn is_extracted(&self, episode_id: &str, extractor_version: &str) -> bool {
-        self.conn
+    /// A query failure is a store error, never a silent cache miss.
+    pub fn is_extracted(
+        &self,
+        episode_id: &str,
+        extractor_version: &str,
+    ) -> Result<bool, StoreError> {
+        let found: Option<i64> = self
+            .conn
             .query_row(
                 "SELECT 1 FROM extracted WHERE episode_id = ?1 AND extractor_version = ?2",
                 params![episode_id, extractor_version],
-                |_| Ok(()),
+                |row| row.get(0),
             )
-            .is_ok()
+            .optional()
+            .map_err(sql_err)?;
+        Ok(found.is_some())
     }
 
     /// Persisted episodes with no extraction output cached at this version.
-    pub fn pending_episodes(&self, extractor_version: &str) -> Vec<EpisodeRecord> {
-        self.episodes()
-            .into_iter()
-            .filter(|e| !self.is_extracted(&e.id, extractor_version))
-            .collect()
+    pub fn pending_episodes(
+        &self,
+        extractor_version: &str,
+    ) -> Result<Vec<EpisodeRecord>, StoreError> {
+        let mut out = Vec::new();
+        for episode in self.episodes()? {
+            if !self.is_extracted(&episode.id, extractor_version)? {
+                out.push(episode);
+            }
+        }
+        Ok(out)
     }
 
     /// Dump extraction output (`gm_embedded_store`): every claim with its
     /// lineage plus the extraction-cache markers.
-    pub fn dump_extraction_output(&self) -> ExtractionDump {
+    pub fn dump_extraction_output(&self) -> Result<ExtractionDump, StoreError> {
         let claims = self
-            .claims_with_lineage()
+            .claims_with_lineage()?
             .into_iter()
             .map(|(claim_key, node, lineage)| DumpedClaim {
                 claim_key,
@@ -408,19 +463,24 @@ impl SqliteStore {
                 lineage,
             })
             .collect();
-        let extracted = self.extracted_pairs();
-        ExtractionDump { claims, extracted }
+        let extracted = self.extracted_pairs()?;
+        Ok(ExtractionDump { claims, extracted })
     }
 
-    fn extracted_pairs(&self) -> Vec<(String, String)> {
+    fn extracted_pairs(&self) -> Result<Vec<(String, String)>, StoreError> {
         let mut stmt = self
             .conn
             .prepare("SELECT episode_id, extractor_version FROM extracted ORDER BY rowid")
-            .expect("extracted query prepares");
-        let rows = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .expect("extracted query maps");
-        rows.map(|r| r.expect("extracted row decodes")).collect()
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push((
+                row.get::<_, String>(0).map_err(sql_err)?,
+                row.get::<_, String>(1).map_err(sql_err)?,
+            ));
+        }
+        Ok(out)
     }
 
     /// Rebuild store content from a dump (`p_embedded_store`): claims with
@@ -463,7 +523,7 @@ impl SqliteStore {
             self.insert_lineage(claim.claim_key, &claim.lineage)?;
         }
         for (episode_id, version) in &dump.extracted {
-            self.mark_extracted(episode_id, version);
+            self.mark_extracted(episode_id, version)?;
         }
         Ok(())
     }
@@ -509,20 +569,20 @@ impl SqliteStore {
     }
 
     /// Audit trail (`gm_human_adopt`): one record per adopted claim.
-    pub fn audit(&self) -> Vec<AuditRecord> {
+    pub fn audit(&self) -> Result<Vec<AuditRecord>, StoreError> {
         let mut stmt = self
             .conn
             .prepare("SELECT claim_key, actor, adopted_at FROM audits ORDER BY rowid")
-            .expect("audit query prepares");
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(AuditRecord {
-                    claim_key: row.get::<_, i64>(0)? as usize,
-                    actor: row.get(1)?,
-                    adopted_at: row.get::<_, i64>(2)? as u64,
-                })
-            })
-            .expect("audit query maps");
-        rows.map(|r| r.expect("audit row decodes")).collect()
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push(AuditRecord {
+                claim_key: row.get::<_, i64>(0).map_err(sql_err)? as usize,
+                actor: row.get(1).map_err(sql_err)?,
+                adopted_at: row.get::<_, i64>(2).map_err(sql_err)? as u64,
+            });
+        }
+        Ok(out)
     }
 }

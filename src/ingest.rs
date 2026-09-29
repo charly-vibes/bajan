@@ -174,6 +174,7 @@ pub fn persist(
     // persisted episode is never updated in place and never duplicated.
     let persisted = db
         .get_episode(&canonical.id)
+        .map_err(BajanError::from)?
         .ok_or_else(|| BajanError::Store("insert ignored but episode missing".to_string()))?;
     if persisted == canonical {
         Ok(IngestOutcome::AlreadyPersisted)
@@ -211,8 +212,11 @@ pub fn persist_stream(
 }
 
 /// Read back the full persisted episode stream (`gm_embedded_store`:
-/// the stream half of the rebuildable pair).
-pub fn dump_stream(db: &crate::store::sqlite::SqliteStore) -> Vec<EpisodeRecord> {
+/// the stream half of the rebuildable pair). Read-path errors map to
+/// `StoreError::Sqlite` (bajan-2sj), never a panic.
+pub fn dump_stream(
+    db: &crate::store::sqlite::SqliteStore,
+) -> Result<Vec<EpisodeRecord>, crate::store::StoreError> {
     db.episodes()
 }
 
