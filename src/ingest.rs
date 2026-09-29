@@ -22,7 +22,7 @@ pub const SPEC: &str = "specs/ingestion-contract.md";
 /// distinct variant, never a string that could collide with a real locator
 /// (`ic_stream-schema` absent-marker convention).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Locator {
     /// A derivable structural locator: heading anchor, text fragment,
     /// page/slide reference.

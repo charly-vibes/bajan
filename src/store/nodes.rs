@@ -245,4 +245,3 @@ pub enum StoreError {
         spec: &'static str,
     },
 }
-

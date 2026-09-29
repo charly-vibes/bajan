@@ -28,7 +28,7 @@ fn main() {
             std::process::exit(cli::exit_code(&json));
         }
     };
-    let json = cli::run(cli.command);
+    let json = cli::run(cli.command, &cli.db);
     if cli.json {
         println!("{json}");
     } else {
