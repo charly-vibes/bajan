@@ -1,0 +1,11 @@
+id = "automated-promotion-is-impossible"
+description = "Automated promotion is impossible"
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "adopt_refuses_non_staged_claims_without_audit", timeout_seconds = 60 },
+]

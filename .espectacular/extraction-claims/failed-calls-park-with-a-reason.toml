@@ -1,0 +1,11 @@
+id = "failed-calls-park-with-a-reason"
+description = "Failed calls park with a reason"
+archetype = "CE"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "failure_outcomes_carry_machine_readable_reasons", timeout_seconds = 60 },
+]

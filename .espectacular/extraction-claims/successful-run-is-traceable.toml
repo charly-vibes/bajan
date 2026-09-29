@@ -1,0 +1,11 @@
+id = "successful-run-is-traceable"
+description = "Successful run is traceable"
+archetype = "CE"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "every_call_writes_exactly_one_run_row", timeout_seconds = 60 },
+]

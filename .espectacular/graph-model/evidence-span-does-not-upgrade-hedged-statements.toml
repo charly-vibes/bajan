@@ -1,0 +1,11 @@
+id = "evidence-span-does-not-upgrade-hedged-statements"
+description = "Evidence span does not upgrade hedged statements"
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "span_persistence_rejects_dropped_hedge_markers", timeout_seconds = 60 },
+]

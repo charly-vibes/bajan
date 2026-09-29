@@ -1,0 +1,11 @@
+id = "version-bump-supersedes-staged-candidates-only"
+description = "Version bump supersedes staged candidates only"
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "version_bump_supersedes_only_prior_version_staged_claims", timeout_seconds = 60 },
+]

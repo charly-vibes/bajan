@@ -1,0 +1,11 @@
+id = "non-contained-span-is-rejected-with-reason"
+description = "Non-contained span is rejected with reason"
+archetype = "BP"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "gate_rejects_spans_failing_collapsed_containment", timeout_seconds = 60 },
+]

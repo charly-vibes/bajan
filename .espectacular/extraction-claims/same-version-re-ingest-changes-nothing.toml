@@ -1,0 +1,11 @@
+id = "same-version-re-ingest-changes-nothing"
+description = "Same-version re-ingest changes nothing"
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "same_version_reingest_and_repeat_bump_resurrect_nothing", timeout_seconds = 60 },
+]

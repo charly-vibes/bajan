@@ -1,0 +1,11 @@
+id = "superseded-claims-are-not-silently-resurrected"
+description = "Superseded claims are not silently resurrected"
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "same_version_reingest_and_repeat_bump_resurrect_nothing", timeout_seconds = 60 },
+]

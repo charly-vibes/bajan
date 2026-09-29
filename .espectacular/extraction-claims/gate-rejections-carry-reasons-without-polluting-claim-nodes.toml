@@ -1,0 +1,11 @@
+id = "gate-rejections-carry-reasons-without-polluting-claim-nodes"
+description = "Gate rejections carry reasons without polluting claim nodes"
+archetype = "CE"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "claim_nodes_expose_no_reason_field", timeout_seconds = 60 },
+]

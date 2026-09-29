@@ -1,0 +1,11 @@
+id = "existing-graphs-migrate-with-unknown-spans-loudly"
+description = "Existing graphs migrate with unknown spans, loudly"
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "migration_backfills_unknown_and_reports_count_loudly", timeout_seconds = 60 },
+]

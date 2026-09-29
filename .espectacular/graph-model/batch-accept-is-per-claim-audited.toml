@@ -1,0 +1,11 @@
+id = "batch-accept-is-per-claim-audited"
+description = "Batch accept is per-claim audited"
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "batch_adopt_writes_one_audit_record_per_claim", timeout_seconds = 60 },
+]

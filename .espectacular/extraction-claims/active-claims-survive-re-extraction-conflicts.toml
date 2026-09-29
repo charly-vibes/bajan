@@ -1,0 +1,11 @@
+id = "active-claims-survive-re-extraction-conflicts"
+description = "Active claims survive re-extraction conflicts"
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "active_conflict_stages_invalidation_proposal_without_mutating_claim", timeout_seconds = 60 },
+]

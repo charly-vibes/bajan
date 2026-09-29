@@ -1,0 +1,11 @@
+id = "span-verified-by-whitespace-collapsed-containment"
+description = "Span verified by whitespace-collapsed containment"
+archetype = "PF"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "gate_rejects_spans_failing_collapsed_containment", timeout_seconds = 60 },
+]
