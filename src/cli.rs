@@ -97,11 +97,24 @@ fn version_envelope() -> Envelope<VersionData> {
     )
 }
 
+/// Spec-traced error envelope: one construction point for every error
+/// path, so Invariant 3.2.5 (non-empty remediation) holds by construction
+/// — the `ErrorResult::new` constructor itself rejects an empty list.
+fn spec_error_envelope(
+    code: &str,
+    message: &str,
+    spec: &str,
+    module: &str,
+    remediation: Vec<RemediationEntry>,
+) -> serde_json::Value {
+    let error = ErrorResult::new(code, message, None, Some(spec), Some(module), vec![], remediation)
+        .expect("remediation is non-empty by construction (Invariant 3.2.5)");
+    serde_json::to_value(Envelope::error(env!("CARGO_PKG_VERSION"), error, vec![]))
+        .expect("envelope serialization cannot fail")
+}
+
 /// Convert a stub module result into an error envelope.
-///
-/// Invariant 3.2.5: remediation is non-empty by construction — the
-/// `ErrorResult::new` constructor itself rejects an empty list.
-fn stub_envelope(result: &Result<(), BajanError>) -> Envelope<ErrorResult> {
+fn stub_envelope(result: &Result<(), BajanError>) -> serde_json::Value {
     let err = match result {
         Ok(()) => unreachable!("scaffold stubs always fail; wire success only when implemented"),
         Err(e) => e,
@@ -109,13 +122,11 @@ fn stub_envelope(result: &Result<(), BajanError>) -> Envelope<ErrorResult> {
     let (module, spec) = match err {
         BajanError::NotImplemented { module, spec } => (*module, *spec),
     };
-    let error = ErrorResult::new(
+    spec_error_envelope(
         "not_implemented",
         &format!("{module} is not implemented in this scaffold"),
-        None,
-        Some(spec),
-        Some(module),
-        vec![],
+        spec,
+        module,
         vec![RemediationEntry {
             command: format!("cat {spec}"),
             description: format!(
@@ -124,8 +135,6 @@ fn stub_envelope(result: &Result<(), BajanError>) -> Envelope<ErrorResult> {
             ),
         }],
     )
-    .expect("remediation is non-empty by construction (Invariant 3.2.5)");
-    Envelope::error(env!("CARGO_PKG_VERSION"), error, vec![])
 }
 
 /// Envelope for the human adopt path (`gm_human_adopt`).
@@ -156,16 +165,14 @@ fn adopt_envelope(store: &mut ClaimStore, claims: &[usize], actor: Option<&str>)
     }
 }
 
-/// Error envelope for a refused adoption — remediation non-empty by
-/// construction (Invariant 3.2.5).
+/// Error envelope for a refused adoption — spec-traced via the shared
+/// construction point.
 fn adopt_error_envelope(err: &StoreError) -> serde_json::Value {
-    let error = ErrorResult::new(
+    spec_error_envelope(
         "adopt_refused",
         &err.to_string(),
-        None,
-        Some("specs/graph-model.md"),
-        Some("adopt"),
-        vec![],
+        "specs/graph-model.md",
+        "adopt",
         vec![RemediationEntry {
             command: "bajan adopt <claims>... --actor <id>".into(),
             description:
@@ -174,9 +181,6 @@ fn adopt_error_envelope(err: &StoreError) -> serde_json::Value {
                     .into(),
         }],
     )
-    .expect("remediation is non-empty by construction (Invariant 3.2.5)");
-    serde_json::to_value(Envelope::error(env!("CARGO_PKG_VERSION"), error, vec![]))
-        .expect("envelope serialization cannot fail")
 }
 
 /// Run a command and return its suite envelope as JSON.
@@ -187,14 +191,10 @@ pub fn run(command: Command) -> String {
     let value = match &command {
         Command::Version => serde_json::to_value(version_envelope())
             .expect("envelope serialization cannot fail"),
-        Command::Ingest => serde_json::to_value(stub_envelope(&ingest::run()))
-            .expect("envelope serialization cannot fail"),
-        Command::Extract => serde_json::to_value(stub_envelope(&extract::run()))
-            .expect("envelope serialization cannot fail"),
-        Command::Resolve => serde_json::to_value(stub_envelope(&resolve::run()))
-            .expect("envelope serialization cannot fail"),
-        Command::Query => serde_json::to_value(stub_envelope(&query::run()))
-            .expect("envelope serialization cannot fail"),
+        Command::Ingest => stub_envelope(&ingest::run()),
+        Command::Extract => stub_envelope(&extract::run()),
+        Command::Resolve => stub_envelope(&resolve::run()),
+        Command::Query => stub_envelope(&query::run()),
         Command::Adopt { claims, actor } => {
             // Session-scoped store: no persistence engine yet (vertical-slice
             // ticket wires SQLite), so the CLI adopt path is honest about an
