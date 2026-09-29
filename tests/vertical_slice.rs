@@ -337,8 +337,10 @@ proptest! {
             ingest::persist(&a, record).expect("re-ingest a");
         }
 
-        bajan::extract::run_extract(&a, "0.1.0").expect("extract a");
-        bajan::extract::run_extract(&b, "0.1.0").expect("extract b");
+        let mut runs_a = bajan::extract::ExtractionRunStore::default();
+        let mut runs_b = bajan::extract::ExtractionRunStore::default();
+        bajan::extract::run_extract(&a, "0.1.0", &mut runs_a).expect("extract a");
+        bajan::extract::run_extract(&b, "0.1.0", &mut runs_b).expect("extract b");
 
         prop_assert_eq!(a.episodes(), b.episodes());
         prop_assert_eq!(claims_multiset(&a), claims_multiset(&b));
@@ -357,10 +359,20 @@ fn end_to_end_ingest_extract_then_first_query() {
     let db = SqliteStore::open_in_memory().expect("open");
     ingest::persist(&db, &episode("ep-a", EPISODE_TEXT)).expect("persist");
 
-    let report = bajan::extract::run_extract(&db, "0.1.0").expect("extract");
+    let mut runs = bajan::extract::ExtractionRunStore::default();
+    let report = bajan::extract::run_extract(&db, "0.1.0", &mut runs).expect("extract");
     assert_eq!(report.episodes_processed, 1);
     assert_eq!(report.candidates_proposed, 1, "one deterministic candidate");
-    assert_eq!(report.gate_rejected, 0);
+    assert!(
+        report.gate_rejections.is_empty(),
+        "no refusals on a hedge-free episode"
+    );
+
+    // bajan-r1h (ex_run_record wired): one run row per extraction call.
+    let rows: Vec<_> = runs.rows().collect();
+    assert_eq!(rows.len(), 1, "exactly one run row per call");
+    assert_eq!(rows[0].episode_id, "ep-a");
+    assert_eq!(rows[0].finish, bajan::extract::Finish::Succeeded);
 
     // The proposed claim is staged and searchable (lineage-traceable).
     let result = query::search(&db, "alpha", 100).expect("search");
@@ -370,9 +382,66 @@ fn end_to_end_ingest_extract_then_first_query() {
     assert_eq!(result.hits[0].episodes, vec!["ep-a".to_string()]);
 
     // Same-version re-extract is a cache hit: no new work, no new claims.
-    let again = bajan::extract::run_extract(&db, "0.1.0").expect("re-extract");
+    let mut again_runs = bajan::extract::ExtractionRunStore::default();
+    let again = bajan::extract::run_extract(&db, "0.1.0", &mut again_runs).expect("re-extract");
     assert_eq!(again.episodes_processed, 0, "cache hit: no new work");
+    assert_eq!(
+        again_runs.rows().count(),
+        0,
+        "cache hit: no new calls, no new rows"
+    );
     assert_eq!(query::search(&db, "alpha", 100).unwrap().hits.len(), 1);
+}
+
+// ---- bajan-r1h: infrastructure failures are never gate rejections ----
+
+// A store-level failure (read-only database) must propagate as an error
+// instead of being swallowed into the report's gate rejections: a SQL
+// failure is not a typed-gate refusal, and the report must not lie about
+// the outcome class (`ex_run_record`: failure outcomes carry honest,
+// machine-readable reasons). The episode also stays pending — retryable
+// at the same version — because a failed call must not cache.
+#[test]
+fn infrastructure_failure_propagates_and_episode_stays_retryable() {
+    let dir = std::env::temp_dir().join(format!("bajan-r1h-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let db_path = dir.join("ro.db");
+
+    {
+        let db = SqliteStore::open(db_path.to_str().expect("utf8 path")).expect("open");
+        ingest::persist(&db, &episode("ep-ro", EPISODE_TEXT)).expect("persist");
+    }
+    // Freeze the database file so extraction-time writes fail at the SQL
+    // layer (infrastructure), not at the typed gate.
+    let mut perms = std::fs::metadata(&db_path).expect("stat").permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o444);
+    std::fs::set_permissions(&db_path, perms).expect("chmod");
+
+    let db = SqliteStore::open(db_path.to_str().expect("utf8 path")).expect("reopen");
+    assert_eq!(
+        db.pending_episodes("0.1.0").len(),
+        1,
+        "episode pending before the run"
+    );
+
+    let mut runs = bajan::extract::ExtractionRunStore::default();
+    let outcome = bajan::extract::run_extract(&db, "0.1.0", &mut runs);
+    assert!(
+        outcome.is_err(),
+        "infrastructure failures propagate; they are never reported as gate rejections"
+    );
+    assert_eq!(
+        db.pending_episodes("0.1.0").len(),
+        1,
+        "a failed call never caches the episode: retryable at the same version"
+    );
+
+    // Restore permissions so the temp file is removable.
+    let mut perms = std::fs::metadata(&db_path).expect("stat").permissions();
+    perms.set_mode(0o644);
+    std::fs::set_permissions(&db_path, perms).expect("chmod back");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- qt_lineage_traceable + qt_bounded_traversal + qt_readonly ----

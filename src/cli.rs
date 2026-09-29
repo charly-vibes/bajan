@@ -353,7 +353,11 @@ fn extract_envelope(db_path: &str) -> serde_json::Value {
 
 /// The extraction envelope over an already-open store (testable).
 fn extract_with(db: &crate::store::sqlite::SqliteStore) -> serde_json::Value {
-    match extract::run_extract(db, env!("CARGO_PKG_VERSION")) {
+    // Run-record telemetry for this invocation (`ex_run_record`): one row
+    // per extraction call, recorded by run_extract. Rows are per-process
+    // here; durable run-row persistence is future work.
+    let mut runs = extract::ExtractionRunStore::default();
+    match extract::run_extract(db, env!("CARGO_PKG_VERSION"), &mut runs) {
         Ok(report) => serde_json::to_value(Envelope::success(
             env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,

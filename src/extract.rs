@@ -30,6 +30,9 @@ pub enum Reason {
     /// fails whitespace-collapsed containment (`ex_evidence_containment`,
     /// enforced from bajan-0hs.7).
     EvidenceNotContained,
+    /// Candidate rejected because persisting it would drop hedge marker(s)
+    /// present in the supporting episode text (`gm_hedge_anchor`).
+    HedgeMarkerDropped,
     /// Prior-version `staged` claim tombstoned by a version-bump
     /// re-extraction (`ex_supersession`). Carried on the supersession
     /// record in the claim store — never on the claim node.
@@ -42,6 +45,7 @@ impl Reason {
         match self {
             Reason::RepeatedCallFailure { .. } => "repeated_call_failure",
             Reason::EvidenceNotContained => "evidence_not_contained",
+            Reason::HedgeMarkerDropped => "hedge_marker_dropped",
             Reason::SupersededByReextraction => "superseded_by_reextraction",
         }
     }
@@ -100,28 +104,71 @@ impl ExtractionRunStore {
     }
 }
 
+/// One gate refusal on the report (`ex_typed_gate` refuse path): the
+/// refused episode and its machine-readable reason (`ex_run_record` —
+/// reasons live on rejection records, never on claim nodes).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GateRejection {
+    pub episode_id: String,
+    pub reason: Reason,
+}
+
 /// The vertical-slice extractor report: one deterministic single-call
 /// pass over pending episodes (`ex_single_call`), one candidate per
 /// episode, typed at the door by the gate (`ex_typed_gate`), cached per
-/// (episode id, extractor version), zero-candidate episodes legitimately
-/// cached as empty (absence of claims is data, not failure).
+/// (episode id, extractor version).
+///
+/// Outcome classes are separated (bajan-r1h): a persisted candidate
+/// counts in `candidates_proposed`; a gate refusal is recorded per
+/// episode in `gate_rejections` with its machine-readable reason. A
+/// zero-candidate episode is yet another class — legitimately extracted
+/// and cached as empty (`ex_typed_gate`) — and cannot arise in this
+/// slice: the deterministic proposer always proposes exactly one
+/// candidate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExtractReport {
     pub episodes_processed: usize,
     pub candidates_proposed: usize,
-    pub gate_rejected: usize,
+    pub gate_rejections: Vec<GateRejection>,
+}
+
+/// Classify a store refusal at the wired gate (bajan-r1h): a gate-level
+/// refusal maps to its machine-readable reason; an infrastructure
+/// failure (SQL) is never a gate rejection — it propagates and the run
+/// fails honestly instead of being swallowed into the report.
+fn classify_refusal(err: &crate::store::StoreError) -> Result<Reason, BajanError> {
+    match err {
+        crate::store::StoreError::HedgeMarkerDropped { .. } => Ok(Reason::HedgeMarkerDropped),
+        other => Err(BajanError::Store(other.to_string())),
+    }
+}
+
+/// Epoch milliseconds for run-row timestamps (`ex_run_record`).
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Run the deterministic extraction pass over every persisted episode
-/// without extraction output cached at `extractor_version`.
+/// without extraction output cached at `extractor_version`, recording
+/// one run row per call into `runs` (`ex_run_record` — additive
+/// telemetry, never cache economics).
 ///
 /// Each pending episode yields one candidate: the whole episode text as
 /// the claim text with a verbatim-span evidence (locator from the episode
 /// record when derivable, typed absent marker otherwise). Candidates pass
 /// through the same typed gate + hedge-anchor persistence checks as any
 /// future LLM extractor — the proposer differs, the contract does not.
-/// Episodes are cached as extracted even when the gate refuses everything
-/// (absence of claims is data, not failure).
+///
+/// Caching policy (decided in bajan-r1h, honest): a gate-refused episode
+/// is NOT cached at this version — it stays pending and is retryable at
+/// the same version — and its refusal is recorded on the report and the
+/// run row with a machine-readable reason. Zero-candidate episodes
+/// (legitimately cached as empty per `ex_typed_gate`) cannot arise in
+/// this slice; infrastructure failures propagate as errors and are never
+/// reported as gate rejections.
 ///
 /// CORR-001 (bajan-15i design note): when a future LLM extractor chunks
 /// input, chunking is *assembly for exactly one call* — chunks are
@@ -131,14 +178,16 @@ pub struct ExtractReport {
 pub fn run_extract(
     db: &crate::store::sqlite::SqliteStore,
     extractor_version: &str,
+    runs: &mut ExtractionRunStore,
 ) -> Result<ExtractReport, BajanError> {
     let pending = db.pending_episodes(extractor_version);
     let mut report = ExtractReport {
         episodes_processed: pending.len(),
         candidates_proposed: 0,
-        gate_rejected: 0,
+        gate_rejections: Vec::new(),
     };
     for episode in &pending {
+        let started_at = epoch_millis();
         let evidence = match &episode.locator {
             crate::ingest::Locator::Span(locator) => Evidence::Span {
                 text: episode.text.clone(),
@@ -168,11 +217,42 @@ pub fn run_extract(
             episode_id: episode.id.clone(),
             extractor_version: extractor_version.to_string(),
         };
-        match db.insert_claim(&candidate, &[lineage], &episode.text) {
-            Ok(_key) => report.candidates_proposed += 1,
-            Err(_) => report.gate_rejected += 1,
-        }
-        db.mark_extracted(&episode.id, extractor_version);
+        // Typed gate in the wired path: containment first
+        // (`ex_evidence_containment`), then the store-side gate checks
+        // (hedge anchors, schema) at persistence. Refusals are classified;
+        // infrastructure failures propagate, never counted as refusals.
+        let outcome = match check_evidence_containment(&candidate.evidence, &episode.text) {
+            Err(reason) => Err(reason),
+            Ok(()) => match db.insert_claim(&candidate, &[lineage], &episode.text) {
+                Ok(_key) => Ok(()),
+                Err(err) => Err(classify_refusal(&err)?),
+            },
+        };
+        let finished_at = epoch_millis();
+        let finish = match outcome {
+            Ok(()) => {
+                report.candidates_proposed += 1;
+                db.mark_extracted(&episode.id, extractor_version);
+                Finish::Succeeded
+            }
+            Err(reason) => {
+                // Decided caching policy: a refused episode is NOT cached
+                // at this version — retryable at the same version.
+                report.gate_rejections.push(GateRejection {
+                    episode_id: episode.id.clone(),
+                    reason: reason.clone(),
+                });
+                Finish::GateRejected { reason }
+            }
+        };
+        runs.record(ExtractionRun {
+            episode_id: episode.id.clone(),
+            extractor_version: extractor_version.to_string(),
+            model_id: None,
+            started_at,
+            finished_at,
+            finish,
+        });
     }
     Ok(report)
 }
@@ -386,6 +466,46 @@ mod tests {
             prop_assert_eq!(flags.len(), 1);
             prop_assert_eq!(&flags[0], &ReflectionFlag::UnknownEvidenceSpan);
         }
+    }
+
+    // bajan-r1h — refusal classification at the wired gate: a store-level
+    // gate refusal (hedge markers dropped, gm_hedge_anchor) maps to its
+    // machine-readable reason; an infrastructure failure (SQL) is never a
+    // gate rejection — it must propagate and never be counted as one.
+    #[test]
+    fn hedge_marker_drops_classify_as_gate_rejections() {
+        let err = crate::store::StoreError::HedgeMarkerDropped {
+            markers: vec!["maybe".into()],
+            spec: crate::store::SPEC,
+        };
+        let reason = classify_refusal(&err).expect("a gate refusal");
+        assert_eq!(reason.code(), "hedge_marker_dropped");
+    }
+
+    #[test]
+    fn infrastructure_failures_are_never_gate_rejections() {
+        let err = crate::store::StoreError::Sqlite {
+            message: "disk I/O error".into(),
+            spec: crate::store::SPEC,
+        };
+        assert!(
+            classify_refusal(&err).is_err(),
+            "SQL failures propagate as infrastructure errors, not gate rejections"
+        );
+    }
+
+    // bajan-r1h — the report carries per-episode refusals with
+    // machine-readable reasons (`ex_run_record`): the serialized shape
+    // exposes the stable snake_case code, never a bare count.
+    #[test]
+    fn gate_rejections_serialize_machine_readable_reasons() {
+        let rejection = GateRejection {
+            episode_id: "ep-1".into(),
+            reason: Reason::HedgeMarkerDropped,
+        };
+        let serialized = serde_json::to_value(&rejection).expect("serialize");
+        assert_eq!(serialized["episode_id"], "ep-1");
+        assert_eq!(serialized["reason"]["code"], "hedge_marker_dropped");
     }
 
     #[test]
