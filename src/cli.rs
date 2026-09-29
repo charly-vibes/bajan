@@ -208,6 +208,15 @@ pub fn run(command: Command) -> String {
     serde_json::to_string(&value).expect("envelope serialization cannot fail")
 }
 
+/// Exit status for an emitted envelope: 0 when the envelope reports `ok`,
+/// 1 when it reports failure. Machine consumers gating on exit status must
+/// never see success for an error envelope (bajan-aan).
+pub fn exit_code(json: &str) -> i32 {
+    let v: serde_json::Value =
+        serde_json::from_str(json).expect("run() always emits valid JSON");
+    if v["ok"].as_bool().unwrap_or(false) { 0 } else { 1 }
+}
+
 /// Render an envelope JSON string as a short human-readable line.
 ///
 /// Text mode is a convenience rendering of the same envelope — never a
@@ -348,6 +357,14 @@ mod tests {
                 "Invariant 3.2.5 violated for {spec}"
             );
         }
+    }
+
+    #[test]
+    fn exit_code_is_zero_only_for_ok_envelopes() {
+        // bajan-aan: exit status mirrors the envelope.
+        assert_eq!(exit_code(&run(Command::Version)), 0);
+        assert_eq!(exit_code(&run(Command::Ingest)), 1);
+        assert_eq!(exit_code(&run(Command::Extract)), 1);
     }
 
     #[test]
