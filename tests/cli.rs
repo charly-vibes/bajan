@@ -45,6 +45,35 @@ fn argument_error_emits_envelope() {
     assert_ne!(code, 0, "argument errors exit non-zero");
 }
 
+// bajan-3w1 (Rule-of-5 CORR-001): bare `bajan` must state the mistake —
+// clap's about line ("Spec-driven knowledge-graph pipeline CLI") is not an
+// error message a consumer can act on.
+#[test]
+fn no_args_error_names_the_missing_subcommand() {
+    let (code, stdout) = bajan(&[]);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("envelope");
+    assert_eq!(v["ok"].as_bool(), Some(false));
+    let msg = v["data"]["message"].as_str().expect("message");
+    assert!(
+        msg.contains("subcommand"),
+        "message must name the missing subcommand, got: {msg}"
+    );
+    assert_ne!(code, 0);
+}
+
+// bajan-3w1 (Rule-of-5 CORR-002): the missing argument itself (`<CLAIMS>...`)
+// must survive in the message — not be truncated away with the header line.
+#[test]
+fn missing_argument_error_names_the_argument() {
+    let (_, stdout) = bajan(&["adopt", "--actor", "x"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("envelope");
+    let msg = v["data"]["message"].as_str().expect("message");
+    assert!(
+        msg.contains("CLAIMS"),
+        "message must name the missing argument, got: {msg}"
+    );
+}
+
 #[test]
 fn version_ok_path_exits_zero() {
     let (code, stdout) = bajan(&["version", "--json"]);
