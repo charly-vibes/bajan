@@ -96,12 +96,17 @@ deriving property land in the same commit so `spk lint`, `ah check`, and
 
 ## 6. Evidence containment (typed gate)
 
-- [ ] 6.1 Write failing property test: spans failing whitespace-collapsed
+- [x] 6.1 Write failing property test: spans failing whitespace-collapsed
       containment are rejected with `evidence-not-contained`, never
       repaired; `unknown` spans persist flagged by the audit pass — red
-- [ ] 6.2 Extend the gate with containment verification and reason
+      (gate + reflection tests)
+- [x] 6.2 Extend the gate with containment verification and reason
       recording; unknown-span flagging rides the deterministic reflection
-      pass (`ex_reflection` extended) — no second audit mechanism — green
+      pass (`ex_reflection` extended) — no second audit mechanism — green:
+      `check_evidence_containment` (shared `collapse` normalization,
+      `Reason::EvidenceNotContained`), `ReflectionFlag::UnknownEvidenceSpan`
+      + `reflection_flags` (flags-only pass — can never reject, repair, or
+      introduce claims by construction)
 
 ## 7. Validation & tidy
 
