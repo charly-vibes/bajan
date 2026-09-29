@@ -1,0 +1,27 @@
+# Hard-blocker gates for bajan.
+# Wired via core.hooksPath -> .beads/hooks/{pre-commit,pre-push} lefthook shims.
+# Bypass (use sparingly, never on spec-affecting changes): LEFTHOOK=0 git commit
+
+pre-commit:
+  commands:
+    dont-gate:
+      run: dont prime --json > /dev/null
+    espectacular:
+      run: ah check
+    specodelic:
+      run: spk lint specs
+    pretender:
+      run: pretender check
+
+pre-push:
+  commands:
+    dont-gate:
+      run: dont prime --json > /dev/null
+    espectacular:
+      run: ah check --run-tests
+    specodelic:
+      run: spk lint specs
+    testaruda-doctor:
+      run: testaruda doctor
+    pretender:
+      run: pretender check

@@ -38,3 +38,4 @@ target
 *.db
 .beads-credential-key
 .dont/
+.pretender/
