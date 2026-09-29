@@ -9,7 +9,25 @@ traces_to = "[[extraction.claims]]"
 [[constraints]]
 id = "ex_typed_gate"
 kind = "invariant"
-expr = "a candidate claim persists only if it validates against the published claim schema and carries at least one episode lineage edge; invalid candidates are rejected, never repaired; an episode with zero valid candidates is legitimately extracted and cached as empty"
+expr = "a candidate claim persists only if it validates against the published claim schema, carries at least one episode lineage edge, and carries an evidence span that passes `ex_evidence_containment`; invalid candidates are rejected, never repaired; an episode with zero valid candidates is legitimately extracted and cached as empty"
+traces_to = "[[extraction.claims]]"
+
+[[constraints]]
+id = "ex_supersession"
+kind = "invariant"
+expr = "re-extracting an episode at a new extractor version supersedes only that episode's `staged` claims derived from prior extractor versions — they become `rejected` with reason `superseded-by-reextraction`, lineage and evidence intact (a tombstone, not a delete) — while `active` and `rejected` claims from any version are never mutated; new output that conflicts with an `active` claim stages an invalidation proposal per `ex_mutation_proposal`; a superseded claim re-enters `staged` only through an explicit re-stage action, never an automated path"
+traces_to = "[[extraction.claims]]"
+
+[[constraints]]
+id = "ex_run_record"
+kind = "invariant"
+expr = "every extraction call writes one run row — episode id, extractor version, model id when the extractor uses an LLM, started and finished timestamps, finish status — parallel to, and without changing, the `(episode id, extractor version)` cache economics; every failure outcome (an episode parked in `rejected` after repeated call failure, every candidate rejection at the validation gate) carries a machine-readable reason stored on the run or rejection record, never on a claim node"
+traces_to = "[[extraction.claims]]"
+
+[[constraints]]
+id = "ex_evidence_containment"
+kind = "invariant"
+expr = "every candidate claim carries an evidence span — a verbatim span of the supporting episode text plus its episode locator, or the typed absent marker when sentence alignment failed — validated by containment after whitespace collapse (all whitespace runs become a single space) of both span and episode text; a span failing containment is rejected with reason `evidence-not-contained`, never repaired; a typed-absent span persists but is flagged by the deterministic pass (`ex_reflection` extended), not treated as a violation"
 traces_to = "[[extraction.claims]]"
 
 [[constraints]]

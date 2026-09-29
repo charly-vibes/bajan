@@ -40,11 +40,41 @@ proptest! {
 
 proptest! {
     // id: p_typed_gate
-    // generator: candidate records mixing schema-valid, schema-violating, lineage-less, and zero-candidate episodes
-    // predicate: only schema-valid lineage-bearing candidates reach `staged`; every violation lands in `rejected` unmodified; a zero-candidate episode caches as legitimately empty
+    // generator: candidate records mixing schema-valid, schema-violating, lineage-less, evidence-less, and zero-candidate episodes
+    // predicate: only schema-valid lineage-bearing candidates with a passing evidence span reach `validated`; every violation lands in `rejected` unmodified; a zero-candidate episode caches as legitimately empty
     #[test]
     fn p_typed_gate() {
-        todo_predicate!("only schema-valid lineage-bearing candidates reach `staged`; every violation lands in `rejected` unmodified; a zero-candidate episode caches as legitimately empty");
+        todo_predicate!("only schema-valid lineage-bearing candidates with a passing evidence span reach `validated`; every violation lands in `rejected` unmodified; a zero-candidate episode caches as legitimately empty");
+    }
+}
+
+proptest! {
+    // id: p_supersession
+    // generator: episode corpora re-extracted at bumped extractor versions with prior output in `staged`, `active`, and `rejected` states
+    // predicate: only prior-version `staged` claims become `rejected` with reason `superseded-by-reextraction`, lineage and evidence remaining queryable; `active` and `rejected` claims from any version never change status; active conflicts stage invalidation proposals; superseded claims re-enter `staged` only via explicit re-stage
+    #[test]
+    fn p_supersession() {
+        todo_predicate!("only prior-version `staged` claims become `rejected` with reason `superseded-by-reextraction`, lineage and evidence remaining queryable; `active` and `rejected` claims from any version never change status; active conflicts stage invalidation proposals; superseded claims re-enter `staged` only via explicit re-stage");
+    }
+}
+
+proptest! {
+    // id: p_run_record
+    // generator: extraction calls with success, repeated-failure, and gate-rejection outcomes
+    // predicate: every call writes exactly one run row with episode id, extractor version, model id when present, timestamps, and finish status; every parked episode and gate rejection carries a machine-readable reason; claim nodes expose no reason field
+    #[test]
+    fn p_run_record() {
+        todo_predicate!("every call writes exactly one run row with episode id, extractor version, model id when present, timestamps, and finish status; every parked episode and gate rejection carries a machine-readable reason; claim nodes expose no reason field");
+    }
+}
+
+proptest! {
+    // id: p_evidence_containment
+    // generator: candidate spans that are contained, non-contained after whitespace collapse, and typed-absent
+    // predicate: contained spans persist verbatim; non-contained spans reject with reason `evidence-not-contained` and are never repaired; typed-absent spans persist flagged by the reflection pass and are never reported as violations
+    #[test]
+    fn p_evidence_containment() {
+        todo_predicate!("contained spans persist verbatim; non-contained spans reject with reason `evidence-not-contained` and are never repaired; typed-absent spans persist flagged by the reflection pass and are never reported as violations");
     }
 }
 

@@ -18,22 +18,25 @@ deriving property land in the same commit so `spk lint`, `ah check`, and
       absent marker per the ingestion-contract convention — never a literal
       colliding with a real span); extend `gm_hedge_anchor` to evidence
       spans + deriving property
-- [ ] 1.3 `specs/extraction-claims.md`: add `ex_supersession` constraint
+- [x] 1.3 `specs/extraction-claims.md`: add `ex_supersession` constraint
       + deriving property (version-bump supersession of `proposed` claims
       only; `active`/`rejected` preserved; tombstone reason
-      `superseded-by-reextraction`)
-- [ ] 1.4 `specs/extraction-claims.md`: add `ex_run_record` constraint
+      `superseded-by-reextraction`) — done 2026-09-29, incl. new
+      `supersede` model transition (staged → rejected)
+- [x] 1.4 `specs/extraction-claims.md`: add `ex_run_record` constraint
       + deriving property (run row per extraction call; machine-readable
       reasons for parked episodes and gate rejections; reasons never on
-      claim nodes)
-- [ ] 1.5 `specs/extraction-claims.md`: add `ex_evidence_containment`
+      claim nodes) — done 2026-09-29
+- [x] 1.5 `specs/extraction-claims.md`: add `ex_evidence_containment`
       constraint + deriving property (whitespace-collapsed containment at
-      the typed gate; `evidence-not-contained` reason; `unknown` spans
-      flagged, not violated); amend `ex_typed_gate` to require evidence
+      the typed gate; `evidence-not-contained` reason; typed-absent spans
+      persist flagged by the reflection pass, never reported as
+      violations); amend `ex_typed_gate` to require evidence — done
+      2026-09-29
 - [x] 1.6 Run gates: `spk lint specs`, `ah check`, `dont check` all green
       (new constraints cite this change's docs / upstream fpa files as
       provenance) — all green 2026-09-29; specodelic artifacts for
-      graph-model regenerated in the same commit
+      graph-model and extraction-claims regenerated in the same commits
 
 ## 2. graph-model implementation (schema v2)
 
