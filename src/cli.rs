@@ -47,7 +47,9 @@ pub enum Command {
     /// Human accept action: move staged claims to active (one audit record
     /// per claim).
     Adopt {
-        /// Claim keys to accept (batch permitted, per-claim audited).
+        /// Claim keys to accept (batch permitted, per-claim audited; at
+        /// least one — a no-op accept must not report success).
+        #[arg(num_args = 1.., required = true)]
         claims: Vec<usize>,
         /// Operator identity; defaults to $USER.
         #[arg(long)]
@@ -268,6 +270,19 @@ mod tests {
         assert!(matches!(cli.command, Command::Version));
     }
 
+    fn staged_seed_node() -> crate::store::ClaimNode {
+        crate::store::ClaimNode {
+            text: "t".into(),
+            valid_at: None,
+            invalid_at: None,
+            data_cutoff: None,
+            status: crate::store::ClaimStatus::Staged,
+            scope: "s".into(),
+            source_type: "episode".into(),
+            evidence: crate::store::Evidence::Unknown,
+        }
+    }
+
     #[test]
     fn adopt_subcommand_parses() {
         let cli = Cli::try_parse_from(["bajan", "adopt", "0", "--actor", "sasha"])
@@ -279,27 +294,16 @@ mod tests {
     fn adopt_envelope_is_ok_for_seeded_store() {
         // Meter (3.2): adopt emits ok:true once the store holds the claim.
         let mut store = ClaimStore::default();
-        store
-            .insert(
-                crate::store::ClaimNode {
-                    status: crate::store::ClaimStatus::Staged,
-                    ..crate::store::ClaimNode {
-                        text: "t".into(),
-                        valid_at: None,
-                        invalid_at: None,
-                        data_cutoff: None,
-                        status: crate::store::ClaimStatus::Staged,
-                        scope: "s".into(),
-                        source_type: "episode".into(),
-                        evidence: crate::store::Evidence::Unknown,
-                    }
-                },
-                "e",
-            )
-            .unwrap();
+        store.insert(staged_seed_node(), "e").unwrap();
         let v =
             serde_json::to_value(adopt_envelope(&mut store, &[0], Some("sasha"))).unwrap();
         assert_eq!(v["ok"].as_bool(), Some(true), "adopt emits ok envelope");
+    }
+
+    // EDGE-001 (ro5u): a no-op accept must not report success.
+    #[test]
+    fn adopt_requires_at_least_one_claim_key() {
+        assert!(Cli::try_parse_from(["bajan", "adopt"]).is_err());
     }
 
     #[test]
