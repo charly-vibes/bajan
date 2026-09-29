@@ -26,6 +26,18 @@ pub mod spec_gen {
         Just(GenVal("artifacts".into()))
     }
 
+    pub fn text() -> impl Strategy<Value = GenVal> {
+        Just(GenVal("text".into()))
+    }
+
+    pub fn interleaved() -> impl Strategy<Value = GenVal> {
+        Just(GenVal("interleaved".into()))
+    }
+
+    pub fn class() -> impl Strategy<Value = GenVal> {
+        Just(GenVal("class".into()))
+    }
+
 }
 
 proptest! {
@@ -61,20 +73,60 @@ proptest! {
 proptest! {
     // id: p_date_fidelity
     // generator: episodes with missing, malformed, and valid cutoff dates
-    // predicate: stored cutoff equals source cutoff when present, `unknown` otherwise; never ingest time
+    // predicate: stored cutoff equals source cutoff when present, explicit absent marker otherwise; never ingest time
     #[test]
     fn p_date_fidelity() {
-        todo_predicate!("stored cutoff equals source cutoff when present, `unknown` otherwise; never ingest time");
+        todo_predicate!("stored cutoff equals source cutoff when present, explicit absent marker otherwise; never ingest time");
     }
 }
 
 proptest! {
     // id: p_malformed
-    // generator: episode records missing verbatim text, a stable id, or required metadata
+    // generator: episode records missing verbatim text (including empty and whitespace-only text), a stable id, or required metadata
     // predicate: no malformed record reaches `persisted`; every malformed record is `rejected`
     #[test]
-    fn p_malformed() {
+    fn p_malformed(v0 in spec_gen::text()) {
         todo_predicate!("no malformed record reaches `persisted`; every malformed record is `rejected`");
+    }
+}
+
+proptest! {
+    // id: p_id_canon
+    // generator: id pairs differing only by NFC vs NFD form, plus empty and whitespace-only ids
+    // predicate: normalization-variant ids resolve to one episode idempotently; empty or whitespace-only ids are rejected
+    #[test]
+    fn p_id_canon() {
+        todo_predicate!("normalization-variant ids resolve to one episode idempotently; empty or whitespace-only ids are rejected");
+    }
+}
+
+proptest! {
+    // id: p_unique_id
+    // generator: overlapping streams submitted sequentially and interleaved (concurrently)
+    // predicate: exactly one persisted episode per stable id; the interleaved final graph equals the sequential one
+    #[test]
+    fn p_unique_id(v0 in spec_gen::interleaved()) {
+        todo_predicate!("exactly one persisted episode per stable id; the interleaved final graph equals the sequential one");
+    }
+}
+
+proptest! {
+    // id: p_batch_resume
+    // generator: streams interrupted after each k of N episodes, then fully re-submitted
+    // predicate: the final graph equals the graph of a single uninterrupted submission; no episode is half-persisted
+    #[test]
+    fn p_batch_resume() {
+        todo_predicate!("the final graph equals the graph of a single uninterrupted submission; no episode is half-persisted");
+    }
+}
+
+proptest! {
+    // id: p_outcome_schema
+    // generator: streams producing every outcome class (new, duplicate, malformed)
+    // predicate: every ingest run emits exactly one outcome record per submitted episode and the published outcome schema validates each record
+    #[test]
+    fn p_outcome_schema(v0 in spec_gen::class()) {
+        todo_predicate!("every ingest run emits exactly one outcome record per submitted episode and the published outcome schema validates each record");
     }
 }
 

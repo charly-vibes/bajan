@@ -3,13 +3,31 @@ source = "ingestion.contract"
 [[constraints]]
 id = "ic_verbatim"
 kind = "invariant"
-expr = "an episode persists its verbatim text plus a locator (heading anchor, text fragment, page/slide, or the literal `unknown` when none is derivable), immutable source metadata (stable id, source type, data cutoff, authority tier, optional workspace tags), and any converter-supplied structure markers (section boundaries, links)"
+expr = "an episode persists its verbatim text plus a locator (heading anchor, text fragment, page/slide) or an explicit absent marker when none is derivable — absent is represented so it can never collide with a real locator value — plus immutable source metadata (stable id, source type, data cutoff, authority tier, optional workspace tags), and any converter-supplied structure markers (section boundaries, links)"
 traces_to = "[[ingestion.contract]]"
 
 [[constraints]]
 id = "ic_malformed"
 kind = "invariant"
-expr = "an episode missing verbatim text, a stable id, or required source metadata is rejected and never persisted"
+expr = "an episode whose verbatim text is absent, empty, or whitespace-only, or that lacks a stable id or required source metadata, is rejected and never persisted"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
+id = "ic_id_canon"
+kind = "invariant"
+expr = "a stable id is a nonempty, non-whitespace-only string in NFC normalization; id equality is decided on the normalized form — two records whose ids differ only by Unicode normalization form denote the same episode"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
+id = "ic_unique_id"
+kind = "invariant"
+expr = "the store holds at most one persisted episode per stable id, independent of submission order, interleaving, or concurrency; a submission matching an already-persisted id never creates a second episode"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
+id = "ic_batch_resume"
+kind = "invariant"
+expr = "episode persistence is transactional per episode (each episode all-or-nothing) and batch atomicity is not guaranteed; re-submitting a stream after a partial persistence converges to the graph a single uninterrupted submission would have produced"
 traces_to = "[[ingestion.contract]]"
 
 [[constraints]]
@@ -27,11 +45,17 @@ traces_to = "[[ingestion.contract]]"
 [[constraints]]
 id = "ic_date_fidelity"
 kind = "advisory"
-expr = "a persisted episode's data cutoff is the source's cutoff when discoverable, `unknown` otherwise — never the ingest timestamp"
+expr = "a persisted episode's data cutoff is the source's cutoff when discoverable, an explicit absent marker otherwise — never the ingest timestamp"
 traces_to = "[[ingestion.contract]]"
 
 [[constraints]]
 id = "ic_stream-schema"
 kind = "extension_point"
-expr = "the episode-stream record schema (field names, types, requiredness) is published for converters to conform to"
+expr = "the episode-stream record schema (field names, types, requiredness, including the absent-marker representation for locator and cutoff fields) is published for converters to conform to"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
+id = "ic_outcome-schema"
+kind = "extension_point"
+expr = "the per-episode ingest outcome record schema (`persisted`, `already_persisted`, `rejected` with machine-readable reason) is published for converter specs to conform to"
 traces_to = "[[ingestion.contract]]"
