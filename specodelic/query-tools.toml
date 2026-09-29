@@ -1,0 +1,43 @@
+source = "query.tools"
+
+[[constraints]]
+id = "qt_lineage_traceable"
+kind = "invariant"
+expr = "every claim returned by a read command resolves, at query time, through its `derived_from` edges to at least one persisted supporting episode; a claim whose lineage walk reaches no episode is invisible to the query surface (deletion by lineage walk per `gm_lineage_survives`)"
+traces_to = "[[query.tools]]"
+
+[[constraints]]
+id = "qt_bounded_traversal"
+kind = "invariant"
+expr = "every read command executes under a bounded traversal budget — a maximum walked node count and depth — and reports a typed exhausted-budget marker when results are truncated; the stopping rule is honest: `not-found` is reported when the budget completed without a match, `budget-exhausted` when it stopped early — never a silent partial answer"
+traces_to = "[[query.tools]]"
+
+[[constraints]]
+id = "qt_ranking"
+kind = "invariant"
+expr = "multi-hit read results order by the supporting episodes' metadata reachable through lineage — authority tier first, then data cutoff recency; when a comparably-relevant higher-authority source is stale (beyond the staleness window) it demotes below fresh lower-authority hits; every hit surfaces its data cutoff, and the best-scoring hit carries a staleness warning when its cutoff is stale"
+traces_to = "[[query.tools]]"
+
+[[constraints]]
+id = "qt_scope_filtering"
+kind = "invariant"
+expr = "a read command scoped to a workspace tag set returns only claims whose resolved tag projection (the union over its lineage edges per `ex_tag_inheritance`) intersects the requested scope; a claim outside the requested scope is either excluded or labelled with its own scope in the result — never silently blended"
+traces_to = "[[query.tools]]"
+
+[[constraints]]
+id = "qt_readonly"
+kind = "invariant"
+expr = "read commands never mutate the graph — no state transition, no audit record, no derived-from edge is written by any query; a read against a claim set with active and invalid claims returns the status of every hit verbatim, never silently dropping `invalid` claims from results"
+traces_to = "[[query.tools]]"
+
+[[constraints]]
+id = "qt_contradiction_query"
+kind = "invariant"
+expr = "a contradiction query returns the claim pairs joined by `contradicts` edges plus the invalidation proposals staged against the queried claims (per `ex_mutation_proposal`), each hit carrying both sides' lineage and status; the query reports graph structure only and never adjudicates which side is true"
+traces_to = "[[query.tools]]"
+
+[[constraints]]
+id = "qt_query-schema"
+kind = "extension_point"
+expr = "the query result record schema (fields, types, requiredness, including the budget-status vocabulary `complete`, `budget-exhausted` and the staleness marker form) is published for reporting and agent-tool specs to conform to"
+traces_to = "[[query.tools]]"
