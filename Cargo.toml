@@ -2,13 +2,19 @@
 name = "bajan"
 version = "0.1.0"
 edition = "2024"
-description = "Spec-driven knowledge-graph pipeline CLI"
+description = "Spec-driven knowledge-graph pipeline CLI — ingest sources, extract claims, query the graph"
 license = "Apache-2.0"
 repository = "https://github.com/charly-vibes/bajan"
+readme = "README.md"
+keywords = ["cli", "knowledge-graph", "claims", "extraction", "charly-vibes"]
+categories = ["command-line-utilities", "text-processing"]
+include = ["src/**/*", "/Cargo.toml", "/Cargo.lock", "/LICENSE", "/README.md"]
 
 [dependencies]
-# Suite envelope output — genesis is the shared charly-vibes infrastructure crate.
-genesis = { package = "genesis-vibes", git = "https://github.com/charly-vibes/genesis" }
+# Suite envelope output — genesis is the shared charly-vibes infrastructure
+# crate. Registry dep (NOT git): cargo publish requires all deps to resolve
+# on crates.io.
+genesis = { package = "genesis-vibes", version = "0.8" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
