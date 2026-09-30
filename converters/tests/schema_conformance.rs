@@ -155,6 +155,28 @@ fn md_round_trip_idempotent() {
     );
 }
 
+// --- control bytes -------------------------------------------------------
+
+/// C0 control bytes from pdf-extract (e.g. \x01 bullet artifacts) must never
+/// survive into episode text (bajan-6jp) — they would corrupt ic_verbatim
+/// prose and downstream claims. collapse() strips all C0 controls except
+/// \n and \t (which split_whitespace collapses anyway). Exercised through
+/// the markdown path, which shares the same collapse() as the pdf path.
+#[test]
+fn md_control_bytes_stripped_from_text() {
+    let eps =
+        markdown_episodes("# Audits\n\n\u{1} In 1989, the auditor resigned.\n").expect("converts");
+    assert_eq!(eps.len(), 1);
+    let text = &eps[0].text;
+    assert_eq!(text, "In 1989, the auditor resigned.");
+    assert!(
+        !text
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t'),
+        "control bytes leaked into episode text: {text:?}"
+    );
+}
+
 // --- html mapping --------------------------------------------------------
 
 /// h1..h6 elements become heading anchors; text between them joins into

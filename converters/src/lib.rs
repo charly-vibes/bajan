@@ -30,9 +30,17 @@ pub fn default_source(source_type: &str) -> SourceMeta {
     }
 }
 
-/// Collapse runs of whitespace and trim.
+/// Collapse runs of whitespace and trim, stripping C0 control characters
+/// except \n and \t (bajan-6jp: pdf-extract emits bullet artifacts as raw
+/// \x01 bytes; they must never reach ic_verbatim episode text). \n and \t
+/// are preserved here so the split_whitespace collapse still sees them as
+/// separators — they never survive into output themselves.
 fn collapse(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    let stripped: String = text
+        .chars()
+        .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
+        .collect();
+    stripped.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// One pending episode under construction: paragraphs accumulated since
