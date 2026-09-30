@@ -175,6 +175,26 @@ proptest! {
 }
 
 proptest! {
+    // id: p_deleted_tombstone
+    // generator: a stream ingested, an episode with no supporting claims deleted, then the same stream re-submitted unchanged and shuffled
+    // predicate: exactly the deleted id is rejected with the deleted-id reason on every re-submission; all other episodes re-ingest idempotently; the graph equals the plain-ingest graph minus the deleted episode — no resurrection in any submission order
+    #[test]
+    fn p_deleted_tombstone() {
+        todo_predicate!("exactly the deleted id is rejected with the deleted-id reason on every re-submission; all other episodes re-ingest idempotently; the graph equals the plain-ingest graph minus the deleted episode — no resurrection in any submission order");
+    }
+}
+
+proptest! {
+    // id: p_deleted_recreate
+    // generator: tombstoned ids with and without an explicit revive, followed by unchanged and corrected submissions
+    // predicate: without revive every submission is rejected with the deleted-id reason and the graph is unchanged; revive alone changes nothing; the first post-revive submission persists through the normal path exactly once
+    #[test]
+    fn p_deleted_recreate() {
+        todo_predicate!("without revive every submission is rejected with the deleted-id reason and the graph is unchanged; revive alone changes nothing; the first post-revive submission persists through the normal path exactly once");
+    }
+}
+
+proptest! {
     // id: p_batch_duplicate
     // generator: streams containing repeated ids within one batch, with differing payloads after the first occurrence
     // predicate: exactly the first occurrence persists; each later occurrence is rejected with a duplicate reason; all other episodes in the batch persist

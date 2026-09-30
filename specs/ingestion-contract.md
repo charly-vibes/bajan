@@ -31,7 +31,12 @@ Extraction state stays orthogonal to ingestion (bajan-42y): an episode
 parked by extraction after repeated call failure is persisted, so its
 unchanged re-submission is already_persisted; the park and its retry
 accounting live in extraction run records (`ex_park_requeue` in
-extraction.claims), never on ingest outcome records.
+extraction.claims), never on ingest outcome records. Deletion is
+tombstoned (bajan-vye): deleting an episode — permitted only when no
+claim supports it, per `gm_lineage_survives` in graph.model — records a
+deletion tombstone for its stable id, so re-ingesting the stream never
+resurrects it; recreation requires an explicit operator revive, after
+which the id goes through the normal acceptance path again.
 
 ## Constraints
 
@@ -47,6 +52,8 @@ extraction.claims), never on ingest outcome records.
 | ic_mutated_resubmit | invariant | a re-submission of a stable id already persisted in the store whose verbatim text, locator, or source metadata differs from the persisted episode is rejected with a machine-readable conflict reason; the persisted episode is never updated in place and never duplicated — updating would orphan claims whose lineage text no longer matches, violating the hedge-anchor discipline | [[ingestion.contract]] |
 | ic_corrected_resubmit | invariant | a stable id in state rejected may be re-submitted with a corrected record; the corrected record passes through the same acceptance path as a fresh episode and persists exactly once | [[ingestion.contract]] |
 | ic_state_orthogonal | invariant | an ingest outcome record reflects only ingestion outcomes with their own machine-readable reasons (`malformed`, `conflict`, `duplicate`); extraction state never appears on it — an episode parked in extraction's `rejected` after repeated call failure is persisted, so its unchanged re-submission is `already_persisted`, and the parked episode's retry accounting lives exclusively in extraction run records | [[ingestion.contract]] |
+| ic_deleted_tombstone | invariant | deleting a persisted episode — permitted only when no claim supports it, per `gm_lineage_survives` in graph.model — removes the episode and records a deletion tombstone for its stable id; any later submission of a tombstoned id, unchanged or mutated, is rejected with a machine-readable deleted-id reason; the tombstone survives every re-submission, so the graph after ingest → delete → re-ingest equals the plain-ingest graph exactly minus the deleted episode — re-ingest never resurrects a deleted episode | [[ingestion.contract]] |
+| ic_deleted_recreate | invariant | a tombstoned stable id becomes re-ingestable only through an explicit operator revive action that clears the tombstone; revive alone changes nothing until a new submission, which then persists through the normal acceptance path exactly once — no automated path (re-ingest, batch replay, dump-recreate rebuild) clears a tombstone | [[ingestion.contract]] |
 | ic_batch_duplicate | invariant | within one submitted stream, the first occurrence of a stable id persists and every later occurrence of that id in the same stream is rejected with a machine-readable duplicate reason; rejection is per record and never extends to other episodes in the batch | [[ingestion.contract]] |
 | ic_empty_stream | invariant | a stream with zero episodes is a valid no-op: ingest succeeds, emits zero outcome records, and leaves the graph unchanged — it is never an error | [[ingestion.contract]] |
 | ic_order_insensitive | invariant | ingesting the same episode stream in any episode order yields an identical graph, both on first ingest and when re-ingesting an already-ingested stream | [[ingestion.contract]] |
@@ -90,6 +97,8 @@ extraction.claims), never on ingest outcome records.
 | p_stream_schema | unit | [[ingestion.contract.ic_stream-schema]] | record instances sampled from the published schema | schema document validates every emitted record |
 | p_corrected_resubmit | unit | [[ingestion.contract.ic_corrected_resubmit]] | streams with rejected (malformed) records followed by corrected variants of the same ids | the corrected re-submission persists through the normal acceptance path exactly once |
 | p_state_orthogonal | unit | [[ingestion.contract.ic_state_orthogonal]] | episodes parked by extraction, re-submitted unchanged and with mutations | the unchanged re-submission emits `already_persisted`; no ingest outcome record carries extraction state or extraction reasons; a mutated re-submission is rejected with a conflict reason as usual |
+| p_deleted_tombstone | unit | [[ingestion.contract.ic_deleted_tombstone]] | a stream ingested, an episode with no supporting claims deleted, then the same stream re-submitted unchanged and shuffled | exactly the deleted id is rejected with the deleted-id reason on every re-submission; all other episodes re-ingest idempotently; the graph equals the plain-ingest graph minus the deleted episode — no resurrection in any submission order |
+| p_deleted_recreate | unit | [[ingestion.contract.ic_deleted_recreate]] | tombstoned ids with and without an explicit revive, followed by unchanged and corrected submissions | without revive every submission is rejected with the deleted-id reason and the graph is unchanged; revive alone changes nothing; the first post-revive submission persists through the normal path exactly once |
 | p_batch_duplicate | unit | [[ingestion.contract.ic_batch_duplicate]] | streams containing repeated ids within one batch, with differing payloads after the first occurrence | exactly the first occurrence persists; each later occurrence is rejected with a duplicate reason; all other episodes in the batch persist |
 | p_empty_stream | unit | [[ingestion.contract.ic_empty_stream]] | zero-episode streams | ingest succeeds with zero outcome records and an unchanged graph |
 | p_order_insensitive | unit | [[ingestion.contract.ic_order_insensitive]] | a stream and random shuffles of it, ingested fresh and as re-ingest over an already-ingested store | every episode order yields an identical graph |

@@ -61,6 +61,18 @@ expr = "an ingest outcome record reflects only ingestion outcomes with their own
 traces_to = "[[ingestion.contract]]"
 
 [[constraints]]
+id = "ic_deleted_tombstone"
+kind = "invariant"
+expr = "deleting a persisted episode — permitted only when no claim supports it, per `gm_lineage_survives` in graph.model — removes the episode and records a deletion tombstone for its stable id; any later submission of a tombstoned id, unchanged or mutated, is rejected with a machine-readable deleted-id reason; the tombstone survives every re-submission, so the graph after ingest → delete → re-ingest equals the plain-ingest graph exactly minus the deleted episode — re-ingest never resurrects a deleted episode"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
+id = "ic_deleted_recreate"
+kind = "invariant"
+expr = "a tombstoned stable id becomes re-ingestable only through an explicit operator revive action that clears the tombstone; revive alone changes nothing until a new submission, which then persists through the normal acceptance path exactly once — no automated path (re-ingest, batch replay, dump-recreate rebuild) clears a tombstone"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
 id = "ic_batch_duplicate"
 kind = "invariant"
 expr = "within one submitted stream, the first occurrence of a stable id persists and every later occurrence of that id in the same stream is rejected with a machine-readable duplicate reason; rejection is per record and never extends to other episodes in the batch"

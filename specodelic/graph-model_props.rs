@@ -84,11 +84,11 @@ proptest! {
 
 proptest! {
     // id: p_embedded_store
-    // generator: seeded graphs of arbitrary size
-    // predicate: dump-then-recreate from episode stream plus extraction output reproduces the graph exactly
+    // generator: seeded graphs of arbitrary size, with and without deletion tombstones
+    // predicate: dump-then-recreate from episode stream plus extraction output plus tombstones reproduces the graph exactly, deletions included
     #[test]
     fn p_embedded_store() {
-        todo_predicate!("dump-then-recreate from episode stream plus extraction output reproduces the graph exactly");
+        todo_predicate!("dump-then-recreate from episode stream plus extraction output plus tombstones reproduces the graph exactly, deletions included");
     }
 }
 

@@ -15,7 +15,7 @@ traces_to = "[[graph.model]]"
 [[constraints]]
 id = "gm_lineage_survives"
 kind = "invariant"
-expr = "invalidation sets `invalid_at` and never destroys lineage; a claim is deleted only when no episode supports it any longer"
+expr = "invalidation sets `invalid_at` and never destroys lineage; a claim is deleted only when no episode supports it any longer; episode deletion — permitted only when no claim supports the episode — records a tombstone for its stable id per `ic_deleted_tombstone` in ingestion.contract, so re-ingest never resurrects a deleted episode and recreation requires the explicit revive action per `ic_deleted_recreate`"
 traces_to = "[[graph.model]]"
 
 [[constraints]]
@@ -39,7 +39,7 @@ traces_to = "[[graph.model]]"
 [[constraints]]
 id = "gm_embedded_store"
 kind = "invariant"
-expr = "the graph persists as plain rows in a single embedded SQLite database and is fully rebuildable from the episode stream plus extraction output"
+expr = "the graph persists as plain rows in a single embedded SQLite database — including deletion tombstones — and is fully rebuildable from the episode stream plus extraction output plus tombstones, so a dump-recreate reproduces deletions and never resurrects a deleted episode"
 traces_to = "[[graph.model]]"
 
 [[constraints]]
