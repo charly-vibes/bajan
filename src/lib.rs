@@ -7,6 +7,7 @@
 pub mod cli;
 pub mod extract;
 pub mod ingest;
+pub mod llm;
 pub mod query;
 pub mod resolve;
 pub mod review;

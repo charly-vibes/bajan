@@ -722,9 +722,10 @@ fn extract_with(db: &crate::store::sqlite::SqliteStore) -> serde_json::Value {
                 Some("specs/extraction-claims.md"),
                 "extract",
                 vec![RemediationEntry {
-                    command: "BAJAN_EXTRACTOR=legacy bajan extract".into(),
-                    description: "Select the default deterministic extractor (legacy is the \
-                                  default; the llm extractor arrives with bajan-vg6)."
+                    command: "BAJAN_EXTRACTOR=atomic bajan extract".into(),
+                    description: "Select the default deterministic extractor (atomic is the \
+                                  default; llm needs BAJAN_EXTRACTOR_MODEL, \
+                                  BAJAN_EXTRACTOR_BASE_URL and BAJAN_EXTRACTOR_API_KEY_ENV)."
                         .into(),
                 }],
             );

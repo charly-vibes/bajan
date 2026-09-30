@@ -19,10 +19,11 @@ thiserror = "2"
 # traditional IR/NLP works; format parsers stay upstream-converter-only.
 unicode-normalization = "=0.1.25"   # NFC id canonicalization (ic_id_canon)
 unicode-segmentation = "=1.13.3"    # UAX #29 sentence boundaries (alignment aid only)
-text-splitter = "=0.33.0"           # chunk assembly — input for ONE extraction call (ex_single_call)
+text-splitter = { version = "=0.33.0", features = ["tiktoken-rs"] }           # chunk assembly — input for ONE extraction call (ex_single_call)
 tiktoken-rs = "=0.12.1"             # token budget counting
 simhash = "=0.3.0"                  # simhash dedup (length-guarded: exact match below threshold)
 aho-corasick = "=1.1.5"             # whitespace-collapsed containment search (pure string ops)
+ureq = "=3.4.2"
 
 [dev-dependencies]
 proptest = "1"

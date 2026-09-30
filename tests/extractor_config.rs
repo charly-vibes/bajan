@@ -52,21 +52,23 @@ fn unknown_kind_refused_at_selection() {
     assert!(err.to_string().contains("unknown extractor kind"));
 }
 
-/// kind = llm with a complete parameter surface validates — and then
-/// honestly reports not-implemented until bajan-vg6 lands the extractor.
+/// kind = llm with a complete parameter surface selects the real LLM
+/// extractor (bajan-vg6 implemented it; the honest NotImplemented gate
+/// is gone).
 #[test]
-fn llm_with_full_config_validates_then_honest_gate() {
+fn llm_with_full_config_selects_extractor() {
     let config = bajan::extract::ExtractorConfig::from_env_with(&lookup_from(&[
         ("BAJAN_EXTRACTOR", "llm"),
         ("BAJAN_EXTRACTOR_MODEL", "gpt-4o-mini"),
         ("BAJAN_EXTRACTOR_BASE_URL", "https://api.example.com/v1"),
         ("BAJAN_EXTRACTOR_API_KEY_ENV", "MY_API_KEY"),
     ]));
-    let err = config.select().expect_err("llm not implemented yet");
-    assert!(matches!(
-        err,
-        ExtractorConfigError::NotImplemented { ref kind } if kind == "llm"
-    ));
+    let extractor = config.select().expect("llm selects the real extractor");
+    assert_eq!(extractor.model_id(), Some("gpt-4o-mini"));
+    assert_eq!(
+        extractor.version(),
+        format!("llm-gpt-4o-mini-{}", env!("CARGO_PKG_VERSION"))
+    );
 }
 
 /// Each missing llm parameter is named individually — misconfiguration is

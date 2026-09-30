@@ -106,6 +106,15 @@ impl ExtractionRunStore {
     }
 }
 
+/// One park outcome on the report (`ex_single_call` abort path): the
+/// parked episode and its machine-readable reason — repeated call
+/// failure after the extractor's retry budget was exhausted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ParkedEpisode {
+    pub episode_id: String,
+    pub reason: Reason,
+}
+
 /// One gate refusal on the report (`ex_typed_gate` refuse path): the
 /// refused episode and its machine-readable reason (`ex_run_record` —
 /// reasons live on rejection records, never on claim nodes).
@@ -139,6 +148,13 @@ pub enum ExtractionFailure {
     /// fails; the episode stays pending and retryable.
     #[error("extraction infrastructure failure: {0}")]
     Infrastructure(String),
+    /// The extractor exhausted its retry budget (`ex_single_call`
+    /// repeated-failure abort). The PIPELINE parks the episode: run row
+    /// `Parked` with reason `repeated_call_failure`, report entry, no
+    /// cache entry — the next pass re-attempts with a fresh budget
+    /// (`ex_park_requeue`).
+    #[error("extraction retry budget exhausted after {attempts} attempts")]
+    Exhausted { attempts: u32 },
 }
 
 /// The extractor seam (bajan-9av): the boundary between persisted
@@ -187,6 +203,10 @@ pub struct ExtractReport {
     pub candidates_proposed: usize,
     pub superseded: usize,
     pub gate_rejections: Vec<GateRejection>,
+    /// Episodes parked this pass after retry-budget exhaustion
+    /// (`ex_single_call` abort; `ex_park_requeue`: no cache entry — the
+    /// next pass re-attempts with a fresh budget).
+    pub parked: Vec<ParkedEpisode>,
 }
 
 /// Classify a store refusal at the wired gate (bajan-r1h): a gate-level
@@ -415,8 +435,8 @@ impl Extractor for LegacyProposer {
 pub struct ExtractorConfig {
     /// Extractor kind: `atomic` (the deterministic sentence atomizer,
     /// the default since bajan-5zy), `legacy` (the byte-stable
-    /// whole-episode proposer for existing stores) — `llm` selects the
-    /// LLM extractor (implemented by bajan-vg6).
+    /// whole-episode proposer for existing stores), `llm` (the real LLM
+    /// extractor, bajan-vg6).
     pub kind: String,
     /// Model id when kind = llm (e.g. `gpt-4o-mini`).
     pub model_id: Option<String>,
@@ -426,6 +446,13 @@ pub struct ExtractorConfig {
     /// kind = llm — the key itself is read at call time, never stored
     /// in config or envelopes.
     pub api_key_env: Option<String>,
+    /// Model context budget in tokens when kind = llm (chunk sizing:
+    /// budget minus prompt overhead). Defaults to
+    /// `llm::LLM_DEFAULT_CONTEXT_TOKENS` when None.
+    pub context_tokens: Option<usize>,
+    /// Retry budget (total attempts per episode per pass) when
+    /// kind = llm. Defaults to `llm::LLM_DEFAULT_MAX_ATTEMPTS` when None.
+    pub max_attempts: Option<u32>,
 }
 
 /// Machine-readable extractor-selection errors — envelope surface,
@@ -438,10 +465,6 @@ pub enum ExtractorConfigError {
     /// kind = llm selected but its required parameter is missing.
     #[error("extractor llm requires {param}")]
     MissingParam { param: &'static str },
-    /// The selected extractor is not implemented in this build — honest
-    /// gate until bajan-vg6 lands the LLM extractor.
-    #[error("extractor not available in this build: {kind}")]
-    NotImplemented { kind: String },
 }
 
 impl ExtractorConfig {
@@ -453,6 +476,8 @@ impl ExtractorConfig {
             model_id: lookup("BAJAN_EXTRACTOR_MODEL"),
             base_url: lookup("BAJAN_EXTRACTOR_BASE_URL"),
             api_key_env: lookup("BAJAN_EXTRACTOR_API_KEY_ENV"),
+            context_tokens: None,
+            max_attempts: None,
         }
     }
 
@@ -470,25 +495,31 @@ impl ExtractorConfig {
             })),
             "llm" => {
                 // Validate the parameter surface now so misconfiguration
-                // fails at selection, not mid-run (bajan-vg6 consumes).
-                if self.model_id.is_none() {
+                // fails at selection, not mid-run.
+                let Some(model_id) = self.model_id.clone() else {
                     return Err(ExtractorConfigError::MissingParam {
                         param: "BAJAN_EXTRACTOR_MODEL",
                     });
-                }
-                if self.base_url.is_none() {
+                };
+                let Some(base_url) = self.base_url.clone() else {
                     return Err(ExtractorConfigError::MissingParam {
                         param: "BAJAN_EXTRACTOR_BASE_URL",
                     });
-                }
-                if self.api_key_env.is_none() {
+                };
+                let Some(api_key_env) = self.api_key_env.clone() else {
                     return Err(ExtractorConfigError::MissingParam {
                         param: "BAJAN_EXTRACTOR_API_KEY_ENV",
                     });
-                }
-                Err(ExtractorConfigError::NotImplemented {
-                    kind: self.kind.clone(),
-                })
+                };
+                Ok(Box::new(crate::llm::LlmExtractor::new(
+                    model_id,
+                    base_url,
+                    api_key_env,
+                    self.context_tokens
+                        .unwrap_or(crate::llm::LLM_DEFAULT_CONTEXT_TOKENS),
+                    self.max_attempts
+                        .unwrap_or(crate::llm::LLM_DEFAULT_MAX_ATTEMPTS),
+                )))
             }
             other => Err(ExtractorConfigError::UnknownKind {
                 kind: other.to_string(),
@@ -569,6 +600,7 @@ pub fn run_extract_with(
         candidates_proposed: 0,
         superseded: 0,
         gate_rejections: Vec::new(),
+        parked: Vec::new(),
     };
     for episode in &pending {
         let started_at = epoch_millis();
@@ -581,12 +613,36 @@ pub fn run_extract_with(
         let tombstoned =
             db.supersede_prior_versions(&episode.id, &extractor_version, started_at)?;
         report.superseded += tombstoned.len();
-        // Propose through the seam. Infrastructure failures propagate —
-        // the run fails honestly; the episode stays pending and the
-        // failure is never misreported as a gate rejection.
-        let proposed = extractor
-            .propose(episode)
-            .map_err(|e| BajanError::Store(e.to_string()))?;
+        // Propose through the seam. Two failure classes (`ex_run_record`
+        // class separation): budget exhaustion PARKS the episode — run
+        // row with the machine-readable reason, report entry, no cache
+        // entry, the pass moves on (`ex_park_requeue`: the next pass
+        // re-attempts with a fresh budget); a non-retryable
+        // infrastructure failure propagates — the run fails honestly, the
+        // episode stays pending, and the failure is never misreported as
+        // a gate rejection or a park.
+        let proposed = match extractor.propose(episode) {
+            Ok(proposed) => proposed,
+            Err(ExtractionFailure::Exhausted { attempts }) => {
+                let reason = Reason::RepeatedCallFailure { attempts };
+                report.parked.push(ParkedEpisode {
+                    episode_id: episode.id.clone(),
+                    reason: reason.clone(),
+                });
+                runs.record(ExtractionRun {
+                    episode_id: episode.id.clone(),
+                    extractor_version: extractor_version.clone(),
+                    model_id: model_id.clone(),
+                    started_at,
+                    finished_at: epoch_millis(),
+                    finish: Finish::Parked { reason },
+                });
+                continue;
+            }
+            Err(ExtractionFailure::Infrastructure(message)) => {
+                return Err(BajanError::Store(message));
+            }
+        };
         let lineage = Lineage {
             episode_id: episode.id.clone(),
             extractor_version: extractor_version.clone(),
