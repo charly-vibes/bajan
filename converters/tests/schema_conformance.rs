@@ -97,6 +97,51 @@ fn md_ids_deterministic() {
     );
 }
 
+/// Ids are unique within one converted stream even when anchors differ
+/// only by case: the slug lowercases, so disambiguation must count per
+/// DERIVED slug (bajan-a4d) — 'Notes' and 'notes' cannot both be `notes`.
+#[test]
+fn md_ids_unique_across_case_variant_anchors() {
+    let eps = markdown_episodes("# Notes\n\nOne.\n\n# notes\n\nTwo.\n").expect("converts");
+    assert_eq!(eps.len(), 2);
+    assert_ne!(eps[0].id, eps[1].id, "case-variant anchors collide on slug");
+}
+
+/// Ids are unique even when one heading's slug equals another anchor's
+/// disambiguator form: 'Notes', 'Notes', 'Notes 2' — the third heading
+/// must not receive the same `notes-2` the disambiguator produced.
+#[test]
+fn md_ids_unique_when_heading_text_mimics_disambiguator() {
+    let eps = markdown_episodes("# Notes\n\nOne.\n\n# Notes\n\nTwo.\n\n# Notes 2\n\nThree.\n")
+        .expect("converts");
+    assert_eq!(eps.len(), 3);
+    let mut ids: Vec<&str> = eps.iter().map(|e| e.id.as_str()).collect();
+    ids.sort();
+    assert_eq!(
+        ids.windows(2).filter(|w| w[0] == w[1]).count(),
+        0,
+        "duplicate ids in one stream: {ids:?}"
+    );
+}
+
+/// Stream-wide id uniqueness for html too, over case variants and
+/// disambiguator look-alikes in one document.
+#[test]
+fn html_ids_unique_across_case_variant_anchors() {
+    let eps = html_episodes(
+        "<h1>Notes</h1><p>One.</p><h1>notes</h1><p>Two.</p><h1>notes-2</h1><p>Three.</p>",
+    )
+    .expect("converts");
+    assert_eq!(eps.len(), 3);
+    let mut ids: Vec<&str> = eps.iter().map(|e| e.id.as_str()).collect();
+    ids.sort();
+    assert_eq!(
+        ids.windows(2).filter(|w| w[0] == w[1]).count(),
+        0,
+        "duplicate ids in one stream: {ids:?}"
+    );
+}
+
 /// Same document converted twice and ingested into the same store:
 /// second submission is already_persisted, never a duplicate (ic_idempotent).
 #[test]
@@ -182,5 +227,30 @@ fn serialized_stream_round_trips_through_bajan() {
         let outcomes = persist_all(&parsed);
         assert_eq!(outcomes.len(), eps.len());
         assert!(outcomes.iter().all(|o| outcome_of(o) == "persisted"));
+    }
+}
+
+use proptest::prelude::*;
+
+// Stream-wide id uniqueness over arbitrary heading corpora: any sequence
+// of (level, anchor-text) headings with a body must emit pairwise-distinct
+// ids (bajan-a4d regression property).
+proptest! {
+    #[test]
+    fn p_stream_ids_unique(headings in proptest::collection::vec(
+        proptest::arbitrary::any::<u8>().prop_map(|n| {
+            let level = n % 6 + 1;
+            let word = ["Notes", "notes", "NOTES", "Notes 2", "A B", "a-b", "section", "", "Übung", "over the  lazy dog"][n as usize % 10];
+            (level, word.to_string())
+        }),
+        0..20,
+    )) {
+        let mut md = String::new();
+        for (level, word) in &headings {
+            md.push_str(&format!("{} {}\n\nBody {}.\n\n", "#".repeat(*level as usize), word, word));
+        }
+        let eps = bajan_converters::markdown_episodes(&md).expect("converts");
+        let ids: std::collections::HashSet<&str> = eps.iter().map(|e| e.id.as_str()).collect();
+        prop_assert_eq!(ids.len(), eps.len(), "duplicate ids: {:?}", eps.iter().map(|e| &e.id).collect::<Vec<_>>());
     }
 }

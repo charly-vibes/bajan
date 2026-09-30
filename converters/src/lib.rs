@@ -74,11 +74,13 @@ impl Seg {
     }
 }
 
-/// Deterministic id from the anchor (or fallback) + occurrence index:
-/// same input always yields the same ids (stable ids are what bajan's
-/// resubmission/idempotence policy is keyed on).
-fn segment_id(anchor: Option<&str>, index: usize) -> String {
-    let slug: String = match anchor {
+/// Slug base from the anchor (or fallback): lowercased, non-slug
+/// characters mapped to '-', trimmed; empty slugs become `section` and
+/// anchor-less segments `untitled`. Deterministic — same anchor, same
+/// slug (stable ids are what bajan's resubmission/idempotence policy is
+/// keyed on).
+fn slug_base(anchor: Option<&str>) -> String {
+    match anchor {
         Some(a) => {
             let collapsed = collapse(a).to_lowercase();
             let slug: String = collapsed
@@ -93,42 +95,47 @@ fn segment_id(anchor: Option<&str>, index: usize) -> String {
             }
         }
         None => "untitled".to_string(),
-    };
-    // Disambiguate repeated anchors deterministically: `slug`, `slug-2`, …
-    if index == 0 {
-        slug
-    } else {
-        format!("{slug}-{}", index + 1)
     }
 }
 
-/// Finish a segment into an episode record — drops empty ones so bajan
-/// never sees a whitespace-only episode (ic_malformed is bajan's guard;
-/// converters don't emit records it must reject).
-fn finish(seg: &Seg, index: usize, source_type: &str) -> Option<EpisodeRecord> {
+/// Finish a segment into an episode record under the given (already
+/// disambiguated) id — drops empty ones so bajan never sees a
+/// whitespace-only episode (ic_malformed is bajan's guard; converters
+/// don't emit records it must reject).
+fn finish(seg: &Seg, id: String, source_type: &str) -> Option<EpisodeRecord> {
     let text = seg.text();
     if text.is_empty() {
         return None;
     }
     Some(EpisodeRecord {
-        id: segment_id(seg.anchor.as_deref(), index),
+        id,
         text,
         locator: seg.locator.clone(),
         source: default_source(source_type),
     })
 }
 
-/// Collect finished segments into episode records, assigning ids with
-/// per-anchor occurrence counters for disambiguation.
+/// Collect finished segments into episode records with ids that are
+/// unique within the emitted stream (bajan-a4d). The disambiguation
+/// loop is driven by the set of ids ALREADY ISSUED in this stream —
+/// not by a per-anchor counter — so no two segments can receive the
+/// same id, whatever the collision route: case-variant anchors
+/// ('Notes'/'notes' → same slug), repeated anchors, or a heading whose
+/// own text mimics a disambiguator form ('Notes 2' after a disambiguated
+/// 'notes-2'). Deterministic: ids are assigned in segment order, so the
+/// same input always yields the same ids.
 fn collect(segs: &[Seg], source_type: &str) -> Vec<EpisodeRecord> {
     let mut episodes = Vec::new();
-    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut issued: std::collections::HashSet<String> = std::collections::HashSet::new();
     for seg in segs {
-        let key = seg.anchor.clone().unwrap_or_default();
-        let idx = seen.entry(key).or_insert(0);
-        let id_index = *idx;
-        *idx += 1;
-        if let Some(ep) = finish(seg, id_index, source_type) {
+        let slug = slug_base(seg.anchor.as_deref());
+        let mut id = slug.clone();
+        let mut n = 1;
+        while !issued.insert(id.clone()) {
+            n += 1;
+            id = format!("{slug}-{n}");
+        }
+        if let Some(ep) = finish(seg, id, source_type) {
             episodes.push(ep);
         }
     }

@@ -28,3 +28,6 @@ path = "src/bin/md2bajan.rs"
 [[bin]]
 name = "html2bajan"
 path = "src/bin/html2bajan.rs"
+
+[dev-dependencies]
+proptest = "1"
