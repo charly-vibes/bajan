@@ -1,0 +1,95 @@
+# CI workflow — runs the same commands as local development
+#
+# Uses `just ci` to ensure parity between local and CI environments.
+# If CI fails, run `just ci` locally to reproduce the issue.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  ci:
+    name: Test & Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install ecosystem tools (§4 dogfood, pinned to released tags)
+        run: |
+          cargo install --locked --git https://github.com/charly-vibes/pretender --tag v0.6.0 pretender
+          cargo install --locked --git https://github.com/charly-vibes/wai --tag v2026.9.28 wai-cli
+          cargo install --locked --git https://github.com/charly-vibes/dont --tag v0.2.2 dont-cli
+          npm install -g @fission-ai/openspec@0.19.0
+      - name: Install bd (beads, pinned)
+        run: |
+          curl -fsSL https://github.com/gastownhall/beads/releases/download/v1.3.0/beads_1.3.0_linux_amd64.tar.gz -o bd.tgz
+          tar -xzf bd.tgz
+          sudo mv bd /usr/local/bin/bd
+      # §4 dogfood: installed tools must run, not just install
+      - name: Smoke dogfooded tools
+        env:
+          DO_NOT_TRACK: "1"
+        run: |
+          bd --version >/dev/null
+          wai status >/dev/null
+          openspec validate --all >/dev/null
+          pretender --version >/dev/null
+          dont --version >/dev/null
+      # Run the exact same command as local development
+      - name: Run CI pipeline
+        run: just ci
+
+      - name: Smoke the built binary
+        run: ./target/release/bajan --version
+
+  spec-gates:
+    name: Spec Corpus Gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install spec-corpus tools (pinned to released tags)
+        run: |
+          cargo install --locked --git https://github.com/charly-vibes/specodelic --tag v0.2.0 specodelic
+          cargo install --locked --git https://github.com/charly-vibes/espectacular --tag v0.8.0 espectacular
+      # bajan's spec corpus is a real gate locally (spk lint + ah check on
+      # every session); CI must not be weaker than the local discipline.
+      - name: Lint the spec corpus
+        run: just spk-lint
+
+      - name: Validate spec-test correspondence
+        run: just ah-check
