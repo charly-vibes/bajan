@@ -22,6 +22,12 @@ Next ==
   \/ vpc = "received" /\ vpc' = "rejected"
   \* reingest: persisted -> persisted (guard: [[ingestion.contract.ic_idempotent]])
   \/ vpc = "persisted" /\ vpc' = "persisted"
+  \* reject_conflict: received -> rejected (guard: [[ingestion.contract.ic_mutated_resubmit]])
+  \/ vpc = "received" /\ vpc' = "rejected"
+  \* reject_duplicate: received -> rejected (guard: [[ingestion.contract.ic_batch_duplicate]])
+  \/ vpc = "received" /\ vpc' = "rejected"
+  \* resubmit_corrected: rejected -> persisted (guard: [[ingestion.contract.ic_verbatim]])
+  \/ vpc = "rejected" /\ vpc' = "persisted"
   \* stuttering: guards are prose (uninterpreted) — a terminal
   \* state must not read as an engine-side deadlock
   \/ UNCHANGED vpc

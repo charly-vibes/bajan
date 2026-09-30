@@ -43,6 +43,36 @@ expr = "the ingest pipeline consumes only the normalized episode stream; it perf
 traces_to = "[[ingestion.contract]]"
 
 [[constraints]]
+id = "ic_mutated_resubmit"
+kind = "invariant"
+expr = "a re-submission of a stable id already persisted in the store whose verbatim text, locator, or source metadata differs from the persisted episode is rejected with a machine-readable conflict reason; the persisted episode is never updated in place and never duplicated — updating would orphan claims whose lineage text no longer matches, violating the hedge-anchor discipline"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
+id = "ic_corrected_resubmit"
+kind = "invariant"
+expr = "a stable id in state rejected may be re-submitted with a corrected record; the corrected record passes through the same acceptance path as a fresh episode and persists exactly once"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
+id = "ic_batch_duplicate"
+kind = "invariant"
+expr = "within one submitted stream, the first occurrence of a stable id persists and every later occurrence of that id in the same stream is rejected with a machine-readable duplicate reason; rejection is per record and never extends to other episodes in the batch"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
+id = "ic_empty_stream"
+kind = "invariant"
+expr = "a stream with zero episodes is a valid no-op: ingest succeeds, emits zero outcome records, and leaves the graph unchanged — it is never an error"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
+id = "ic_order_insensitive"
+kind = "invariant"
+expr = "ingesting the same episode stream in any episode order yields an identical graph, both on first ingest and when re-ingesting an already-ingested stream"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
 id = "ic_date_fidelity"
 kind = "advisory"
 expr = "a persisted episode's data cutoff is the source's cutoff when discoverable, an explicit absent marker otherwise — never the ingest timestamp"

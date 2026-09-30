@@ -25,14 +25,14 @@ the same deterministic pass — a loop guard against queue churn.
 
 ## Constraints
 
-| id | kind | expr | traces_to |
-|----|------|------|-----------|
-| er_queue_entry | invariant | a merge candidate enters the review queue only as a `possible_duplicate_of` edge written by the deterministic ER pass (normalization plus curated alias lists per `gm_deterministic_er`); no LLM pass and no review command may create a candidate pair — the queue drains, it never grows by human invention | [[entity.review]] |
-| er_human_resolution | invariant | a queued candidate leaves the queue only through an explicit human resolution command carrying actor identity — approve (merge) or reject (drop the proposal edge); there is no automated path from queue entry to entity merge, and an unattended queue never resolves itself | [[entity.review]] |
-| er_merge_preserves | invariant | an approved merge preserves the union of both entities' lineage edges (every `derived_from` edge from both sides survives onto the merged entity) and writes one audit record per resolution — actor, timestamp, both entity ids, decision — per `gm_merge_keeps` | [[entity.review]] |
-| er_reject_drops_edge | invariant | a rejected candidate loses only its `possible_duplicate_of` edge — both entities, their lineage, and their claims are untouched; the rejection is recorded in the audit trail with actor and timestamp | [[entity.review]] |
-| er_repropose_guard | invariant | a rejected pair re-enters the queue only when the deterministic pass finds new evidence for it — a new mention of either entity or a new alias-table entry — and never by re-running the pass on unchanged inputs; the audit record of the prior rejection is not erased | [[entity.review]] |
-| er_queue_transparency | invariant | the queue is inspectable: a list command returns every open candidate with both entities' ids, alias/normalization evidence that produced the proposal, claim counts, and queue age, ordered oldest-first — a human can see what they are deciding and what they are leaving undecided | [[entity.review]] |
+| id | kind | expr | traces_to | satisfies |
+|----|------|------|-----------|-----------|
+| er_queue_entry | invariant | a merge candidate enters the review queue only as a `possible_duplicate_of` edge written by the deterministic ER pass (normalization plus curated alias lists per `gm_deterministic_er`); no LLM pass and no review command may create a candidate pair — the queue drains, it never grows by human invention | [[entity.review]] | [[graph.model.gm_relation_typing]] |
+| er_human_resolution | invariant | a queued candidate leaves the queue only through an explicit human resolution command carrying actor identity — approve (merge) or reject (drop the proposal edge); there is no automated path from queue entry to entity merge, and an unattended queue never resolves itself | [[entity.review]] | |
+| er_merge_preserves | invariant | an approved merge preserves the union of both entities' lineage edges (every `derived_from` edge from both sides survives onto the merged entity) and writes one audit record per resolution — actor, timestamp, both entity ids, decision — per `gm_merge_keeps` | [[entity.review]] | |
+| er_reject_drops_edge | invariant | a rejected candidate loses only its `possible_duplicate_of` edge — both entities, their lineage, and their claims are untouched; the rejection is recorded in the audit trail with actor and timestamp | [[entity.review]] | |
+| er_repropose_guard | invariant | a rejected pair re-enters the queue only when the deterministic pass finds new evidence for it — a new mention of either entity or a new alias-table entry — and never by re-running the pass on unchanged inputs; the audit record of the prior rejection is not erased | [[entity.review]] | |
+| er_queue_transparency | invariant | the queue is inspectable: a list command returns every open candidate with both entities' ids, alias/normalization evidence that produced the proposal, claim counts, and queue age, ordered oldest-first — a human can see what they are deciding and what they are leaving undecided | [[entity.review]] | |
 | er_review-schema | extension_point | the review-queue record schema (fields, types, requiredness, including the decision vocabulary `approved`, `rejected` and the audit-record shape) is published for HITL tooling specs to conform to | [[entity.review]] |
 
 ## Model

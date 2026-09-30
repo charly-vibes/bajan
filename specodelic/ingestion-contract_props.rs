@@ -38,6 +38,10 @@ pub mod spec_gen {
         Just(GenVal("class".into()))
     }
 
+    pub fn rejected() -> impl Strategy<Value = GenVal> {
+        Just(GenVal("rejected".into()))
+    }
+
 }
 
 proptest! {
@@ -52,11 +56,21 @@ proptest! {
 
 proptest! {
     // id: p_idempotent
-    // generator: the same episode stream submitted twice in sequence, plus a mutated variant reusing an existing id with altered text
-    // predicate: re-ingest yields a graph identical to the one before it; a mutated re-submission either deterministically updates or is rejected — it never duplicates an episode
+    // generator: the same episode stream submitted twice in sequence, a mutated variant reusing an existing id with altered text, plus a shuffled re-submission of the same stream
+    // predicate: re-ingest yields a graph identical to the one before it, in original and shuffled order alike; a mutated re-submission is rejected with a conflict reason — it never duplicates or updates an episode
     #[test]
     fn p_idempotent() {
-        todo_predicate!("re-ingest yields a graph identical to the one before it; a mutated re-submission either deterministically updates or is rejected — it never duplicates an episode");
+        todo_predicate!("re-ingest yields a graph identical to the one before it, in original and shuffled order alike; a mutated re-submission is rejected with a conflict reason — it never duplicates or updates an episode");
+    }
+}
+
+proptest! {
+    // id: p_mutated_resubmit
+    // generator: a persisted stream, then re-submissions of existing ids with altered text, altered locator, and altered metadata
+    // predicate: every mutated re-submission is rejected with a conflict reason; the graph before and after the rejection is identical; no episode is duplicated
+    #[test]
+    fn p_mutated_resubmit() {
+        todo_predicate!("every mutated re-submission is rejected with a conflict reason; the graph before and after the rejection is identical; no episode is duplicated");
     }
 }
 
@@ -137,6 +151,46 @@ proptest! {
     #[test]
     fn p_stream_schema() {
         todo_predicate!("schema document validates every emitted record");
+    }
+}
+
+proptest! {
+    // id: p_corrected_resubmit
+    // generator: streams with rejected (malformed) records followed by corrected variants of the same ids
+    // predicate: the corrected re-submission persists through the normal acceptance path exactly once
+    #[test]
+    fn p_corrected_resubmit(v0 in spec_gen::rejected()) {
+        todo_predicate!("the corrected re-submission persists through the normal acceptance path exactly once");
+    }
+}
+
+proptest! {
+    // id: p_batch_duplicate
+    // generator: streams containing repeated ids within one batch, with differing payloads after the first occurrence
+    // predicate: exactly the first occurrence persists; each later occurrence is rejected with a duplicate reason; all other episodes in the batch persist
+    #[test]
+    fn p_batch_duplicate() {
+        todo_predicate!("exactly the first occurrence persists; each later occurrence is rejected with a duplicate reason; all other episodes in the batch persist");
+    }
+}
+
+proptest! {
+    // id: p_empty_stream
+    // generator: zero-episode streams
+    // predicate: ingest succeeds with zero outcome records and an unchanged graph
+    #[test]
+    fn p_empty_stream() {
+        todo_predicate!("ingest succeeds with zero outcome records and an unchanged graph");
+    }
+}
+
+proptest! {
+    // id: p_order_insensitive
+    // generator: a stream and random shuffles of it, ingested fresh and as re-ingest over an already-ingested store
+    // predicate: every episode order yields an identical graph
+    #[test]
+    fn p_order_insensitive() {
+        todo_predicate!("every episode order yields an identical graph");
     }
 }
 
