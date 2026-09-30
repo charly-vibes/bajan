@@ -319,3 +319,313 @@ proptest! {
         prop_assert_eq!(ids.len(), eps.len(), "duplicate ids: {:?}", eps.iter().map(|e| &e.id).collect::<Vec<_>>());
     }
 }
+
+// --- epub mapping (bajan-buy) ---------------------------------------------
+
+/// Minimal hand-rolled stored-zip writer — the EPUB fixture is constructed
+/// in-test (no binary fixture in the repo). CRC32 included so real readers
+/// (ZipArchive) verify the entries.
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+struct ZipBuilder {
+    out: Vec<u8>,
+    entries: Vec<(String, u32, u32, u32)>, // name, crc, size, offset
+}
+
+impl ZipBuilder {
+    fn new() -> Self {
+        ZipBuilder {
+            out: Vec::new(),
+            entries: Vec::new(),
+        }
+    }
+    fn add(&mut self, name: &str, data: &[u8]) {
+        let offset = self.out.len() as u32;
+        let crc = crc32(data);
+        self.out.extend_from_slice(&0x0403_4b50_u32.to_le_bytes());
+        self.out.extend_from_slice(&20_u16.to_le_bytes()); // version needed
+        self.out.extend_from_slice(&0_u16.to_le_bytes()); // flags
+        self.out.extend_from_slice(&0_u16.to_le_bytes()); // method: stored
+        self.out.extend_from_slice(&0_u16.to_le_bytes()); // mod time
+        self.out.extend_from_slice(&0_u16.to_le_bytes()); // mod date
+        self.out.extend_from_slice(&crc.to_le_bytes());
+        self.out
+            .extend_from_slice(&(data.len() as u32).to_le_bytes());
+        self.out
+            .extend_from_slice(&(data.len() as u32).to_le_bytes());
+        self.out
+            .extend_from_slice(&(name.len() as u16).to_le_bytes());
+        self.out.extend_from_slice(&0_u16.to_le_bytes()); // extra len
+        self.out.extend_from_slice(name.as_bytes());
+        self.out.extend_from_slice(data);
+        self.entries
+            .push((name.to_string(), crc, data.len() as u32, offset));
+    }
+    fn finish(mut self) -> Vec<u8> {
+        let cd_start = self.out.len() as u32;
+        for (name, crc, size, offset) in &self.entries {
+            self.out.extend_from_slice(&0x0201_4b50_u32.to_le_bytes());
+            self.out.extend_from_slice(&20_u16.to_le_bytes()); // version made by
+            self.out.extend_from_slice(&20_u16.to_le_bytes()); // version needed
+            self.out.extend_from_slice(&0_u16.to_le_bytes()); // flags
+            self.out.extend_from_slice(&0_u16.to_le_bytes()); // method
+            self.out.extend_from_slice(&0_u16.to_le_bytes());
+            self.out.extend_from_slice(&0_u16.to_le_bytes());
+            self.out.extend_from_slice(&crc.to_le_bytes());
+            self.out.extend_from_slice(&size.to_le_bytes());
+            self.out.extend_from_slice(&size.to_le_bytes());
+            self.out
+                .extend_from_slice(&(name.len() as u16).to_le_bytes());
+            self.out.extend_from_slice(&0_u16.to_le_bytes()); // extra
+            self.out.extend_from_slice(&0_u16.to_le_bytes()); // comment
+            self.out.extend_from_slice(&0_u16.to_le_bytes()); // disk
+            self.out.extend_from_slice(&0_u16.to_le_bytes()); // internal attrs
+            self.out.extend_from_slice(&0_u32.to_le_bytes()); // external attrs
+            self.out.extend_from_slice(&offset.to_le_bytes());
+            self.out.extend_from_slice(name.as_bytes());
+        }
+        let cd_len = self.out.len() as u32 - cd_start;
+        self.out.extend_from_slice(&0x0605_4b50_u32.to_le_bytes());
+        self.out.extend_from_slice(&0_u16.to_le_bytes()); // disk
+        self.out.extend_from_slice(&0_u16.to_le_bytes()); // cd disk
+        self.out
+            .extend_from_slice(&(self.entries.len() as u16).to_le_bytes());
+        self.out
+            .extend_from_slice(&(self.entries.len() as u16).to_le_bytes());
+        self.out.extend_from_slice(&cd_len.to_le_bytes());
+        self.out.extend_from_slice(&cd_start.to_le_bytes());
+        self.out.extend_from_slice(&0_u16.to_le_bytes()); // comment len
+        self.out
+    }
+}
+
+fn xhtml(title: &str, body: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>{title}</title></head>\n\
+         <body>{body}</body></html>"
+    )
+}
+
+/// Three-chapter fixture book: toc labels c1/c2 only; c3 has no toc entry
+/// and no heading (fallback slug); date is a clean civil date.
+fn build_fixture_epub(date: &str) -> Vec<u8> {
+    let opf = format!(
+        "<?xml version=\"1.0\"?>\n\
+         <package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"uid\">\n\
+         <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n\
+         <dc:identifier id=\"uid\">urn:uuid:fixture</dc:identifier>\n\
+         <dc:title>Fixture Book</dc:title>\n\
+         <dc:creator>Tester</dc:creator>\n\
+         <dc:date>{date}</dc:date>\n\
+         <dc:language>en</dc:language>\n\
+         </metadata>\n\
+         <manifest>\n\
+         <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n\
+         <item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n\
+         <item id=\"c2\" href=\"c2.xhtml\" media-type=\"application/xhtml+xml\"/>\n\
+         <item id=\"c3\" href=\"c3.xhtml\" media-type=\"application/xhtml+xml\"/>\n\
+         </manifest>\n\
+         <spine><itemref idref=\"c1\"/><itemref idref=\"c2\"/><itemref idref=\"c3\"/></spine>\n\
+         </package>"
+    );
+    let nav = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+               <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Nav</title></head>\n\
+               <body><nav epub:type=\"toc\" xmlns:epub=\"http://www.idpf.org/2007/ops\">\n\
+               <ol><li><a href=\"c1.xhtml\">Intro</a></li><li><a href=\"c2.xhtml\">Deep Dive</a></li></ol>\n\
+               </nav></body></html>";
+    let container = "<?xml version=\"1.0\"?>\n\
+                     <container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">\n\
+                     <rootfiles><rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/></rootfiles>\n\
+                     </container>";
+    let mut z = ZipBuilder::new();
+    z.add("mimetype", b"application/epub+zip");
+    z.add("META-INF/container.xml", container.as_bytes());
+    z.add("OEBPS/content.opf", opf.as_bytes());
+    z.add("OEBPS/nav.xhtml", nav.as_bytes());
+    z.add(
+        "OEBPS/c1.xhtml",
+        xhtml(
+            "Intro",
+            "<h1>Introduction</h1><p>Welcome to the fixture book.</p><p>Second paragraph.</p>",
+        )
+        .as_bytes(),
+    );
+    z.add(
+        "OEBPS/c2.xhtml",
+        xhtml("Ch2", "<h2>Deep Dive</h2><p>Chapter two body text.</p>").as_bytes(),
+    );
+    z.add(
+        "OEBPS/c3.xhtml",
+        xhtml(
+            "Ch3",
+            "<p>No headings here, just prose for the fallback id.</p>",
+        )
+        .as_bytes(),
+    );
+    z.finish()
+}
+
+/// Chapter splitting: each spine document is one (or more) episodes; three
+/// content chapters yield three episodes, nav/opf never become episodes.
+#[test]
+fn epub_chapter_split_count() {
+    let bytes = build_fixture_epub("2023-05-17");
+    let eps = bajan_converters::epub_episodes(&bytes).expect("converts");
+    assert_eq!(
+        eps.len(),
+        3,
+        "got: {:?}",
+        eps.iter().map(|e| &e.id).collect::<Vec<_>>()
+    );
+}
+
+/// Chapter titles: toc label wins for both the slug id ("Intro" → intro)
+/// and the heading: locator — the toc is the book's own chapter naming. The
+/// fallback chapter (no toc entry, no heading) gets the position-based
+/// chapter-NNN slug with the typed absent locator (never a invented
+/// heading anchor), prefixed by the book slug.
+#[test]
+fn epub_toc_label_slug_but_heading_anchor() {
+    let bytes = build_fixture_epub("2023-05-17");
+    let eps = bajan_converters::epub_episodes(&bytes).expect("converts");
+    assert_eq!(eps[0].id, "fixture-book-intro");
+    assert_eq!(eps[0].locator, Locator::Span("heading:Intro".into()));
+    assert_eq!(
+        eps[0].text,
+        "Welcome to the fixture book.\n\nSecond paragraph."
+    );
+    assert_eq!(eps[1].id, "fixture-book-deep-dive");
+    assert_eq!(eps[1].locator, Locator::Span("heading:Deep Dive".into()));
+    // Fallback: no toc label, no heading → chapter-NNN (spine position).
+    assert_eq!(eps[2].id, "fixture-book-chapter-003");
+    assert_eq!(eps[2].locator, Locator::Absent);
+}
+
+/// Metadata mapping: source_type 'epub', dc:date as a civil date becomes
+/// data_cutoff, authority_tier 3, no tags (ic_date_fidelity: present only
+/// because the source states it).
+#[test]
+fn epub_metadata_mapping() {
+    let bytes = build_fixture_epub("2023-05-17");
+    let eps = bajan_converters::epub_episodes(&bytes).expect("converts");
+    for ep in &eps {
+        assert_eq!(ep.source.source_type, "epub");
+        assert_eq!(ep.source.data_cutoff.as_deref(), Some("2023-05-17"));
+        assert_eq!(ep.source.authority_tier, 3);
+        assert!(ep.source.tags.is_empty());
+    }
+}
+
+/// A dc:date that is not a clean civil date is ABSENT, never coerced
+/// (ic_date_fidelity: never invent a date).
+#[test]
+fn epub_date_unparseable_is_absent() {
+    let bytes = build_fixture_epub("May 2023");
+    let eps = bajan_converters::epub_episodes(&bytes).expect("converts");
+    assert!(eps.iter().all(|e| e.source.data_cutoff.is_none()));
+}
+
+/// Same file twice → identical streams (stable ids are the identity bajan's
+/// resubmission policy keys on).
+#[test]
+fn epub_deterministic_same_file_twice() {
+    let bytes = build_fixture_epub("2023-05-17");
+    let a = bajan_converters::epub_episodes(&bytes).expect("converts");
+    let b = bajan_converters::epub_episodes(&bytes).expect("converts");
+    assert_eq!(a, b);
+}
+
+/// The converted book persists through the real ingest path, all-persisted.
+#[test]
+fn epub_round_trip_persist_all_persisted() {
+    let bytes = build_fixture_epub("2023-05-17");
+    let eps = bajan_converters::epub_episodes(&bytes).expect("converts");
+    let outcomes = persist_all(&eps);
+    assert_eq!(outcomes.len(), eps.len());
+    assert!(outcomes.iter().all(|o| outcome_of(o) == "persisted"));
+}
+
+/// Corrupt input (not a zip, not an epub) fails honestly: an error, never a
+/// partial or garbage stream.
+#[test]
+fn epub_corrupt_input_fails_honestly() {
+    let err = bajan_converters::epub_episodes(b"this is not a zip file at all")
+        .expect_err("corrupt input must error");
+    assert!(!err.is_empty());
+    // A valid zip that is not an EPUB (no container.xml) also errors.
+    let mut z = ZipBuilder::new();
+    z.add("random.txt", b"hello");
+    let err = bajan_converters::epub_episodes(&z.finish()).expect_err("non-epub zip must error");
+    assert!(!err.is_empty());
+}
+
+/// EPUB2 books carry toc.ncx (which the epub crate parses into doc.toc);
+/// labels resolve the same way. Chapter with a heading but NO toc entry
+/// falls back to the first heading's text for both slug and locator.
+#[test]
+fn epub_ncx_labels_and_heading_fallback() {
+    let opf = "<?xml version=\"1.0\"?>\n\
+               <package xmlns=\"http://www.idpf.org/2007/opf\" version=\"2.0\" unique-identifier=\"uid\">\n\
+               <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n\
+               <dc:identifier id=\"uid\">urn:uuid:fixture2</dc:identifier>\n\
+               <dc:title>Legacy Book</dc:title>\n\
+               <dc:language>en</dc:language>\n\
+               </metadata>\n\
+               <manifest>\n\
+               <item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx\"/>\n\
+               <item id=\"c1\" href=\"text/c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n\
+               <item id=\"c2\" href=\"text/c2.xhtml\" media-type=\"application/xhtml+xml\"/>\n\
+               </manifest>\n\
+               <spine toc=\"ncx\"><itemref idref=\"c1\"/><itemref idref=\"c2\"/></spine>\n\
+               </package>";
+    let ncx = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+               <ncx xmlns=\"http://www.daisy.org/z3986/2005/ncx/\" version=\"2005-1\">\n\
+               <head/><docTitle><text>Legacy Book</text></docTitle>\n\
+               <navMap>\n\
+               <navPoint id=\"n1\" playOrder=\"1\"><navLabel><text>First</text></navLabel>\n\
+               <content src=\"text/c1.xhtml\"/></navPoint>\n\
+               </navMap>\n\
+               </ncx>";
+    let container = "<?xml version=\"1.0\"?>\n\
+                     <container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">\n\
+                     <rootfiles><rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/></rootfiles>\n\
+                     </container>";
+    let mut z = ZipBuilder::new();
+    z.add("mimetype", b"application/epub+zip");
+    z.add("META-INF/container.xml", container.as_bytes());
+    z.add("OEBPS/content.opf", opf.as_bytes());
+    z.add("OEBPS/toc.ncx", ncx.as_bytes());
+    z.add(
+        "OEBPS/text/c1.xhtml",
+        xhtml("C1", "<h1>Alpha</h1><p>One.</p>").as_bytes(),
+    );
+    z.add(
+        "OEBPS/text/c2.xhtml",
+        xhtml("C2", "<h3>Beta</h3><p>Two.</p>").as_bytes(),
+    );
+    let bytes = z.finish();
+
+    let eps = bajan_converters::epub_episodes(&bytes).expect("converts");
+    assert_eq!(eps.len(), 2);
+    // c1: ncx label "First" wins over the heading "Alpha".
+    assert_eq!(eps[0].id, "legacy-book-first");
+    assert_eq!(eps[0].locator, Locator::Span("heading:First".into()));
+    // c2: no ncx entry → first heading fallback.
+    assert_eq!(eps[1].id, "legacy-book-beta");
+    assert_eq!(eps[1].locator, Locator::Span("heading:Beta".into()));
+    assert_eq!(
+        eps[0].source.data_cutoff, None,
+        "no dc:date → absent cutoff"
+    );
+}

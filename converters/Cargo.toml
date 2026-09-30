@@ -20,6 +20,7 @@ serde_json = "1"
 # Format parsers (converter-only crates per the bajan-15i table).
 pulldown-cmark = "0.13.4"   # markdown: headings/links → locators + structure markers
 scraper = "0.27.0"          # HTML: html5ever-backed DOM with CSS selectors
+epub = "2.1.5"              # EPUB container: spine/toc/metadata (live-verified: EpubDoc::from_reader, mdata, spine navigation)
 
 [[bin]]
 name = "md2bajan"
@@ -28,6 +29,10 @@ path = "src/bin/md2bajan.rs"
 [[bin]]
 name = "html2bajan"
 path = "src/bin/html2bajan.rs"
+
+[[bin]]
+name = "epub2bajan"
+path = "src/bin/epub2bajan.rs"
 
 [dev-dependencies]
 proptest = "1"

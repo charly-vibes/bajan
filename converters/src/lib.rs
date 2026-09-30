@@ -12,6 +12,9 @@
 //! records are bajan's own `EpisodeRecord` type via a path dep.
 
 use bajan::ingest::{EpisodeRecord, Locator, SourceMeta};
+use scraper::{ElementRef, Node, Selector};
+
+use std::collections::HashMap;
 
 /// Default source metadata stamped on every converted episode. The
 /// converter cannot know a source's authority or cutoff — it leaves the
@@ -233,14 +236,55 @@ fn is_block_container(name: &str) -> bool {
     )
 }
 
-/// Convert an HTML document into episode records: `h1`–`h6` elements open
-/// anchored episodes, `<p>` elements and block containers (`li`,
-/// `blockquote`, `td`, …) are paragraph boundaries, all other text
-/// content joins the current one. `<script>`, `<style>`, and `<pre>`
-/// subtrees are excluded — they are code, not source prose; `<head>` is
-/// document metadata, never episode content (bajan-tx4).
-pub fn html_episodes(input: &str) -> Result<Vec<EpisodeRecord>, String> {
-    use scraper::{ElementRef, Html, Node, Selector};
+/// Parse a civil date (YYYY-MM-DD) strictly: two-digit month 01-12 and
+/// two-digit day 01-31 at the exact positions. Anything else (natural
+/// language dates, year-only, extra text) is not a civil date — the caller
+/// leaves data_cutoff absent (ic_date_fidelity: never invent a date).
+fn civil_date(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let digits = |r: &[u8]| r.iter().all(|c| c.is_ascii_digit());
+    if !(digits(&b[0..4]) && digits(&b[5..7]) && digits(&b[8..10])) {
+        return None;
+    }
+    let month = (b[5] - b'0') as u16 * 10 + (b[6] - b'0') as u16;
+    let day = (b[8] - b'0') as u16 * 10 + (b[9] - b'0') as u16;
+    if (1..=12).contains(&month) && (1..=31).contains(&day) {
+        Some(s.to_string())
+    } else {
+        None
+    }
+}
+
+/// Append the element's descendant text, skipping subtrees matched by
+/// `skip_sel` (script/style/pre) — the heading-anchor and block-leaf
+/// text collector (bajan-tx4: anchors exclude embedded code). Shared by
+/// the segment walker and the chapter-title fallback (bajan-buy).
+fn collect_visible_text(el: ElementRef, out: &mut String, skip_sel: &Selector) {
+    if skip_sel.matches(&el) {
+        return;
+    }
+    for child in el.children() {
+        match child.value() {
+            Node::Text(t) => out.push_str(&t.text),
+            Node::Element(_) => {
+                if let Some(child_el) = ElementRef::wrap(child) {
+                    collect_visible_text(child_el, out, skip_sel);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Shared HTML segment walker: builds the raw segments (locator + anchor +
+/// paragraph text) for an HTML document. `html_episodes` collects them into
+/// records directly; `epub_episodes` reuses the exact same mapping rules per
+/// spine chapter document (bajan-buy) and re-ids at book level.
+fn html_segments(input: &str) -> Vec<Seg> {
+    use scraper::Html;
 
     let doc = Html::parse_document(input);
     let heading_sel = Selector::parse("h1,h2,h3,h4,h5,h6").expect("valid selector");
@@ -329,26 +373,6 @@ pub fn html_episodes(input: &str) -> Result<Vec<EpisodeRecord>, String> {
         }
     }
 
-    /// Append the element's descendant text, skipping subtrees matched by
-    /// `skip_sel` (script/style/pre) — the heading-anchor and block-leaf
-    /// text collector (bajan-tx4: anchors exclude embedded code).
-    fn collect_visible_text(el: ElementRef, out: &mut String, skip_sel: &Selector) {
-        if skip_sel.matches(&el) {
-            return;
-        }
-        for child in el.children() {
-            match child.value() {
-                Node::Text(t) => out.push_str(&t.text),
-                Node::Element(_) => {
-                    if let Some(child_el) = ElementRef::wrap(child) {
-                        collect_visible_text(child_el, out, skip_sel);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
     walk(
         doc.root_element(),
         &mut segs,
@@ -358,5 +382,209 @@ pub fn html_episodes(input: &str) -> Result<Vec<EpisodeRecord>, String> {
         &head_sel,
     );
 
-    Ok(collect(&segs, "html"))
+    segs
+}
+
+/// First heading anchor of an HTML document, if any — the chapter-title
+/// fallback for spine documents with no toc entry (bajan-buy). Head- and
+/// code-subtree exclusions match the episode-text rules (bajan-tx4).
+fn first_heading_anchor(input: &str) -> Option<String> {
+    use scraper::Html;
+
+    let doc = Html::parse_document(input);
+    let heading_sel = Selector::parse("h1,h2,h3,h4,h5,h6").expect("valid selector");
+    let skip_sel = Selector::parse("script,style,pre").expect("valid selector");
+    let head_sel = Selector::parse("head").expect("valid selector");
+
+    fn find(
+        el: ElementRef,
+        heading_sel: &Selector,
+        skip_sel: &Selector,
+        head_sel: &Selector,
+    ) -> Option<String> {
+        if skip_sel.matches(&el) || head_sel.matches(&el) {
+            return None;
+        }
+        if heading_sel.matches(&el) {
+            let mut text = String::new();
+            collect_visible_text(el, &mut text, skip_sel);
+            let text = collapse(&text);
+            return if text.is_empty() { None } else { Some(text) };
+        }
+        for child in el.children().filter_map(ElementRef::wrap) {
+            if let Some(found) = find(child, heading_sel, skip_sel, head_sel) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    // Only element descendants can hold headings.
+    for child in doc.root_element().children().filter_map(ElementRef::wrap) {
+        if let Some(found) = find(child, &heading_sel, &skip_sel, &head_sel) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Chapter labels from the EPUB3 navigation document (the `epub` crate
+/// parses only toc.ncx — its `doc.toc` is empty for EPUB3-only books, so
+/// the nav doc is parsed here with the same scraper rules as the text
+/// converters). Hrefs are relative to the nav document's own directory,
+/// mirroring toc.ncx src resolution; fragments are stripped. Falls back to
+/// the first `nav` element holding an `ol` when no `epub:type=toc` nav
+/// exists. Returns href → label.
+fn nav_labels(input: &str, nav_doc_dir: &std::path::Path) -> HashMap<String, String> {
+    use scraper::Html;
+
+    let doc = Html::parse_document(input);
+    let nav_sel = Selector::parse("nav[type=toc]").expect("valid selector");
+    let any_nav_sel = Selector::parse("nav").expect("valid selector");
+    let a_sel = Selector::parse("a[href]").expect("valid selector");
+
+    let nav_el = doc.select(&nav_sel).next().or_else(|| {
+        doc.select(&any_nav_sel)
+            .find(|n| n.select(&a_sel).next().is_some())
+    });
+    let Some(nav_el) = nav_el else {
+        return HashMap::new();
+    };
+    nav_el
+        .select(&a_sel)
+        .filter_map(|a| {
+            let href = a.value().attr("href")?.split('#').next()?.to_string();
+            if href.is_empty() {
+                return None;
+            }
+            let resolved = nav_doc_dir.join(&href).to_string_lossy().to_string();
+            let label = collapse(&a.text().collect::<String>());
+            if label.is_empty() {
+                return None;
+            }
+            Some((resolved, label))
+        })
+        .collect()
+}
+
+/// Convert an HTML document into episode records: `h1`–`h6` elements open
+/// anchored episodes, `<p>` elements and block containers (`li`,
+/// `blockquote`, `td`, …) are paragraph boundaries, all other text
+/// content joins the current one. `<script>`, `<style>`, and `<pre>`
+/// subtrees are excluded — they are code, not source prose; `<head>` is
+/// document metadata, never episode content (bajan-tx4).
+pub fn html_episodes(input: &str) -> Result<Vec<EpisodeRecord>, String> {
+    Ok(collect(&html_segments(input), "html"))
+}
+
+/// Convert an EPUB file into episode records: each spine chapter document
+/// becomes one episode (chapter-split granularity — page numbers do not
+/// exist in reflowable EPUB). The chapter text reuses the HTML mapping
+/// rules exactly (`html_segments` per spine document: head/script/style/pre
+/// excluded, block containers as paragraph boundaries, whitespace collapse)
+/// with the chapter's paragraphs joined by blank lines. The chapter anchor
+/// is the toc label (toc.ncx or nav doc) when one targets the chapter,
+/// else the chapter's first heading text, else the position-based fallback
+/// `chapter-NNN` — the fallback keeps the typed absent locator, never an
+/// invented heading anchor. Episode ids are `slug(book title)-slug(chapter
+/// title)`, deterministic and stream-unique (same disambiguation
+/// discipline as the other converters). Metadata: `source_type` `epub`,
+/// `data_cutoff` from dc:date only when it is a clean civil date
+/// (ic_date_fidelity), authority_tier 3, no tags. Container failures
+/// (corrupt zip, missing container, DRM-encumbered files) error honestly —
+/// never a partial or garbage stream.
+pub fn epub_episodes(input: &[u8]) -> Result<Vec<EpisodeRecord>, String> {
+    use epub::doc::EpubDoc;
+    use std::io::Cursor;
+
+    let mut doc = EpubDoc::from_reader(Cursor::new(input.to_vec()))
+        .map_err(|e| format!("failed to open EPUB container: {e:?}"))?;
+
+    let book_prefix = doc
+        .get_title()
+        .map(|t| slug_base(Some(&t)))
+        .unwrap_or_else(|| "book".to_string());
+    let cutoff = doc.mdata("date").and_then(|m| civil_date(&m.value));
+
+    // toc.ncx (parsed by the crate into doc.toc) and the EPUB3 nav
+    // document (parsed here — the crate leaves it out) both supply chapter
+    // labels, keyed on the chapter resource path sans fragment. ncx labels
+    // win when both exist: the toc is the more specific navigation source.
+    let mut toc_labels: HashMap<String, String> = doc
+        .toc
+        .iter()
+        .filter_map(|np| {
+            let path = np.content.to_string_lossy().split('#').next()?.to_string();
+            Some((path, np.label.clone()))
+        })
+        .collect();
+    if toc_labels.is_empty()
+        && let Some(nav_id) = doc.get_nav_id()
+        && let Some((nav_bytes, _)) = doc.get_resource(&nav_id)
+        && let Ok(nav_html) = std::string::String::from_utf8(nav_bytes)
+    {
+        let nav_dir = doc
+            .resources
+            .get(&nav_id)
+            .map(|r| r.path.parent().map(|p| p.to_path_buf()).unwrap_or_default())
+            .unwrap_or_default();
+        toc_labels = nav_labels(&nav_html, &nav_dir);
+    }
+
+    let mut segs: Vec<Seg> = Vec::new();
+    let mut idx = 0usize;
+    while let Some((bytes, mime)) = doc.get_current() {
+        // The nav document and ncx are navigation metadata, not prose —
+        // a book that lists them on the spine must not emit episodes
+        // from them (head-leak lesson, bajan-tx4, at container level).
+        let id = doc.get_current_id().unwrap_or_default();
+        let is_nav = doc
+            .resources
+            .get(&id)
+            .and_then(|r| r.properties.as_deref())
+            .is_some_and(|p| p.split_ascii_whitespace().any(|t| t == "nav"))
+            || mime.contains("dtbncx");
+        if !is_nav
+            && let Some(path) = doc.get_current_path()
+            && let Ok(html) = std::string::String::from_utf8(bytes)
+        {
+            // Reuse the HTML mapping rules verbatim per spine document;
+            // join the chapter's non-empty segments into one episode text.
+            let paras: Vec<String> = html_segments(&html)
+                .iter()
+                .map(|s| s.text())
+                .filter(|t| !t.is_empty())
+                .collect();
+            if !paras.is_empty() {
+                let title = toc_labels
+                    .get(path.to_string_lossy().as_ref())
+                    .cloned()
+                    .or_else(|| first_heading_anchor(&html));
+                let (locator, anchor) = match title {
+                    Some(t) => {
+                        let collapsed = collapse(&t);
+                        (
+                            Locator::Span(format!("heading:{collapsed}")),
+                            Some(collapsed),
+                        )
+                    }
+                    None => (Locator::Absent, Some(format!("chapter-{:03}", idx + 1))),
+                };
+                let mut seg = Seg::new(locator, anchor);
+                seg.paras = paras;
+                segs.push(seg);
+            }
+        }
+        idx += 1;
+        if !doc.go_next() {
+            break;
+        }
+    }
+
+    let mut episodes = collect(&segs, "epub");
+    for ep in &mut episodes {
+        ep.id = format!("{book_prefix}-{}", ep.id);
+        ep.source.data_cutoff = cutoff.clone();
+    }
+    Ok(episodes)
 }
