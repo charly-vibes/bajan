@@ -142,7 +142,11 @@ impl ClaimStore {
     /// Route a candidate's conflict with an existing active claim through
     /// the invalidation-proposal mechanism (`ex_mutation_proposal`): the
     /// proposal carries the causing-episode lineage and the active claim
-    /// is not mutated here. Unknown claim keys are refused.
+    /// is not mutated here. Unknown claim keys are refused; proposals
+    /// stage against active claims only (`ProposalRefused`) and the
+    /// identical (claim, causing-episode) pair is refused
+    /// (`DuplicateProposal`) — proposals are a set relation, one guard
+    /// for both stores (bajan-2hp).
     pub fn stage_invalidation_proposal(
         &mut self,
         claim_key: usize,
@@ -150,6 +154,24 @@ impl ClaimStore {
     ) -> Result<(), StoreError> {
         if claim_key >= self.nodes.len() {
             return Err(StoreError::ClaimNotFound { claim_key });
+        }
+        if self.nodes[claim_key].status != ClaimStatus::Active {
+            return Err(StoreError::ProposalRefused {
+                claim_key,
+                current: self.nodes[claim_key].status,
+                spec: SPEC,
+            });
+        }
+        if self
+            .invalidations
+            .iter()
+            .any(|p| p.claim_key == claim_key && p.causing_episode_id == causing_episode_id)
+        {
+            return Err(StoreError::DuplicateProposal {
+                claim_key,
+                causing_episode_id: causing_episode_id.to_string(),
+                spec: SPEC,
+            });
         }
         self.invalidations.push(InvalidationProposal {
             claim_key,
@@ -661,6 +683,53 @@ mod tests {
         assert_eq!(store.invalidations().len(), 1);
         assert_eq!(store.invalidations()[0].claim_key, 0);
         assert_eq!(store.invalidations()[0].causing_episode_id, "ep-new");
+
+        // One guard for both stores (bajan-2hp): proposals stage against
+        // active claims only, and the identical (claim, causing-episode)
+        // pair is refused — a set relation, not a multiset.
+        let refused = store.stage_invalidation_proposal(0, "ep-new").unwrap_err();
+        assert!(
+            matches!(refused, StoreError::DuplicateProposal { .. }),
+            "identical pair refused, got: {refused:?}"
+        );
+        assert_eq!(store.invalidations().len(), 1);
+        store
+            .stage_invalidation_proposal(0, "ep-other")
+            .expect("a different causing episode is a different proposal");
+        assert_eq!(store.invalidations().len(), 2);
+    }
+
+    // The in-memory twin shares the sqlite store's guard: a proposal
+    // stages against ACTIVE claims only (ex_mutation_proposal) — staged
+    // and rejected claims are refused with a typed error.
+    #[test]
+    fn twin_stages_proposals_against_active_claims_only() {
+        let mut store = ClaimStore::default();
+        store
+            .insert(
+                ClaimNode {
+                    status: ClaimStatus::Staged,
+                    ..v2_node()
+                },
+                Lineage {
+                    episode_id: "ep-a".into(),
+                    extractor_version: "0.1.0".into(),
+                },
+                "e",
+            )
+            .unwrap();
+        let refused = store.stage_invalidation_proposal(0, "ep-new").unwrap_err();
+        assert!(
+            matches!(
+                refused,
+                StoreError::ProposalRefused {
+                    current: ClaimStatus::Staged,
+                    ..
+                }
+            ),
+            "staged target refused, got: {refused:?}"
+        );
+        assert!(store.invalidations().is_empty());
     }
 
     #[test]

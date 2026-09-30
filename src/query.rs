@@ -372,8 +372,9 @@ pub struct StagedInvalidation {
 /// invalidation proposals against them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContradictionResult {
-    /// Typed traversal outcome (`qt_bounded_traversal`): the edge walk is
-    /// bounded; `budget-exhausted` when edges remained unwalked.
+    /// Typed traversal outcome (`qt_bounded_traversal`): both walks —
+    /// edges then proposals — share one budget; `budget-exhausted` when
+    /// rows remained unwalked.
     pub status: BudgetStatus,
     pub pairs: Vec<ContradictionPair>,
     pub proposals: Vec<StagedInvalidation>,
@@ -386,12 +387,13 @@ pub struct ContradictionResult {
 /// lineage and status. The query reports graph structure only and never
 /// adjudicates which side is true. Sides whose lineage reaches no
 /// persisted episode are invisible (`qt_lineage_traceable`) — a pair
-/// over a lineage-broken claim is not returned. The edge walk visits
-/// edges in stored row order under `budget` (`qt_bounded_traversal`):
-/// when the budget stops the walk with edges remaining the answer is
-/// `budget-exhausted`; a completed walk reports `complete` — and an
-/// unconnected queried claim produces no hits, honestly. Reads never
-/// write (`qt_readonly`).
+/// over a lineage-broken claim is not returned. One shared budget of
+/// walked rows bounds BOTH walks (`qt_bounded_traversal`, bajan-2hp):
+/// edges first in stored row order, then proposals in stored row order
+/// — when the budget stops either walk with rows remaining the answer
+/// is `budget-exhausted`; a walk that saw every row reports `complete`
+/// — and an unconnected queried claim produces no hits, honestly. Reads
+/// never write (`qt_readonly`).
 pub fn contradictions(
     db: &SqliteStore,
     claim_keys: &[usize],
@@ -431,15 +433,21 @@ pub fn contradictions(
     };
     let queried = |key: &usize| claim_keys.contains(key);
 
-    // qt_bounded_traversal: bounded edge walk in stored row order.
+    // qt_bounded_traversal (bajan-2hp): the budget bounds BOTH walks —
+    // edges first, then proposals — under one shared counter of walked
+    // rows. A proposal never walked is a proposal never reported, and
+    // the status says so; a budget that covers every row is honest-
+    // complete even when it exceeds the row count.
     let edges = db.edges().map_err(|e| BajanQueryError(e.to_string()))?;
     let mut pairs = Vec::new();
+    let mut walked = 0usize;
     let mut truncated = false;
-    for (walked, (from, label, to)) in edges.iter().enumerate() {
+    for (from, label, to) in edges.iter() {
         if walked >= budget {
             truncated = true;
             break;
         }
+        walked += 1;
         if *label != crate::store::EdgeLabel::Contradicts {
             continue;
         }
@@ -457,22 +465,36 @@ pub fn contradictions(
         });
     }
 
-    let proposals = db
-        .invalidations()
-        .map_err(|e| BajanQueryError(e.to_string()))?
-        .into_iter()
-        .filter(|p| queried(&p.claim_key))
-        .filter_map(|p| {
-            let side = side_of(p.claim_key)?;
-            Some(StagedInvalidation {
-                claim_key: p.claim_key,
-                text: side.text,
-                status: side.status,
-                episodes: side.episodes,
-                causing_episode_id: p.causing_episode_id,
-            })
-        })
-        .collect();
+    let proposals = if truncated {
+        // The edge walk exhausted the budget — the proposal walk never
+        // ran, so nothing from it is reported.
+        Vec::new()
+    } else {
+        let mut out = Vec::new();
+        for p in db
+            .invalidations()
+            .map_err(|e| BajanQueryError(e.to_string()))?
+        {
+            if walked >= budget {
+                truncated = true;
+                break;
+            }
+            walked += 1;
+            if !queried(&p.claim_key) {
+                continue;
+            }
+            if let Some(side) = side_of(p.claim_key) {
+                out.push(StagedInvalidation {
+                    claim_key: p.claim_key,
+                    text: side.text,
+                    status: side.status,
+                    episodes: side.episodes,
+                    causing_episode_id: p.causing_episode_id,
+                });
+            }
+        }
+        out
+    };
 
     let status = if truncated {
         BudgetStatus::BudgetExhausted

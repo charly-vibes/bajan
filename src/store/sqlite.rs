@@ -291,6 +291,26 @@ fn sql_err(e: impl std::fmt::Display) -> StoreError {
     }
 }
 
+/// Encode an edge label for raw row restore — the snake_case serde
+/// vocabulary form, same form the strict read path decodes.
+fn encode_edge_label(
+    label: EdgeLabel,
+    from_claim: usize,
+    to_claim: usize,
+) -> Result<String, StoreError> {
+    let value = serde_json::to_value(label).map_err(|e| StoreError::Sqlite {
+        message: format!("edge label encode failed: {e}"),
+        spec: SPEC,
+    })?;
+    match value {
+        serde_json::Value::String(s) => Ok(s),
+        _ => Err(StoreError::Sqlite {
+            message: format!("edge label of ({from_claim}, {to_claim}) encoded to a non-string",),
+            spec: SPEC,
+        }),
+    }
+}
+
 impl SqliteStore {
     /// Open (creating if needed) an embedded store at `path`.
     pub fn open(path: &str) -> Result<Self, StoreError> {
@@ -669,10 +689,28 @@ impl SqliteStore {
             self.mark_extracted(episode_id, version)?;
         }
         for edge in &dump.edges {
-            self.insert_edge(edge.from_claim, edge.label, edge.to_claim)?;
+            // Raw row insert (bajan-2hp): the write-path guards are
+            // pipeline semantics, not rebuild semantics — a legacy
+            // store's duplicate rows and proposals against non-active
+            // claims are restored verbatim (gm_embedded_store).
+            self.conn
+                .execute(
+                    "INSERT INTO edges (from_claim, label, to_claim) VALUES (?1, ?2, ?3)",
+                    params![
+                        edge.from_claim as i64,
+                        encode_edge_label(edge.label, edge.from_claim, edge.to_claim)?,
+                        edge.to_claim as i64
+                    ],
+                )
+                .map_err(sql_err)?;
         }
         for proposal in &dump.invalidations {
-            self.stage_invalidation_proposal(proposal.claim_key, &proposal.causing_episode_id)?;
+            self.conn
+                .execute(
+                    "INSERT INTO invalidations (claim_key, causing_episode_id) VALUES (?1, ?2)",
+                    params![proposal.claim_key as i64, proposal.causing_episode_id],
+                )
+                .map_err(sql_err)?;
         }
         for record in &dump.supersessions {
             self.insert_supersession_row(record.claim_key, &record.reason, record.superseded_at)?;
@@ -690,7 +728,11 @@ impl SqliteStore {
     /// label is a member of the published vocabulary (the `EdgeLabel`
     /// enum makes an out-of-vocabulary label unrepresentable) and both
     /// endpoints must be persisted claims — an edge always joins two
-    /// claims. Row order is preserved for dump-recreate.
+    /// claims. Edges are a set relation: an identical (from, label, to)
+    /// triple is refused (`DuplicateEdge`) — a doubled contradicts edge
+    /// would double the reported pairs, a doubled
+    /// possible_duplicate_of entry would double er_queue rows (bajan-2hp).
+    /// Row order is preserved for dump-recreate.
     pub fn insert_edge(
         &self,
         from_claim: usize,
@@ -704,6 +746,7 @@ impl SqliteStore {
                 });
             }
         }
+        let label_id = label;
         let label = match label {
             EdgeLabel::Mentions => "mentions",
             EdgeLabel::Contradicts => "contradicts",
@@ -711,6 +754,26 @@ impl SqliteStore {
             EdgeLabel::DerivedFrom => "derived_from",
             EdgeLabel::PossibleDuplicateOf => "possible_duplicate_of",
         };
+        // Uniqueness per relation (bajan-2hp): edges are a set relation —
+        // an identical (from, label, to) triple carries no new
+        // information, and a doubled contradicts edge would double the
+        // reported pairs (gm_relation_typing).
+        let existing: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE from_claim = ?1 AND label = ?2 AND to_claim = ?3",
+                params![from_claim as i64, label, to_claim as i64],
+                |row| row.get(0),
+            )
+            .map_err(sql_err)?;
+        if existing > 0 {
+            return Err(StoreError::DuplicateEdge {
+                from_claim,
+                to_claim,
+                label: label_id,
+                spec: SPEC,
+            });
+        }
         self.conn
             .execute(
                 "INSERT INTO edges (from_claim, label, to_claim) VALUES (?1, ?2, ?3)",
@@ -747,8 +810,13 @@ impl SqliteStore {
 
     /// Stage an invalidation proposal against a claim
     /// (`ex_mutation_proposal`): the proposal carries the causing-episode
-    /// lineage; the claim is not mutated. Unknown claim keys are refused.
-    /// Row order is preserved for dump-recreate.
+    /// lineage; the claim is not mutated. The claim must exist and be
+    /// `active` — proposals stage against active claims only, so a
+    /// staged (unsettled) or rejected (tombstoned) target is refused with
+    /// `ProposalRefused`; the identical (claim, causing-episode) pair is
+    /// refused with `DuplicateProposal` — proposals are a set relation,
+    /// not a multiset (bajan-2hp, one guard for both stores). Row order
+    /// is preserved for dump-recreate.
     pub fn stage_invalidation_proposal(
         &self,
         claim_key: usize,
@@ -756,6 +824,48 @@ impl SqliteStore {
     ) -> Result<(), StoreError> {
         if !self.claim_exists(claim_key)? {
             return Err(StoreError::ClaimNotFound { claim_key });
+        }
+        // Active-only guard (bajan-2hp): ex_mutation_proposal stages
+        // against active claims — a claim that is not yet settled
+        // (staged) or already tombstoned (rejected) is refused.
+        let status: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT status FROM claims WHERE claim_key = ?1",
+                params![claim_key as i64],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_err)?;
+        if status.as_deref() != Some("active") {
+            let current = match status.as_deref() {
+                Some("active") => ClaimStatus::Active,
+                Some("rejected") => ClaimStatus::Rejected,
+                _ => ClaimStatus::Staged,
+            };
+            return Err(StoreError::ProposalRefused {
+                claim_key,
+                current,
+                spec: SPEC,
+            });
+        }
+        // Uniqueness per relation (bajan-2hp): an identical (claim,
+        // causing-episode) pair carries no new information — doubled
+        // proposals would double the reported invalidations.
+        let existing: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM invalidations WHERE claim_key = ?1 AND causing_episode_id = ?2",
+                params![claim_key as i64, causing_episode_id],
+                |row| row.get(0),
+            )
+            .map_err(sql_err)?;
+        if existing > 0 {
+            return Err(StoreError::DuplicateProposal {
+                claim_key,
+                causing_episode_id: causing_episode_id.to_string(),
+                spec: SPEC,
+            });
         }
         self.conn
             .execute(

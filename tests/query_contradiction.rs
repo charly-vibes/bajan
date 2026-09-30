@@ -294,16 +294,31 @@ proptest! {
         }
 
         let mut want_pairs: Vec<(usize, usize)> = Vec::new();
+        // Edges are a set relation (bajan-2hp): an identical
+        // (from, label, to) triple is refused, so the generated
+        // duplicates insert once and count once.
+        let mut seen_edges = std::collections::HashSet::new();
         for (from, to) in pairs.iter() {
             let (f, t) = (keys[*from], keys[*to]);
+            if !seen_edges.insert((f, t)) {
+                continue;
+            }
             db.insert_edge(f, EdgeLabel::Contradicts, t).expect("edge");
             if queried.contains(from) || queried.contains(to) {
                 want_pairs.push((f, t));
             }
         }
         let mut want_proposals: Vec<usize> = Vec::new();
+        // Proposals are a set relation (bajan-2hp): an identical
+        // (claim, causing-episode) pair is refused — dedupe the
+        // generated repeats the same way.
+        let mut seen_proposals = std::collections::HashSet::new();
         for (claim_i, cause_i) in proposals.iter() {
-            db.stage_invalidation_proposal(keys[*claim_i], &format!("ep-{cause_i}"))
+            let causing = format!("ep-{cause_i}");
+            if !seen_proposals.insert((*claim_i, causing.clone())) {
+                continue;
+            }
+            db.stage_invalidation_proposal(keys[*claim_i], &causing)
                 .expect("proposal");
             if queried.contains(claim_i) {
                 want_proposals.push(keys[*claim_i]);

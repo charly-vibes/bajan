@@ -372,4 +372,37 @@ pub enum StoreError {
         to_claim: usize,
         spec: &'static str,
     },
+
+    #[error(
+        "edge {label:?} between {from_claim} and {to_claim} already exists; edges are a set \
+         relation — an identical (from, label, to) triple is refused (see {spec}, \
+         gm_relation_typing)"
+    )]
+    DuplicateEdge {
+        from_claim: usize,
+        to_claim: usize,
+        label: EdgeLabel,
+        spec: &'static str,
+    },
+
+    #[error(
+        "an invalidation proposal against claim {claim_key} caused by episode \
+         {causing_episode_id:?} already exists; proposals are a set relation — an identical \
+         (claim, causing-episode) pair is refused (see {spec}, ex_mutation_proposal)"
+    )]
+    DuplicateProposal {
+        claim_key: usize,
+        causing_episode_id: String,
+        spec: &'static str,
+    },
+
+    #[error(
+        "claim {claim_key} is in status {current:?}; invalidation proposals stage against \
+         active claims only (see {spec}, ex_mutation_proposal)"
+    )]
+    ProposalRefused {
+        claim_key: usize,
+        current: ClaimStatus,
+        spec: &'static str,
+    },
 }

@@ -1104,7 +1104,10 @@ mod tests {
         )
         .unwrap();
         // Claim 0 (from extract) contradicts claim 1 (seeded above);
-        // a proposal is staged against claim 1.
+        // claim 1 is adopted first — proposals stage against active
+        // claims only (bajan-2hp) — and then a proposal is staged
+        // against it.
+        db.adopt(1, "test-actor", 1).unwrap();
         db.insert_edge(0, crate::store::EdgeLabel::Contradicts, 1)
             .unwrap();
         db.stage_invalidation_proposal(1, "ep-seed").unwrap();
@@ -1115,7 +1118,7 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0]["from"]["claim_key"], 0);
         assert_eq!(pairs[0]["to"]["claim_key"], 1);
-        assert_eq!(pairs[0]["to"]["status"], "staged");
+        assert_eq!(pairs[0]["to"]["status"], "active");
         assert_eq!(pairs[0]["to"]["episodes"][0], "ep-seed");
         // The proposal is against an unqueried claim here — not reported.
         assert_eq!(v["data"]["proposals"].as_array().map(Vec::len), Some(0));
