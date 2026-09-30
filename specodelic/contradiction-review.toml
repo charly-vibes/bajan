@@ -1,0 +1,31 @@
+source = "contradiction.review"
+
+[[constraints]]
+id = "cr_proposal_entry"
+kind = "invariant"
+expr = "an LLM-proposed contradiction enters the queue only as a staged proposal citing two distinct claim keys that both exist, carrying the producer provenance `llm:<model_id>` and the rationale the model gave; no `contradicts` edge is written at proposal time, and a proposal citing a hallucinated claim key is refused honestly, never silently dropped or repaired"
+traces_to = "[[contradiction.review]]"
+
+[[constraints]]
+id = "cr_human_resolution"
+kind = "invariant"
+expr = "a proposal leaves the queue only through an explicit human resolution command carrying actor identity — approve (write exactly one `contradicts` edge with `llm:<model_id>` producer provenance, the sanctioned human-gated write path of `gm_contradicts_provenance`) or reject (drop only the proposal); there is no automated path from queue entry to edge write, and a resolution without actor identity is refused"
+traces_to = "[[contradiction.review]]"
+
+[[constraints]]
+id = "cr_repropose_guard"
+kind = "invariant"
+expr = "a rejected pair re-enters the queue only when a new proposer run produces changed evidence for it — a changed pair fingerprint (claim texts or rationale) — and never by re-running the proposer on unchanged inputs; the audit record of the prior rejection is not erased"
+traces_to = "[[contradiction.review]]"
+
+[[constraints]]
+id = "cr_queue_transparency"
+kind = "invariant"
+expr = "the proposal queue is inspectable: a list command returns every open proposal with both claim keys, producer, rationale, and queue age, ordered oldest-first — a human can see what they are deciding and what they are leaving undecided"
+traces_to = "[[contradiction.review]]"
+
+[[constraints]]
+id = "cr_scan_untouched"
+kind = "invariant"
+expr = "the deterministic contradiction-scan pass is unchanged by the proposal queue — its closed edit classes, pass identity, and edge writes follow `gm_contradicts_provenance` alone; the queue never feeds edges into, filters, or suppresses the scan"
+traces_to = "[[contradiction.review]]"

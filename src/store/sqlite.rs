@@ -16,9 +16,10 @@
 use crate::extract::Reason;
 use crate::ingest::{EpisodeRecord, Locator};
 use crate::store::{
-    AuditRecord, ClaimNode, ClaimStatus, EdgeLabel, EnqueueOutcome, Evidence, InvalidationProposal,
-    Lineage, ReviewAuditRecord, ReviewDecision, ReviewRecord, ReviewStatus, StoreError,
-    SupersessionRecord, dropped_hedge_markers,
+    AuditRecord, ClaimNode, ClaimStatus, ContradictionAuditRecord, ContradictionProposal,
+    EdgeLabel, EnqueueOutcome, Evidence, InvalidationProposal, Lineage, ProposalDecision,
+    ProposalStatus, ProposeOutcome, ReviewAuditRecord, ReviewDecision, ReviewRecord, ReviewStatus,
+    StoreError, SupersessionRecord, dropped_hedge_markers,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -108,6 +109,27 @@ CREATE TABLE IF NOT EXISTS review_audits (
     actor TEXT NOT NULL,
     resolved_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS contradiction_proposals (
+    rowid_key INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_claim INTEGER NOT NULL,
+    to_claim INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    producer TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    queued_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    actor TEXT,
+    decision TEXT
+);
+CREATE TABLE IF NOT EXISTS contradiction_proposal_audits (
+    rowid_key INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_claim INTEGER NOT NULL,
+    to_claim INTEGER NOT NULL,
+    decision TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    resolved_at INTEGER NOT NULL
+);
 ";
 
 /// Row mapper shared by `episodes()` and `get_episode()`: reconstructs a
@@ -153,6 +175,53 @@ fn review_row(row: &rusqlite::Row<'_>) -> Result<ReviewRecord, StoreError> {
             .map_err(sql_err)?
             .map(|t| t as u64),
         actor: row.get(7).map_err(sql_err)?,
+        decision,
+    })
+}
+
+/// Spec path carried by every contradiction-review store error.
+pub const CPROP_SPEC: &str = "specs/contradiction-review.md";
+
+/// Row mapper shared by the contradiction-proposal reads
+/// (`cr_queue_transparency`): status and decision decoded strictly from
+/// the published vocabularies, a corrupt row is a store error.
+fn contradiction_proposal_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<ContradictionProposal, StoreError> {
+    let from_claim: i64 = row.get(0).map_err(sql_err)?;
+    let to_claim: i64 = row.get(1).map_err(sql_err)?;
+    let status_raw: String = row.get(2).map_err(sql_err)?;
+    let status: ProposalStatus =
+        serde_json::from_value(serde_json::Value::String(status_raw.clone())).map_err(|e| {
+            StoreError::Sqlite {
+                message: format!("proposal status decode failed ({status_raw}): {e}"),
+                spec: CPROP_SPEC,
+            }
+        })?;
+    let decision_raw: Option<String> = row.get(9).map_err(sql_err)?;
+    let decision = match decision_raw {
+        None => None,
+        Some(raw) => Some(
+            serde_json::from_value::<ProposalDecision>(serde_json::Value::String(raw.clone()))
+                .map_err(|e| StoreError::Sqlite {
+                    message: format!("proposal decision decode failed ({raw}): {e}"),
+                    spec: CPROP_SPEC,
+                })?,
+        ),
+    };
+    Ok(ContradictionProposal {
+        from_claim: from_claim as usize,
+        to_claim: to_claim as usize,
+        status,
+        producer: row.get(3).map_err(sql_err)?,
+        rationale: row.get(4).map_err(sql_err)?,
+        fingerprint: row.get(5).map_err(sql_err)?,
+        queued_at: row.get::<_, i64>(6).map_err(sql_err)? as u64,
+        resolved_at: row
+            .get::<_, Option<i64>>(7)
+            .map_err(sql_err)?
+            .map(|t| t as u64),
+        actor: row.get(8).map_err(sql_err)?,
         decision,
     })
 }
@@ -267,6 +336,14 @@ pub struct ExtractionDump {
     /// Review-resolution audit records, row order preserved.
     #[serde(default)]
     pub review_audits: Vec<ReviewAuditRecord>,
+    /// Contradiction-proposal queue rows (`cr_queue_transparency`), row
+    /// order preserved: without these a rebuild would lose the LLM
+    /// proposal queue and its lifecycle states (gm_embedded_store).
+    #[serde(default)]
+    pub contradiction_proposals: Vec<ContradictionProposal>,
+    /// Contradiction-proposal audit records, row order preserved.
+    #[serde(default)]
+    pub contradiction_audits: Vec<ContradictionAuditRecord>,
 }
 
 /// One persisted edge in dump form: endpoints are claim keys, the label
@@ -645,6 +722,8 @@ impl SqliteStore {
         let supersessions = self.supersessions()?;
         let reviews = self.reviews()?;
         let review_audits = self.review_audits()?;
+        let contradiction_proposals = self.contradiction_proposals()?;
+        let contradiction_audits = self.contradiction_audits()?;
         Ok(ExtractionDump {
             claims,
             extracted,
@@ -661,6 +740,8 @@ impl SqliteStore {
             supersessions,
             reviews,
             review_audits,
+            contradiction_proposals,
+            contradiction_audits,
         })
     }
 
@@ -755,6 +836,12 @@ impl SqliteStore {
         }
         for record in &dump.review_audits {
             self.insert_review_audit_row(record)?;
+        }
+        for record in &dump.contradiction_proposals {
+            self.insert_contradiction_proposal_row(record)?;
+        }
+        for record in &dump.contradiction_audits {
+            self.insert_contradiction_audit_row(record)?;
         }
         Ok(())
     }
@@ -1392,6 +1479,277 @@ impl SqliteStore {
         Ok(out)
     }
 
+    /// Stage one LLM-proposed contradiction (`cr_proposal_entry`): the
+    /// pair joins two DISTINCT existing claim keys, carries the producer
+    /// identity (`llm:<model_id>`) and the model's rationale, and writes a
+    /// queue row ONLY — no `contradicts` edge exists at proposal time; the
+    /// edge is the human-approved outcome (`cr_human_resolution`).
+    /// Self-pairs and unknown keys are refused; an open proposal for the
+    /// unordered pair refuses a duplicate; a rejected pair re-enters only
+    /// with a changed fingerprint (`cr_repropose_guard`).
+    pub fn propose_contradiction(
+        &self,
+        from_claim: usize,
+        to_claim: usize,
+        producer: &str,
+        rationale: &str,
+        fingerprint: &str,
+        queued_at: u64,
+    ) -> Result<ProposeOutcome, StoreError> {
+        if from_claim == to_claim {
+            return Err(StoreError::InvalidContradictionPair { spec: CPROP_SPEC });
+        }
+        for endpoint in [from_claim, to_claim] {
+            if !self.claim_exists(endpoint)? {
+                return Err(StoreError::ClaimNotFound {
+                    claim_key: endpoint,
+                });
+            }
+        }
+        if self.open_contradiction_row(from_claim, to_claim)?.is_some() {
+            return Ok(ProposeOutcome::AlreadyProposed);
+        }
+        if let Some(row) = self.latest_rejected_contradiction_row(from_claim, to_claim)?
+            && row.fingerprint == fingerprint
+        {
+            return Ok(ProposeOutcome::RejectedWithoutNewEvidence);
+        }
+        self.conn
+            .execute(
+                "INSERT INTO contradiction_proposals (from_claim, to_claim, status, producer, \
+                 rationale, fingerprint, queued_at) VALUES (?1, ?2, 'proposed', ?3, ?4, ?5, ?6)",
+                params![
+                    from_claim as i64,
+                    to_claim as i64,
+                    producer,
+                    rationale,
+                    fingerprint,
+                    queued_at as i64
+                ],
+            )
+            .map_err(sql_err)?;
+        Ok(ProposeOutcome::Queued)
+    }
+
+    /// All contradiction-proposal rows in insertion row order (open and
+    /// resolved alike — the queue's own audit trail).
+    pub fn contradiction_proposals(&self) -> Result<Vec<ContradictionProposal>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT from_claim, to_claim, status, producer, rationale, fingerprint, \
+                 queued_at, resolved_at, actor, decision \
+                 FROM contradiction_proposals ORDER BY rowid",
+            )
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push(contradiction_proposal_row(row)?);
+        }
+        Ok(out)
+    }
+
+    /// The open proposal queue (`cr_queue_transparency`): every `proposed`
+    /// row, oldest-first — a human sees what they are deciding.
+    pub fn contradiction_queue(&self) -> Result<Vec<ContradictionProposal>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT from_claim, to_claim, status, producer, rationale, fingerprint, \
+                 queued_at, resolved_at, actor, decision \
+                 FROM contradiction_proposals WHERE status = 'proposed' \
+                 ORDER BY queued_at, rowid",
+            )
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push(contradiction_proposal_row(row)?);
+        }
+        Ok(out)
+    }
+
+    /// Resolve one open proposal (`cr_human_resolution`): the ONLY path
+    /// out of `proposed` — an explicit human command carrying actor
+    /// identity. Approve writes exactly one `contradicts` edge carrying
+    /// the producer provenance (`llm:<model_id>`, sanctioned by
+    /// `gm_contradicts_provenance`'s human-gated exception); reject writes
+    /// no edge. Either way exactly one audit record is written.
+    pub fn resolve_contradiction_proposal(
+        &self,
+        from_claim: usize,
+        to_claim: usize,
+        decision: ProposalDecision,
+        actor: &str,
+        resolved_at: u64,
+    ) -> Result<(), StoreError> {
+        if actor.is_empty() {
+            return Err(StoreError::ProposalActorRequired { spec: CPROP_SPEC });
+        }
+        let row = self.open_contradiction_row(from_claim, to_claim)?.ok_or(
+            StoreError::ProposalNotProposed {
+                from_claim,
+                to_claim,
+                spec: CPROP_SPEC,
+            },
+        )?;
+        let new_status = match decision {
+            ProposalDecision::Approved => {
+                let provenance = serde_json::json!({
+                    "producer": row.1.producer,
+                    "approved_by": actor,
+                    "at": resolved_at,
+                })
+                .to_string();
+                self.insert_edge_provenanced(
+                    row.1.from_claim,
+                    EdgeLabel::Contradicts,
+                    row.1.to_claim,
+                    Some(&provenance),
+                )?;
+                "resolved_approved"
+            }
+            ProposalDecision::Rejected => "resolved_rejected",
+        };
+        self.conn
+            .execute(
+                "UPDATE contradiction_proposals SET status = ?3, resolved_at = ?4, actor = ?5, \
+                 decision = ?6 WHERE rowid_key = ?7",
+                params![
+                    from_claim as i64,
+                    to_claim as i64,
+                    new_status,
+                    resolved_at as i64,
+                    actor,
+                    match decision {
+                        ProposalDecision::Approved => "approved",
+                        ProposalDecision::Rejected => "rejected",
+                    },
+                    row.0,
+                ],
+            )
+            .map_err(sql_err)?;
+        self.conn
+            .execute(
+                "INSERT INTO contradiction_proposal_audits \
+                 (from_claim, to_claim, decision, actor, resolved_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    from_claim as i64,
+                    to_claim as i64,
+                    match decision {
+                        ProposalDecision::Approved => "approved",
+                        ProposalDecision::Rejected => "rejected",
+                    },
+                    actor,
+                    resolved_at as i64
+                ],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
+    /// All contradiction-proposal audit records in insertion row order
+    /// (`cr_human_resolution`): the receipt trail.
+    pub fn contradiction_audits(&self) -> Result<Vec<ContradictionAuditRecord>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT from_claim, to_claim, decision, actor, resolved_at \
+                 FROM contradiction_proposal_audits ORDER BY rowid",
+            )
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            let from_claim: i64 = row.get(0).map_err(sql_err)?;
+            let to_claim: i64 = row.get(1).map_err(sql_err)?;
+            let decision_raw: String = row.get(2).map_err(sql_err)?;
+            let decision: ProposalDecision = serde_json::from_value(serde_json::Value::String(
+                decision_raw.clone(),
+            ))
+            .map_err(|e| StoreError::Sqlite {
+                message: format!("proposal decision decode failed ({decision_raw}): {e}"),
+                spec: CPROP_SPEC,
+            })?;
+            out.push(ContradictionAuditRecord {
+                from_claim: from_claim as usize,
+                to_claim: to_claim as usize,
+                decision,
+                actor: row.get(3).map_err(sql_err)?,
+                resolved_at: row.get::<_, i64>(4).map_err(sql_err)? as u64,
+            });
+        }
+        Ok(out)
+    }
+
+    /// The `proposed` contradiction-proposal row for the unordered pair,
+    /// if any, with its rowid.
+    fn open_contradiction_row(
+        &self,
+        from_claim: usize,
+        to_claim: usize,
+    ) -> Result<Option<(i64, ContradictionProposal)>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT rowid_key, from_claim, to_claim, status, producer, rationale, \
+                 fingerprint, queued_at, resolved_at, actor, decision \
+                 FROM contradiction_proposals WHERE status = 'proposed' AND \
+                 ((from_claim = ?1 AND to_claim = ?2) OR (from_claim = ?2 AND to_claim = ?1)) \
+                 ORDER BY rowid LIMIT 1",
+            )
+            .map_err(sql_err)?;
+        let mut rows = stmt
+            .query(params![from_claim as i64, to_claim as i64])
+            .map_err(sql_err)?;
+        match rows.next().map_err(sql_err)? {
+            Some(row) => {
+                let rowid: i64 = row.get(0).map_err(sql_err)?;
+                let record = ContradictionProposal {
+                    from_claim: row.get::<_, i64>(1).map_err(sql_err)? as usize,
+                    to_claim: row.get::<_, i64>(2).map_err(sql_err)? as usize,
+                    status: ProposalStatus::Proposed,
+                    producer: row.get(4).map_err(sql_err)?,
+                    rationale: row.get(5).map_err(sql_err)?,
+                    fingerprint: row.get(6).map_err(sql_err)?,
+                    queued_at: row.get::<_, i64>(7).map_err(sql_err)? as u64,
+                    resolved_at: None,
+                    actor: row.get(9).map_err(sql_err)?,
+                    decision: None,
+                };
+                Ok(Some((rowid, record)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// The latest `resolved_rejected` row for the unordered pair, if any
+    /// (`cr_repropose_guard` comparator).
+    fn latest_rejected_contradiction_row(
+        &self,
+        from_claim: usize,
+        to_claim: usize,
+    ) -> Result<Option<ContradictionProposal>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT from_claim, to_claim, status, producer, rationale, fingerprint, \
+                 queued_at, resolved_at, actor, decision \
+                 FROM contradiction_proposals WHERE status = 'resolved_rejected' AND \
+                 ((from_claim = ?1 AND to_claim = ?2) OR (from_claim = ?2 AND to_claim = ?1)) \
+                 ORDER BY resolved_at DESC, rowid DESC LIMIT 1",
+            )
+            .map_err(sql_err)?;
+        let mut rows = stmt
+            .query(params![from_claim as i64, to_claim as i64])
+            .map_err(sql_err)?;
+        match rows.next().map_err(sql_err)? {
+            Some(row) => Ok(Some(contradiction_proposal_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
     /// The `proposed` row for the unordered pair, if any, with its rowid.
     fn open_pair_row(
         &self,
@@ -1491,6 +1849,69 @@ impl SqliteStore {
             .execute(
                 "INSERT INTO review_audits (from_claim, to_claim, decision, actor, resolved_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    record.from_claim as i64,
+                    record.to_claim as i64,
+                    decision,
+                    record.actor,
+                    record.resolved_at as i64
+                ],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
+    /// Raw proposal-row insert used only by dump-recreate: the queue's
+    /// lifecycle states are restored VERBATIM — the staging guards are
+    /// pipeline semantics, not rebuild semantics.
+    fn insert_contradiction_proposal_row(
+        &self,
+        record: &ContradictionProposal,
+    ) -> Result<(), StoreError> {
+        let status = match record.status {
+            ProposalStatus::Proposed => "proposed",
+            ProposalStatus::ResolvedApproved => "resolved_approved",
+            ProposalStatus::ResolvedRejected => "resolved_rejected",
+        };
+        let decision = record.decision.map(|d| match d {
+            ProposalDecision::Approved => "approved",
+            ProposalDecision::Rejected => "rejected",
+        });
+        self.conn
+            .execute(
+                "INSERT INTO contradiction_proposals (from_claim, to_claim, status, producer, \
+                 rationale, fingerprint, queued_at, resolved_at, actor, decision) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    record.from_claim as i64,
+                    record.to_claim as i64,
+                    status,
+                    record.producer,
+                    record.rationale,
+                    record.fingerprint,
+                    record.queued_at as i64,
+                    record.resolved_at.map(|t| t as i64),
+                    record.actor,
+                    decision,
+                ],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
+    /// Raw audit-row insert used only by dump-recreate.
+    fn insert_contradiction_audit_row(
+        &self,
+        record: &ContradictionAuditRecord,
+    ) -> Result<(), StoreError> {
+        let decision = match record.decision {
+            ProposalDecision::Approved => "approved",
+            ProposalDecision::Rejected => "rejected",
+        };
+        self.conn
+            .execute(
+                "INSERT INTO contradiction_proposal_audits \
+                 (from_claim, to_claim, decision, actor, resolved_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     record.from_claim as i64,
                     record.to_claim as i64,

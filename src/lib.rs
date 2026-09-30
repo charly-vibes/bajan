@@ -9,6 +9,7 @@ pub mod contradict;
 pub mod extract;
 pub mod ingest;
 pub mod llm;
+pub mod propose;
 pub mod query;
 pub mod resolve;
 pub mod review;

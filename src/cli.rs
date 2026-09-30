@@ -126,6 +126,24 @@ pub enum Command {
         #[command(subcommand)]
         action: ReviewAction,
     },
+    /// LLM-assisted contradiction-proposal pass (cr_proposal_entry):
+    /// proposes candidate contradicts pairs the closed rule set cannot
+    /// see, staging them into the human-owned proposal queue — never
+    /// writing edges. Config comes from the extractor env surface
+    /// (BAJAN_EXTRACTOR_MODEL/_BASE_URL/_API_KEY_ENV).
+    Propose {
+        /// Bounded-candidate budget: maximum ranked claims walked.
+        #[arg(long, default_value_t = 256)]
+        budget: usize,
+    },
+    /// The contradiction-proposal HITL surface (cr_human_resolution):
+    /// inspect the open LLM-proposal queue, or resolve one proposal with
+    /// actor identity — approve writes the contradicts edge with
+    /// `llm:<model_id>` producer provenance, reject drops the proposal.
+    Proposal {
+        #[command(subcommand)]
+        action: ProposalAction,
+    },
 }
 
 /// Review actions (`er_human_resolution`): list is a read; approve and
@@ -153,6 +171,38 @@ pub enum ReviewAction {
         /// One side of the candidate pair (as listed by `review list`).
         from: usize,
         /// The other side of the candidate pair.
+        to: usize,
+        /// Operator identity; defaults to $USER.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+}
+
+/// Proposal actions (`cr_human_resolution`): list is a read; approve and
+/// reject are human-only resolutions carrying actor identity.
+#[derive(Debug, Subcommand)]
+pub enum ProposalAction {
+    /// Every open LLM-proposed contradiction with producer, rationale,
+    /// and queue age (cr_queue_transparency), oldest-first.
+    List,
+    /// Approve: writes exactly one contradicts edge carrying the
+    /// producer provenance (`llm:<model_id>` — the sanctioned human-gated
+    /// write path of gm_contradicts_provenance); one audit record.
+    Approve {
+        /// One side of the proposed pair (as listed by `proposal list`).
+        from: usize,
+        /// The other side of the proposed pair.
+        to: usize,
+        /// Operator identity; defaults to $USER.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Reject: drops only the proposal — no edge is ever written; one
+    /// audit record is written (cr_human_resolution).
+    Reject {
+        /// One side of the proposed pair (as listed by `proposal list`).
+        from: usize,
+        /// The other side of the proposed pair.
         to: usize,
         /// Operator identity; defaults to $USER.
         #[arg(long)]
@@ -204,6 +254,7 @@ fn version_envelope() -> Envelope<VersionData> {
                 "specs/query-tools.md",
                 "specs/entity-review.md",
                 "specs/eval-claims.md",
+                "specs/contradiction-review.md",
             ],
         },
         vec![],
@@ -611,6 +662,157 @@ fn review_store_error_envelope(err: &StoreError, module: &str) -> serde_json::Va
     )
 }
 
+/// The contradiction-proposal pass envelope (cr_proposal_entry): the LLM
+/// proposer over ranked claims, staging queue rows — never edges. A
+/// configuration error (missing BAJAN_EXTRACTOR_* params) surfaces as a
+/// spec-traced error envelope before any call.
+fn propose_envelope(db_path: &str, budget: usize) -> serde_json::Value {
+    let config = match crate::propose::ProposerConfig::from_env() {
+        Ok(config) => config,
+        Err(err) => {
+            return spec_error_envelope(
+                "proposer_config_error",
+                &err.to_string(),
+                Some(crate::propose::SPEC),
+                "propose",
+                vec![RemediationEntry {
+                    command: "BAJAN_EXTRACTOR_MODEL=... BAJAN_EXTRACTOR_BASE_URL=... \
+                             BAJAN_EXTRACTOR_API_KEY_ENV=... bajan propose --json"
+                        .into(),
+                    description: "Set the proposer config from the extractor env surface: the \
+                                  model id, an OpenAI-compatible base URL, and the env-var NAME \
+                                  holding the API key (never the key itself)."
+                        .into(),
+                }],
+            );
+        }
+    };
+    let db = match crate::store::sqlite::SqliteStore::open(db_path) {
+        Ok(db) => db,
+        Err(err) => return proposal_store_error_envelope(&err, "propose"),
+    };
+    let proposer = crate::propose::LlmContradictionProposer::new(
+        config.model_id,
+        config.base_url,
+        config.api_key_env,
+        3,
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    match crate::propose::run_propose_pass(&db, &proposer, budget, now) {
+        Ok(report) => serde_json::to_value(Envelope::success(
+            env!("CARGO_PKG_VERSION"),
+            EnvelopeKind::Ok,
+            report,
+            vec![],
+            vec![],
+        ))
+        .expect("envelope serialization cannot fail"),
+        Err(err) => stub_envelope(&BajanError::Store(err.to_string())),
+    }
+}
+
+/// The proposal-list envelope (`cr_queue_transparency`): every open
+/// LLM-proposed contradiction with both claim keys, producer, rationale,
+/// and queue age — oldest-first.
+fn proposal_list_envelope(db_path: &str) -> serde_json::Value {
+    let db = match crate::store::sqlite::SqliteStore::open(db_path) {
+        Ok(db) => db,
+        Err(err) => return proposal_store_error_envelope(&err, "proposal"),
+    };
+    let queue = match db.contradiction_queue() {
+        Ok(queue) => queue,
+        Err(err) => return proposal_store_error_envelope(&err, "proposal"),
+    };
+    serde_json::to_value(Envelope::success(
+        env!("CARGO_PKG_VERSION"),
+        EnvelopeKind::Ok,
+        serde_json::json!({ "proposals": queue }),
+        vec![],
+        vec![],
+    ))
+    .expect("envelope serialization cannot fail")
+}
+
+/// The proposal-resolve envelope (`cr_human_resolution`): an explicit
+/// human command carrying actor identity — approve writes the provenanced
+/// contradicts edge, reject drops only the proposal; exactly one audit
+/// record either way. CLI defaults to $USER, the store refuses an empty
+/// actor.
+fn proposal_resolve_envelope(
+    db_path: &str,
+    from: usize,
+    to: usize,
+    approve: bool,
+    actor: Option<&str>,
+) -> serde_json::Value {
+    let db = match crate::store::sqlite::SqliteStore::open(db_path) {
+        Ok(db) => db,
+        Err(err) => return proposal_store_error_envelope(&err, "proposal"),
+    };
+    let actor = actor
+        .map(str::to_string)
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    let decision = if approve {
+        crate::store::ProposalDecision::Approved
+    } else {
+        crate::store::ProposalDecision::Rejected
+    };
+    match db.resolve_contradiction_proposal(from, to, decision, &actor, now) {
+        Ok(()) => {
+            // Read the audit record back (bajan-2sj discipline).
+            let audits = match db.contradiction_audits() {
+                Ok(audits) => audits,
+                Err(err) => return proposal_store_error_envelope(&err, "proposal"),
+            };
+            let record = audits
+                .iter()
+                .rev()
+                .find(|a| {
+                    (a.from_claim == from && a.to_claim == to)
+                        || (a.from_claim == to && a.to_claim == from)
+                })
+                .cloned()
+                .unwrap_or_else(|| panic!("just-written audit record must read back"));
+            serde_json::to_value(Envelope::success(
+                env!("CARGO_PKG_VERSION"),
+                EnvelopeKind::Ok,
+                record,
+                vec![],
+                vec![],
+            ))
+            .expect("envelope serialization cannot fail")
+        }
+        Err(err) => proposal_store_error_envelope(&err, "proposal"),
+    }
+}
+
+/// Proposal-spec store errors surface as spec-traced error envelopes
+/// (bajan-2sj discipline) — every refusal names `cr_*` and the remedy.
+fn proposal_store_error_envelope(err: &StoreError, module: &str) -> serde_json::Value {
+    spec_error_envelope(
+        "proposal_refused",
+        &err.to_string(),
+        Some(crate::propose::SPEC),
+        module,
+        vec![RemediationEntry {
+            command: "bajan proposal list --json".into(),
+            description: "Inspect the open proposal queue with `bajan proposal list`; resolve a \
+                          proposal with `bajan proposal approve|reject <from> <to> --actor <id>`. \
+                          Proposals enter only via the LLM pass (`bajan propose`) and never \
+                          write edges before approval (cr_proposal_entry, cr_human_resolution)."
+                .into(),
+        }],
+    )
+}
+
 /// Run a command and return its suite envelope as JSON.
 ///
 /// This is the single serialization point: every command's output passes
@@ -648,6 +850,16 @@ pub fn run(command: Command, db_path: &str) -> String {
             }
             ReviewAction::Reject { from, to, actor } => {
                 review_resolve_envelope(db_path, *from, *to, false, actor.as_deref())
+            }
+        },
+        Command::Propose { budget } => propose_envelope(db_path, *budget),
+        Command::Proposal { action } => match action {
+            ProposalAction::List => proposal_list_envelope(db_path),
+            ProposalAction::Approve { from, to, actor } => {
+                proposal_resolve_envelope(db_path, *from, *to, true, actor.as_deref())
+            }
+            ProposalAction::Reject { from, to, actor } => {
+                proposal_resolve_envelope(db_path, *from, *to, false, actor.as_deref())
             }
         },
     };

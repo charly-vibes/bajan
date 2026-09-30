@@ -51,7 +51,7 @@ traces_to = "[[graph.model]]"
 [[constraints]]
 id = "gm_contradicts_provenance"
 kind = "invariant"
-expr = "a `contradicts` edge is written in-pipeline only by the deterministic contradiction-scan pass (closed edit classes over normalized texts: negation-marker present/absent, or a single differing numeral token — no fuzzy subject detection), and every such edge carries the producing pass identity and detection rule as provenance; no other pipeline stage writes `contradicts` edges"
+expr = "a `contradicts` edge is written in-pipeline only by the deterministic contradiction-scan pass (closed edit classes over normalized texts: negation-marker present/absent, or a single differing numeral token — no fuzzy subject detection), and every such edge carries the producing pass identity and detection rule as provenance; no other pipeline stage writes `contradicts` edges — the one sanctioned exception is the human-gated path of [[contradiction.review.cr_human_resolution]], where resolving an approved LLM proposal writes the edge carrying `llm:<model_id>` producer provenance"
 traces_to = "[[graph.model]]"
 
 [[constraints]]

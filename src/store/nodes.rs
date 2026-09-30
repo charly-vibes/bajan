@@ -312,6 +312,73 @@ pub enum EnqueueOutcome {
     RejectedWithoutNewEvidence,
 }
 
+/// The contradiction-review resolution decision (specs/contradiction-review.md
+/// published vocabulary): the closed set a human resolution command may carry —
+/// approve (write the `contradicts` edge with `llm:<model_id>` producer
+/// provenance) or reject (drop only the proposal). Nothing else is
+/// representable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalDecision {
+    Approved,
+    Rejected,
+}
+
+/// Contradiction-proposal lifecycle state (specs/contradiction-review.md
+/// model): `proposed` until a human resolution moves it to
+/// `resolved_approved`/`resolved_rejected`; re-propose inserts a new row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalStatus {
+    Proposed,
+    ResolvedApproved,
+    ResolvedRejected,
+}
+
+/// One contradiction-proposal queue record (specs/contradiction-review.md):
+/// the proposed contradicts pair (endpoints are existing claim keys), the
+/// producing model's identity (`llm:<model_id>`), the rationale the model
+/// gave, and the evidence fingerprint the repropose guard compares against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContradictionProposal {
+    pub from_claim: usize,
+    pub to_claim: usize,
+    pub status: ProposalStatus,
+    pub producer: String,
+    pub rationale: String,
+    pub fingerprint: String,
+    pub queued_at: u64,
+    pub resolved_at: Option<u64>,
+    pub actor: Option<String>,
+    pub decision: Option<ProposalDecision>,
+}
+
+/// One contradiction-proposal resolution audit record (`cr_human_resolution`):
+/// exactly one per resolution — actor, timestamp, both claim keys, decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContradictionAuditRecord {
+    pub from_claim: usize,
+    pub to_claim: usize,
+    pub decision: ProposalDecision,
+    pub actor: String,
+    pub resolved_at: u64,
+}
+
+/// Outcome of a contradiction-proposal staging attempt
+/// (`cr_proposal_entry` / `cr_repropose_guard`): proposals stage without
+/// writing edges, the queue never doubles up, and a rejected pair re-enters
+/// only with changed evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProposeOutcome {
+    /// The pair is now an open proposal (queue row written, NO edge).
+    Queued,
+    /// An open proposal for this pair already exists — refused.
+    AlreadyProposed,
+    /// The pair was rejected and the evidence fingerprint is unchanged —
+    /// refused by the repropose guard.
+    RejectedWithoutNewEvidence,
+}
+
 /// Store-side error: every variant carries the governing spec so errors
 /// stay traceable to the invariant they guard.
 #[derive(Debug, thiserror::Error)]
@@ -403,6 +470,28 @@ pub enum StoreError {
     ProposalRefused {
         claim_key: usize,
         current: ClaimStatus,
+        spec: &'static str,
+    },
+
+    #[error(
+        "a contradiction-proposal pair must join two distinct claims \
+         (see {spec}, cr_proposal_entry)"
+    )]
+    InvalidContradictionPair { spec: &'static str },
+
+    #[error(
+        "contradiction-proposal resolution requires actor identity — resolutions without \
+         an actor are refused (see {spec}, cr_human_resolution)"
+    )]
+    ProposalActorRequired { spec: &'static str },
+
+    #[error(
+        "contradiction proposal ({from_claim}, {to_claim}) is not in `proposed`; a resolved \
+         proposal cannot resolve again (see {spec}, cr_human_resolution)"
+    )]
+    ProposalNotProposed {
+        from_claim: usize,
+        to_claim: usize,
         spec: &'static str,
     },
 }
