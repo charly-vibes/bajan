@@ -18,12 +18,25 @@ fn lookup_from<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<S
     }
 }
 
-/// Default selection (no env at all): the legacy deterministic extractor.
+/// Default selection (no env at all): the deterministic sentence atomizer
+/// (bajan-5zy upgraded the default no-LLM proposer from whole-episode to
+/// atomic claims; `legacy` remains selectable behind config).
 #[test]
-fn default_is_legacy() {
+fn default_is_atomic() {
     let config = bajan::extract::ExtractorConfig::from_env_with(&|_| None);
+    assert_eq!(config.kind, "atomic");
+    // Selects fine — the deterministic atomizer.
+    config.select().expect("atomic selects");
+}
+
+/// `legacy` remains selectable behind config — the byte-stable
+/// whole-episode proposer for existing stores (bajan-5zy).
+#[test]
+fn legacy_kind_still_selects() {
+    let config = bajan::extract::ExtractorConfig::from_env_with(&|key| {
+        (key == "BAJAN_EXTRACTOR").then(|| "legacy".to_string())
+    });
     assert_eq!(config.kind, "legacy");
-    // Selects fine — the deterministic proposer.
     config.select().expect("legacy selects");
 }
 

@@ -10,6 +10,7 @@ use crate::cli::BajanError;
 use crate::ingest::EpisodeRecord;
 use crate::store::{ClaimNode, Evidence, Lineage};
 use serde::{Deserialize, Serialize};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[cfg(test)]
 use proptest::prelude::*;
@@ -210,12 +211,175 @@ fn epoch_millis() -> u64 {
         .unwrap_or(0)
 }
 
-/// The legacy deterministic proposer (bajan-9av default): the
+/// Minimum claim-sized unit length in chars (bajan-5zy): sentences (or
+/// accumulated fragments) below this merge into the next unit — no
+/// orphan fragments like a bare `Dr.` abbreviation sentence.
+pub const ATOMIZER_MIN_UNIT_CHARS: usize = 20;
+
+/// Maximum claim-sized unit length in chars (bajan-5zy): units above
+/// this split at semicolon connectors (`; `) — never mid-word. A run-on
+/// with no semicolons stays whole: splitting is best-effort, documented,
+/// never a hard cut (an honest oversized unit beats a mangled one).
+pub const ATOMIZER_MAX_UNIT_CHARS: usize = 300;
+
+/// Cache-identity version of the default atomizer: namespaced under
+/// `atomic-` so stores extracted by the legacy whole-episode proposer
+/// (plain package version) re-extract — with supersession — when the
+/// default switched (bajan-5zy): the upgrade must not silently reuse
+/// legacy whole-episode output.
+pub fn atomic_default_version() -> String {
+    format!("atomic-{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Segment episode text into atomic claim-sized units (bajan-5zy):
+/// UAX #29 sentence boundaries (unicode-segmentation, `=`-pinned), then
+/// (1) merge fragments below `ATOMIZER_MIN_UNIT_CHARS` — forward while
+/// accumulating, and the trailing short fragment merges back into the
+/// previous unit; (2) split units above `ATOMIZER_MAX_UNIT_CHARS` at
+/// semicolon connectors, the semicolon staying with the left part and
+/// the following whitespace dropped.
+///
+/// Deterministic pure function: same text → same units. Every unit is a
+/// verbatim substring of the text (byte-slice of the original), and the
+/// units re-concatenate to the text modulo whitespace — `ic_verbatim`
+/// holds by construction, so the typed gate's whitespace-collapsed
+/// containment and hedge-marker survival pass without repair.
+pub fn atomic_claim_units(text: &str) -> Vec<String> {
+    // 1. UAX #29 sentence spans (byte offsets), trimmed, non-empty.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut offset = 0usize;
+    for sentence in text.split_sentence_bounds() {
+        let start = offset;
+        offset += sentence.len();
+        let lead = sentence.len() - sentence.trim_start().len();
+        let s = start + lead;
+        let end = s + sentence.trim().len();
+        if end > s {
+            spans.push((s, end));
+        }
+    }
+    if spans.is_empty() {
+        return Vec::new();
+    }
+
+    // 2. Merge below the minimum: accumulate forward — a unit still under
+    // the minimum absorbs the next sentence; a trailing short fragment
+    // merges back into the previous unit.
+    let mut units: Vec<(usize, usize)> = Vec::new();
+    for (s, e) in spans {
+        match units.last_mut() {
+            Some(last) if char_len(text, last.0, last.1) < ATOMIZER_MIN_UNIT_CHARS => {
+                last.1 = e;
+            }
+            _ => units.push((s, e)),
+        }
+    }
+    if units.len() > 1 {
+        let last = *units.last().expect("len > 1 checked");
+        if char_len(text, last.0, last.1) < ATOMIZER_MIN_UNIT_CHARS {
+            units.pop();
+            let prev = units.last_mut().expect("len > 1 checked");
+            prev.1 = last.1;
+        }
+    }
+
+    // 3. Split run-ons above the maximum at semicolon connectors: the
+    // `;` stays with the left part; the whitespace after it is dropped
+    // (re-concatenation modulo whitespace still holds). Parts still over
+    // the maximum are emitted whole — never a hard cut mid-word.
+    let mut out = Vec::new();
+    for (s, e) in units {
+        if char_len(text, s, e) <= ATOMIZER_MAX_UNIT_CHARS {
+            out.push(text[s..e].to_string());
+            continue;
+        }
+        let mut parts: Vec<(usize, usize)> = Vec::new();
+        let mut part_start = s;
+        let mut cursor = s;
+        while let Some(pos) = text[cursor..e].find(';') {
+            let semi = cursor + pos;
+            parts.push((part_start, semi + 1));
+            let mut next = semi + 1;
+            while next < e {
+                let Some(c) = text[next..].chars().next() else {
+                    break;
+                };
+                if !c.is_whitespace() {
+                    break;
+                }
+                next += c.len_utf8();
+            }
+            cursor = next;
+            part_start = next;
+        }
+        parts.push((part_start, e));
+        for (ps, pe) in parts {
+            if pe > ps {
+                out.push(text[ps..pe].to_string());
+            }
+        }
+    }
+    out
+}
+
+fn char_len(text: &str, start: usize, end: usize) -> usize {
+    text[start..end].chars().count()
+}
+
+/// The deterministic sentence atomizer (bajan-5zy default extractor):
+/// upgrades the no-LLM proposer from whole-episode text to atomic claims
+/// (`ex_no_llm_post`-compliant, fully offline). One candidate per
+/// claim-sized unit (`atomic_claim_units`), verbatim span evidence with
+/// the episode locator (typed absent marker when the episode has none).
+/// Deterministic: `model_id()` stays `None`; the version is the
+/// cache identity (`atomic_default_version` for the default build).
+#[derive(Debug)]
+pub struct SentenceAtomizer {
+    version: String,
+}
+
+impl SentenceAtomizer {
+    pub fn new(version: impl Into<String>) -> Self {
+        Self {
+            version: version.into(),
+        }
+    }
+}
+
+impl Extractor for SentenceAtomizer {
+    fn version(&self) -> &str {
+        &self.version
+    }
+    fn propose(&self, episode: &EpisodeRecord) -> Result<Vec<CandidateClaim>, ExtractionFailure> {
+        Ok(atomic_claim_units(&episode.text)
+            .into_iter()
+            .map(|unit| {
+                let evidence = match &episode.locator {
+                    crate::ingest::Locator::Span(locator) => Evidence::Span {
+                        text: unit.clone(),
+                        locator: locator.clone(),
+                    },
+                    crate::ingest::Locator::Absent => Evidence::Unknown,
+                };
+                CandidateClaim {
+                    text: unit,
+                    valid_at: None,
+                    invalid_at: None,
+                    evidence,
+                }
+            })
+            .collect())
+    }
+}
+
+/// The legacy deterministic proposer (bajan-9av): the
 /// whole-episode-text candidate of the vertical slice, byte-stable with
 /// the pre-seam behavior — one candidate per pending episode, verbatim
 /// span evidence (locator from the episode record when derivable, typed
 /// absent marker otherwise). Deterministic: `model_id()` stays `None`
-/// and the version is carried by the caller's run context.
+/// and the version is carried by the caller's run context. Kept behind
+/// config as the byte-stable mode for existing stores (bajan-5zy — the
+/// default is now the sentence atomizer).
 #[derive(Debug)]
 struct LegacyProposer {
     version: String,
@@ -249,9 +413,10 @@ impl Extractor for LegacyProposer {
 /// provider deps in bajan). Consumed by bajan-vg6's LLM extractor.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExtractorConfig {
-    /// Extractor kind: `legacy` (the deterministic whole-episode
-    /// proposer, the default) — `llm` selects the LLM extractor
-    /// (implemented by bajan-vg6).
+    /// Extractor kind: `atomic` (the deterministic sentence atomizer,
+    /// the default since bajan-5zy), `legacy` (the byte-stable
+    /// whole-episode proposer for existing stores) — `llm` selects the
+    /// LLM extractor (implemented by bajan-vg6).
     pub kind: String,
     /// Model id when kind = llm (e.g. `gpt-4o-mini`).
     pub model_id: Option<String>,
@@ -284,7 +449,7 @@ impl ExtractorConfig {
     /// race-free for tests; `from_env` wraps `std::env::var`.
     pub fn from_env_with(lookup: &dyn Fn(&str) -> Option<String>) -> Self {
         ExtractorConfig {
-            kind: lookup("BAJAN_EXTRACTOR").unwrap_or_else(|| "legacy".to_string()),
+            kind: lookup("BAJAN_EXTRACTOR").unwrap_or_else(|| "atomic".to_string()),
             model_id: lookup("BAJAN_EXTRACTOR_MODEL"),
             base_url: lookup("BAJAN_EXTRACTOR_BASE_URL"),
             api_key_env: lookup("BAJAN_EXTRACTOR_API_KEY_ENV"),
@@ -299,6 +464,7 @@ impl ExtractorConfig {
     /// Validate + build the extractor for this configuration.
     pub fn select(&self) -> Result<Box<dyn Extractor>, ExtractorConfigError> {
         match self.kind.as_str() {
+            "atomic" => Ok(Box::new(SentenceAtomizer::new(atomic_default_version()))),
             "legacy" => Ok(Box::new(LegacyProposer {
                 version: env!("CARGO_PKG_VERSION").to_string(),
             })),
@@ -331,21 +497,21 @@ impl ExtractorConfig {
     }
 }
 
-/// Run the extraction pass with the default (legacy deterministic)
-/// extractor over every persisted episode without extraction output
-/// cached at its version.
+/// Run the extraction pass with the default extractor — the
+/// deterministic sentence atomizer since bajan-5zy — over every
+/// persisted episode without extraction output cached at its version.
 pub fn run_extract(
     db: &crate::store::sqlite::SqliteStore,
     runs: &mut ExtractionRunStore,
 ) -> Result<ExtractReport, BajanError> {
-    let version = env!("CARGO_PKG_VERSION").to_string();
-    run_extract_with(db, &LegacyProposer { version }, runs)
+    run_extract_with(db, &SentenceAtomizer::new(atomic_default_version()), runs)
 }
 
-/// Run the legacy deterministic proposer at an EXPLICIT version — the
+/// Run the legacy whole-episode proposer at an EXPLICIT version — the
 /// version-bump test surface: supersession and cache dynamics across
 /// versions are contract behavior independent of which extractor runs
-/// (`ex_single_call`, `ex_supersession`).
+/// (`ex_single_call`, `ex_supersession`). Byte-stable with the
+/// pre-bajan-5zy default.
 pub fn run_extract_versioned(
     db: &crate::store::sqlite::SqliteStore,
     extractor_version: &str,

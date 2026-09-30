@@ -3,8 +3,9 @@
 //! proposals. Responsibilities: trait dispatch through `run_extract` with
 //! a scripted fake extractor; all-or-nothing candidate persistence (a
 //! partial batch is refused, nothing staged — the gate is per-episode);
-//! the default extractor is the legacy deterministic proposer
-//! (byte-stable candidates, `model_id: None`); model id reaches the run
+//! the default extractor is the deterministic sentence atomizer
+//! (bajan-5zy; the byte-stable whole-episode proposer stays behind
+//! config as `legacy`); model id reaches the run
 //! rows when an extractor carries one; deterministic extractors cache
 //! identically (one call per episode per version).
 //! Rationale: `ex_single_call`/`ex_run_record` name the extractor's
@@ -124,14 +125,44 @@ fn scripted_extractor_dispatches_through_run_extract() {
     assert!(texts.contains(&"Other episode text.".to_string()));
 }
 
-/// The default extractor is the legacy deterministic proposer: one
-/// whole-episode candidate per pending episode, `model_id: None` —
-/// byte-stable with the pre-seam behavior.
+/// The default extractor is the deterministic sentence atomizer
+/// (bajan-5zy): atomic claim-sized candidates per pending episode,
+/// `model_id: None` — the no-LLM path produces real atomic claims.
 #[test]
-fn default_extractor_is_legacy_whole_episode_proposer() {
+fn default_extractor_is_the_sentence_atomizer() {
+    let db = SqliteStore::open(":memory:").expect("store");
+    ingest::persist(
+        &db,
+        &episode("ep-1", "The first claim is here. The second claim lives."),
+    )
+    .expect("persist");
+    let report = extract::run_extract(&db, &mut Default::default()).expect("extract");
+    assert_eq!(
+        report.candidates_proposed, 2,
+        "atomic claims, not whole-episode"
+    );
+    assert_eq!(
+        staged_texts(&db),
+        vec![
+            "The first claim is here.".to_string(),
+            "The second claim lives.".to_string(),
+        ]
+    );
+}
+
+/// `legacy` config keeps the byte-stable whole-episode proposer: exactly
+/// one whole-episode candidate (bajan-5zy kept it behind config for
+/// existing stores).
+#[test]
+fn legacy_config_keeps_whole_episode_proposer() {
     let db = SqliteStore::open(":memory:").expect("store");
     ingest::persist(&db, &episode("ep-1", "Whole episode text.")).expect("persist");
-    let report = extract::run_extract(&db, &mut Default::default()).expect("extract");
+    let config = extract::ExtractorConfig::from_env_with(&|key| {
+        (key == "BAJAN_EXTRACTOR").then(|| "legacy".to_string())
+    });
+    let extractor = config.select().expect("legacy selects");
+    let report = extract::run_extract_with(&db, extractor.as_ref(), &mut Default::default())
+        .expect("extract");
     assert_eq!(report.candidates_proposed, 1);
     assert_eq!(staged_texts(&db), vec!["Whole episode text.".to_string()]);
 }
