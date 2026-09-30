@@ -210,10 +210,35 @@ pub fn markdown_episodes(input: &str) -> Result<Vec<EpisodeRecord>, String> {
     Ok(collect(&segs, "markdown"))
 }
 
+/// Block-level container elements: each one is a paragraph boundary —
+/// its content becomes its own collapsed paragraph, never glued onto
+/// the surrounding text (bajan-dp2; ic_verbatim).
+fn is_block_container(name: &str) -> bool {
+    matches!(
+        name,
+        "li" | "blockquote"
+            | "div"
+            | "td"
+            | "th"
+            | "dt"
+            | "dd"
+            | "figcaption"
+            | "section"
+            | "article"
+            | "aside"
+            | "main"
+            | "header"
+            | "footer"
+            | "nav"
+    )
+}
+
 /// Convert an HTML document into episode records: `h1`–`h6` elements open
-/// anchored episodes, `<p>` elements are paragraphs, all other text
+/// anchored episodes, `<p>` elements and block containers (`li`,
+/// `blockquote`, `td`, …) are paragraph boundaries, all other text
 /// content joins the current one. `<script>`, `<style>`, and `<pre>`
-/// subtrees are excluded — they are code, not source prose.
+/// subtrees are excluded — they are code, not source prose; `<head>` is
+/// document metadata, never episode content (bajan-tx4).
 pub fn html_episodes(input: &str) -> Result<Vec<EpisodeRecord>, String> {
     use scraper::{ElementRef, Html, Node, Selector};
 
@@ -221,6 +246,7 @@ pub fn html_episodes(input: &str) -> Result<Vec<EpisodeRecord>, String> {
     let heading_sel = Selector::parse("h1,h2,h3,h4,h5,h6").expect("valid selector");
     let para_sel = Selector::parse("p").expect("valid selector");
     let skip_sel = Selector::parse("script,style,pre").expect("valid selector");
+    let head_sel = Selector::parse("head").expect("valid selector");
 
     let mut segs: Vec<Seg> = vec![Seg::new(Locator::Absent, None)];
 
@@ -230,18 +256,23 @@ pub fn html_episodes(input: &str) -> Result<Vec<EpisodeRecord>, String> {
         heading_sel: &Selector,
         para_sel: &Selector,
         skip_sel: &Selector,
+        head_sel: &Selector,
     ) {
-        if skip_sel.matches(&el) {
+        if skip_sel.matches(&el) || head_sel.matches(&el) {
             return;
         }
         if heading_sel.matches(&el) {
             // Flush the in-flight paragraph of the current segment, then
             // open a new segment anchored on the heading text (which is
-            // the anchor, never episode content).
+            // the anchor, never episode content). The anchor collects the
+            // heading's text EXCLUDING skip-subtrees (bajan-tx4): script
+            // or style inside a heading is code, not source structure.
             if let Some(last) = segs.last_mut() {
                 last.flush();
             }
-            let anchor = collapse(&el.text().collect::<String>());
+            let mut anchor = String::new();
+            collect_visible_text(el, &mut anchor, skip_sel);
+            let anchor = collapse(&anchor);
             segs.push(Seg::new(
                 Locator::Span(format!("heading:{anchor}")),
                 Some(anchor),
@@ -256,18 +287,64 @@ pub fn html_episodes(input: &str) -> Result<Vec<EpisodeRecord>, String> {
                 last.cur.push_str(&para);
                 last.flush();
             }
-        } else {
-            // Only DIRECT text children flow into the current paragraph —
-            // descendant text belongs to the descendant's own handler.
-            for child in el.children() {
-                if let Node::Text(t) = child.value()
-                    && let Some(last) = segs.last_mut()
-                {
-                    last.cur.push_str(&t.text);
+            return;
+        }
+        if is_block_container(el.value().name()) {
+            // A block container is a paragraph boundary: its descendant
+            // text becomes its own collapsed paragraph (bajan-dp2) —
+            // unless it structurally contains <p> children, in which case
+            // recurse so each <p> keeps its own boundary.
+            if let Some(last) = segs.last_mut() {
+                last.flush();
+            }
+            let has_para_children = el
+                .children()
+                .filter_map(ElementRef::wrap)
+                .any(|c| para_sel.matches(&c));
+            if has_para_children {
+                for child in el.children().filter_map(ElementRef::wrap) {
+                    walk(child, segs, heading_sel, para_sel, skip_sel, head_sel);
+                }
+            } else {
+                let mut text = String::new();
+                collect_visible_text(el, &mut text, skip_sel);
+                if let Some(last) = segs.last_mut() {
+                    last.cur.push_str(&collapse(&text));
+                    last.flush();
                 }
             }
-            for child in el.children().filter_map(ElementRef::wrap) {
-                walk(child, segs, heading_sel, para_sel, skip_sel);
+            return;
+        }
+        // Only DIRECT text children flow into the current paragraph —
+        // descendant text belongs to the descendant's own handler.
+        for child in el.children() {
+            if let Node::Text(t) = child.value()
+                && let Some(last) = segs.last_mut()
+            {
+                last.cur.push_str(&t.text);
+            }
+        }
+        for child in el.children().filter_map(ElementRef::wrap) {
+            walk(child, segs, heading_sel, para_sel, skip_sel, head_sel);
+        }
+    }
+
+    /// Append the element's descendant text, skipping subtrees matched by
+    /// `skip_sel` (script/style/pre) — the heading-anchor and block-leaf
+    /// text collector (bajan-tx4: anchors exclude embedded code).
+    fn collect_visible_text(el: ElementRef, out: &mut String, skip_sel: &Selector) {
+        if skip_sel.matches(&el) {
+            return;
+        }
+        for child in el.children() {
+            match child.value() {
+                Node::Text(t) => out.push_str(&t.text),
+                Node::Element(_) => {
+                    if let Some(child_el) = ElementRef::wrap(child) {
+                        collect_visible_text(child_el, out, skip_sel);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -278,6 +355,7 @@ pub fn html_episodes(input: &str) -> Result<Vec<EpisodeRecord>, String> {
         &heading_sel,
         &para_sel,
         &skip_sel,
+        &head_sel,
     );
 
     Ok(collect(&segs, "html"))

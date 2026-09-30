@@ -192,6 +192,71 @@ fn html_script_style_dropped() {
     assert_eq!(eps[0].text, "Real.");
 }
 
+/// Heading anchors exclude script/style descendants — anchor text is
+/// source structure, never embedded code (bajan-tx4); the slug id follows
+/// the clean anchor.
+#[test]
+fn html_heading_anchor_excludes_script_style() {
+    let eps =
+        html_episodes("<h1>Title<script>alert(1)</script><style>.x{}</style></h1><p>Body.</p>")
+            .expect("converts");
+    assert_eq!(eps.len(), 1);
+    assert_eq!(eps[0].locator, Locator::Span("heading:Title".into()));
+    assert_eq!(eps[0].id, "title");
+    assert_eq!(eps[0].text, "Body.");
+}
+
+/// Head metadata (<title>, <style> inside <head>) is document metadata,
+/// not prose — it never becomes episode content (bajan-tx4 family).
+#[test]
+fn html_title_head_never_leak() {
+    let eps = html_episodes(
+        "<html><head><title>Page Title</title><style>s{}</style></head><body><h1>H</h1><p>Body.</p></body></html>",
+    )
+    .expect("converts");
+    assert_eq!(eps.len(), 1);
+    assert_eq!(eps[0].text, "Body.");
+    assert_eq!(eps[0].locator, Locator::Span("heading:H".into()));
+}
+
+/// Block-level siblings are separate paragraphs: list items, blockquote
+/// content, and ordered-list items each end with a paragraph boundary —
+/// never glued without a word boundary (bajan-dp2, ic_verbatim).
+#[test]
+fn html_list_items_and_blockquotes_are_separate_paragraphs() {
+    let eps = html_episodes(
+        "<h1>H</h1><blockquote><p>Quoted.</p></blockquote><ul><li>Item one</li><li>Item two</li></ul><ol><li>First</li><li>Second</li></ol>",
+    )
+    .expect("converts");
+    assert_eq!(eps.len(), 1);
+    assert_eq!(
+        eps[0].text,
+        "Quoted.\n\nItem one\n\nItem two\n\nFirst\n\nSecond"
+    );
+}
+
+/// A blockquote containing multiple paragraphs keeps the paragraph
+/// boundaries of its <p> children (bajan-dp2).
+#[test]
+fn html_blockquote_paragraphs_split() {
+    let eps = html_episodes("<h1>H</h1><blockquote><p>One.</p><p>Two.</p></blockquote>")
+        .expect("converts");
+    assert_eq!(eps.len(), 1);
+    assert_eq!(eps[0].text, "One.\n\nTwo.");
+}
+
+/// Table cells and definition-list terms are paragraph boundaries too
+/// (bajan-dp2).
+#[test]
+fn html_table_cells_and_definitions_separate() {
+    let eps = html_episodes(
+        "<h1>H</h1><table><tr><td>Alpha</td><td>Beta</td></tr></table><dl><dt>Term</dt><dd>Def</dd></dl>",
+    )
+    .expect("converts");
+    assert_eq!(eps.len(), 1);
+    assert_eq!(eps[0].text, "Alpha\n\nBeta\n\nTerm\n\nDef");
+}
+
 /// Whitespace-only segments produce no episodes (ic_malformed would reject
 /// them at ingest; the converter never emits them).
 #[test]
