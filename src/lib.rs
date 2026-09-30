@@ -5,6 +5,7 @@
 //! envelope contract unit-testable without spawning the binary.
 
 pub mod cli;
+pub mod contradict;
 pub mod extract;
 pub mod ingest;
 pub mod llm;

@@ -122,3 +122,13 @@ proptest! {
     }
 }
 
+proptest! {
+    // id: p_contradicts_provenance
+    // generator: contradiction-scan passes over seeded claim pairs with negation-marker and numeral edit classes, plus pass re-runs and pairs outside the closed classes
+    // predicate: every `contradicts` edge the pass writes carries pass identity and detection-rule provenance; a re-run over an already-scanned graph refuses the identical edge rather than doubling it; pairs outside the closed edit classes never propose
+    #[test]
+    fn p_contradicts_provenance() {
+        todo_predicate!("every `contradicts` edge the pass writes carries pass identity and detection-rule provenance; a re-run over an already-scanned graph refuses the identical edge rather than doubling it; pairs outside the closed edit classes never propose");
+    }
+}
+

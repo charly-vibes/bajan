@@ -49,6 +49,12 @@ expr = "epistemic strength lives only in verbatim episode text; derived artifact
 traces_to = "[[graph.model]]"
 
 [[constraints]]
+id = "gm_contradicts_provenance"
+kind = "invariant"
+expr = "a `contradicts` edge is written in-pipeline only by the deterministic contradiction-scan pass (closed edit classes over normalized texts: negation-marker present/absent, or a single differing numeral token — no fuzzy subject detection), and every such edge carries the producing pass identity and detection rule as provenance; no other pipeline stage writes `contradicts` edges"
+traces_to = "[[graph.model]]"
+
+[[constraints]]
 id = "gm_relation_typing"
 kind = "extension_point"
 expr = "the claim relation vocabulary (`mentions`, `contradicts`, `supports`, `derived_from`, `possible_duplicate_of`) is published for query-tool specs to conform to"

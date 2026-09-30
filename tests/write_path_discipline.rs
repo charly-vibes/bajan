@@ -181,6 +181,8 @@ fn dump_recreate_keeps_rows_the_pipeline_refuses() {
         from_claim: a,
         label: EdgeLabel::Contradicts,
         to_claim: b,
+        // A legacy row predating the provenance column: absent.
+        provenance: None,
     });
     dump.invalidations.push(InvalidationProposal {
         claim_key: b,

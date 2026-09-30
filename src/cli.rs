@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 use genesis::envelope::{Envelope, EnvelopeKind, ErrorResult, RemediationEntry};
 use serde::Serialize;
 
+use crate::contradict;
 use crate::extract;
 use crate::ingest;
 use crate::query;
@@ -102,6 +103,17 @@ pub enum Command {
     /// ranked claims — normalization equivalence/containment only, no LLM,
     /// no embedding. The queue drains, it never grows by human invention.
     Er {
+        /// Bounded-candidate budget: maximum pair comparisons examined.
+        #[arg(long, default_value_t = 256)]
+        budget: usize,
+    },
+    /// Deterministic contradiction-scan pass (gm_contradicts_provenance):
+    /// the only in-pipeline producer of `contradicts` edges — closed edit
+    /// classes over normalized texts (negation-marker present/absent, or a
+    /// single differing numeral token), no fuzzy subject detection, no
+    /// LLM. Every written edge carries the pass identity and rule as
+    /// provenance; re-runs refuse duplicate edges honestly.
+    Scan {
         /// Bounded-candidate budget: maximum pair comparisons examined.
         #[arg(long, default_value_t = 256)]
         budget: usize,
@@ -437,6 +449,31 @@ fn er_with(db: &crate::store::sqlite::SqliteStore, budget: usize) -> serde_json:
     }
 }
 
+/// The contradiction-scan envelope (gm_contradicts_provenance): the
+/// deterministic pass over ranked claims, reporting proposed/refused
+/// contradicts pairs with honest exhaustion.
+fn scan_envelope(db_path: &str, budget: usize) -> serde_json::Value {
+    let db = match crate::store::sqlite::SqliteStore::open(db_path) {
+        Ok(db) => db,
+        Err(err) => return review_store_error_envelope(&err, "scan"),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    match contradict::run_contradiction_pass(&db, budget, now) {
+        Ok(report) => serde_json::to_value(Envelope::success(
+            env!("CARGO_PKG_VERSION"),
+            EnvelopeKind::Ok,
+            report,
+            vec![],
+            vec![],
+        ))
+        .expect("envelope serialization cannot fail"),
+        Err(err) => stub_envelope(&BajanError::Store(err.to_string())),
+    }
+}
+
 /// The review-list envelope (`er_queue_transparency`): every open
 /// candidate with both sides' ids, the evidence that produced the
 /// proposal, supporting-episode counts, and queue age — oldest-first.
@@ -603,6 +640,7 @@ pub fn run(command: Command, db_path: &str) -> String {
         Command::Contradict { claims, budget } => contradict_envelope(db_path, claims, *budget),
         Command::Adopt { claims, actor } => adopt_envelope(db_path, claims, actor.as_deref()),
         Command::Er { budget } => er_envelope(db_path, *budget),
+        Command::Scan { budget } => scan_envelope(db_path, *budget),
         Command::Review { action } => match action {
             ReviewAction::List => review_list_envelope(db_path),
             ReviewAction::Approve { from, to, actor } => {

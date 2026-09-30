@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS edges (
     rowid_key INTEGER PRIMARY KEY AUTOINCREMENT,
     from_claim INTEGER NOT NULL,
     label TEXT NOT NULL,
-    to_claim INTEGER NOT NULL
+    to_claim INTEGER NOT NULL,
+    provenance TEXT
 );
 CREATE TABLE IF NOT EXISTS invalidations (
     rowid_key INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -270,11 +271,37 @@ pub struct ExtractionDump {
 
 /// One persisted edge in dump form: endpoints are claim keys, the label
 /// a member of the published relation vocabulary (`p_relation_typing`).
+/// `provenance` is the pass identity + detection rule for edges written
+/// by the contradiction-scan pass (`gm_contradicts_provenance`) — absent
+/// (`None`) for bare-triple edges from before the column existed or from
+/// writers that carry no producer identity; dump-recreate reproduces
+/// provenance verbatim (`gm_embedded_store`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DumpedEdge {
     pub from_claim: usize,
     pub label: EdgeLabel,
     pub to_claim: usize,
+    #[serde(default)]
+    pub provenance: Option<String>,
+}
+
+/// Legacy stores predate the `edges.provenance` column — add it when
+/// missing so the provenanced read/write paths work over any existing
+/// database (rows created before the column keep `provenance = NULL`,
+/// read back as `None`).
+fn migrate_edges_provenance(conn: &Connection) -> Result<(), StoreError> {
+    let has_column: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('edges') WHERE name = 'provenance'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql_err)?;
+    if has_column == 0 {
+        conn.execute("ALTER TABLE edges ADD COLUMN provenance TEXT", [])
+            .map_err(sql_err)?;
+    }
+    Ok(())
 }
 
 /// The embedded SQLite claim-graph store: a single Connection over plain
@@ -311,11 +338,17 @@ fn encode_edge_label(
     }
 }
 
+/// One persisted edge read back WITH producer provenance: claim keys,
+/// typed label, and the pass identity + rule
+/// (`gm_contradicts_provenance`) or `None` for bare-triple rows.
+pub type EdgeWithProvenance = (usize, EdgeLabel, usize, Option<String>);
+
 impl SqliteStore {
     /// Open (creating if needed) an embedded store at `path`.
     pub fn open(path: &str) -> Result<Self, StoreError> {
         let conn = Connection::open(path).map_err(sql_err)?;
         conn.execute_batch(SCHEMA).map_err(sql_err)?;
+        migrate_edges_provenance(&conn)?;
         Ok(Self { conn })
     }
 
@@ -607,7 +640,7 @@ impl SqliteStore {
             })
             .collect();
         let extracted = self.extracted_pairs()?;
-        let edges = self.edges()?;
+        let edges = self.edges_with_provenance()?;
         let invalidations = self.invalidations()?;
         let supersessions = self.supersessions()?;
         let reviews = self.reviews()?;
@@ -617,10 +650,11 @@ impl SqliteStore {
             extracted,
             edges: edges
                 .into_iter()
-                .map(|(from_claim, label, to_claim)| DumpedEdge {
+                .map(|(from_claim, label, to_claim, provenance)| DumpedEdge {
                     from_claim,
                     label,
                     to_claim,
+                    provenance,
                 })
                 .collect(),
             invalidations,
@@ -695,11 +729,12 @@ impl SqliteStore {
             // claims are restored verbatim (gm_embedded_store).
             self.conn
                 .execute(
-                    "INSERT INTO edges (from_claim, label, to_claim) VALUES (?1, ?2, ?3)",
+                    "INSERT INTO edges (from_claim, label, to_claim, provenance) VALUES (?1, ?2, ?3, ?4)",
                     params![
                         edge.from_claim as i64,
                         encode_edge_label(edge.label, edge.from_claim, edge.to_claim)?,
-                        edge.to_claim as i64
+                        edge.to_claim as i64,
+                        edge.provenance
                     ],
                 )
                 .map_err(sql_err)?;
@@ -739,6 +774,21 @@ impl SqliteStore {
         label: EdgeLabel,
         to_claim: usize,
     ) -> Result<(), StoreError> {
+        self.insert_edge_provenanced(from_claim, label, to_claim, None)
+    }
+
+    /// Persist a typed claim-relation edge WITH producer provenance
+    /// (`gm_contradicts_provenance`): the contradiction-scan pass records
+    /// its pass identity and detection rule on every `contradicts` edge
+    /// it writes; the bare-triple `insert_edge` is the None-provenance
+    /// path. Same set-relation uniqueness and endpoint guards.
+    pub fn insert_edge_provenanced(
+        &self,
+        from_claim: usize,
+        label: EdgeLabel,
+        to_claim: usize,
+        provenance: Option<&str>,
+    ) -> Result<(), StoreError> {
         for endpoint in [from_claim, to_claim] {
             if !self.claim_exists(endpoint)? {
                 return Err(StoreError::ClaimNotFound {
@@ -776,8 +826,13 @@ impl SqliteStore {
         }
         self.conn
             .execute(
-                "INSERT INTO edges (from_claim, label, to_claim) VALUES (?1, ?2, ?3)",
-                params![from_claim as i64, label, to_claim as i64],
+                "INSERT INTO edges (from_claim, label, to_claim, provenance) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    from_claim as i64,
+                    label,
+                    to_claim as i64,
+                    provenance
+                ],
             )
             .map_err(sql_err)?;
         Ok(())
@@ -804,6 +859,33 @@ impl SqliteStore {
                     spec: SPEC,
                 })?;
             out.push((from_claim as usize, label, to_claim as usize));
+        }
+        Ok(out)
+    }
+
+    /// Persisted typed edges WITH producer provenance, row order
+    /// preserved: `provenance` is `Some` only for edges written with a
+    /// pass identity + rule (`gm_contradicts_provenance`); legacy
+    /// bare-triple rows read back as `None` — absent is honest absent,
+    /// never a fabricated producer.
+    pub fn edges_with_provenance(&self) -> Result<Vec<EdgeWithProvenance>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT from_claim, label, to_claim, provenance FROM edges ORDER BY rowid")
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            let from_claim: i64 = row.get(0).map_err(sql_err)?;
+            let label_raw: String = row.get(1).map_err(sql_err)?;
+            let to_claim: i64 = row.get(2).map_err(sql_err)?;
+            let provenance: Option<String> = row.get(3).map_err(sql_err)?;
+            let label: EdgeLabel = serde_json::from_value(serde_json::Value::String(label_raw))
+                .map_err(|e| StoreError::Sqlite {
+                    message: format!("edge label decode failed: {e}"),
+                    spec: SPEC,
+                })?;
+            out.push((from_claim as usize, label, to_claim as usize, provenance));
         }
         Ok(out)
     }
