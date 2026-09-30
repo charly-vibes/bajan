@@ -56,6 +56,12 @@ pub enum Command {
         /// Bounded-traversal budget: maximum walked claim nodes.
         #[arg(long, default_value_t = 256)]
         budget: usize,
+        /// Restrict the answer to claims whose resolved tag projection
+        /// (union of supporting episodes' tags via lineage,
+        /// qt_scope_filtering) intersects the given tags — repeat the
+        /// flag or comma-separate. Omit for the unfiltered read.
+        #[arg(long = "scope", value_delimiter = ',')]
+        scope: Vec<String>,
     },
     /// Human accept action: move staged claims to active (one audit record
     /// per claim).
@@ -288,7 +294,11 @@ pub fn run(command: Command, db_path: &str) -> String {
         }
         Command::Extract => extract_envelope(db_path),
         Command::Resolve => stub_envelope(&resolve::run()),
-        Command::Query { pattern, budget } => query_envelope(db_path, pattern, *budget),
+        Command::Query {
+            pattern,
+            budget,
+            scope,
+        } => query_envelope(db_path, pattern, *budget, scope),
         Command::Adopt { claims, actor } => adopt_envelope(db_path, claims, actor.as_deref()),
     };
     serde_json::to_string(&value).expect("envelope serialization cannot fail")
@@ -406,13 +416,19 @@ fn extract_with(db: &crate::store::sqlite::SqliteStore) -> serde_json::Value {
 
 /// Run the first read query and emit the result record (qt_query-schema:
 /// budget-status vocabulary complete/budget-exhausted, hits carry status
-/// verbatim and their persisted-episode lineage).
-fn query_envelope(db_path: &str, pattern: &str, budget: usize) -> serde_json::Value {
+/// verbatim and their persisted-episode lineage; `scope` applies
+/// qt_scope_filtering and is echoed on the result).
+fn query_envelope(
+    db_path: &str,
+    pattern: &str,
+    budget: usize,
+    scope: &[String],
+) -> serde_json::Value {
     let db = match command_store(db_path) {
         Ok(db) => db,
         Err(value) => return value,
     };
-    query_with(&db, pattern, budget)
+    query_with(&db, pattern, budget, scope)
 }
 
 /// The query envelope over an already-open store (testable seeding point).
@@ -420,8 +436,14 @@ fn query_with(
     db: &crate::store::sqlite::SqliteStore,
     pattern: &str,
     budget: usize,
+    scope: &[String],
 ) -> serde_json::Value {
-    match query::search(db, pattern, budget) {
+    let result = if scope.is_empty() {
+        query::search(db, pattern, budget)
+    } else {
+        query::search_scoped(db, pattern, budget, scope)
+    };
+    match result {
         Ok(result) => serde_json::to_value(Envelope::success(
             env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,
@@ -623,7 +645,7 @@ mod tests {
         assert_eq!(report["ok"].as_bool(), Some(true));
         assert_eq!(report["data"]["episodes_processed"], 1);
 
-        let result = query_with(&db, "parser", 100);
+        let result = query_with(&db, "parser", 100, &[]);
         assert_eq!(result["ok"].as_bool(), Some(true), "query emits ok");
         assert_eq!(result["data"]["status"], "complete");
         assert_eq!(result["data"]["hits"].as_array().map(Vec::len), Some(1));
@@ -650,9 +672,76 @@ mod tests {
             ..seed_episode()
         })
         .unwrap();
-        let v = query_with(&db, "parser", 1);
+        let v = query_with(&db, "parser", 1, &[]);
         assert_eq!(v["data"]["status"], "budget-exhausted");
         assert_eq!(v["data"]["hits"].as_array().map(Vec::len), Some(1));
+    }
+
+    // qt_scope_filtering at the CLI layer: `--scope` filters hits by the
+    // resolved tag projection (union of supporting episodes' tags) and the
+    // requested scope is echoed on the result record; the unscoped read
+    // (empty scope slice) is unchanged.
+    #[test]
+    fn query_scope_flag_filters_by_tag_projection_and_echoes_scope() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        ingest_with(&db, &stream_json());
+        extract_with(&db);
+        // A second matching claim backed by an ops-tagged episode.
+        let (mut node, _) = staged_seed_node();
+        node.text = "The parser resolves spans predictably.".into();
+        let ops_episode = EpisodeRecord {
+            id: "ep-ops".into(),
+            source: SourceMeta {
+                tags: vec!["topic:ops".into()],
+                ..seed_episode().source
+            },
+            ..seed_episode()
+        };
+        let (_, ops_lineage) = staged_seed_node();
+        let ops_lineage = crate::store::Lineage {
+            episode_id: "ep-ops".into(),
+            ..ops_lineage
+        };
+        db.insert_episode(&ops_episode).unwrap();
+        db.insert_claim(
+            &node,
+            &[ops_lineage],
+            "The parser resolves spans predictably.",
+        )
+        .unwrap();
+
+        // Unscoped: both hits.
+        let v = query_with(&db, "parser", 16, &[]);
+        assert_eq!(v["data"]["scope"].as_array().map(Vec::len), Some(0));
+        assert_eq!(v["data"]["hits"].as_array().map(Vec::len), Some(2));
+
+        // Scoped to topic:api (disjoint): honestly empty, never blended.
+        let v = query_with(&db, "parser", 16, &["topic:api".to_string()]);
+        assert_eq!(v["data"]["scope"][0], "topic:api");
+        assert_eq!(v["data"]["status"], "complete");
+        assert_eq!(v["data"]["hits"].as_array().map(Vec::len), Some(0));
+
+        // Scoped to topic:ops: only the ops-backed claim.
+        let v = query_with(&db, "parser", 16, &["topic:ops".to_string()]);
+        let hits = v["data"]["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["episodes"][0], "ep-ops");
+
+        // The --scope flag parses (repeated and comma-separated).
+        let cli = Cli::try_parse_from([
+            "bajan",
+            "query",
+            "parser",
+            "--scope",
+            "topic:ops",
+            "--scope",
+            "workspace:dev,topic:api",
+        ])
+        .expect("query --scope parses");
+        let Command::Query { scope, .. } = cli.command else {
+            panic!("expected the query subcommand");
+        };
+        assert_eq!(scope.len(), 3);
     }
 
     // ic_batch_duplicate: within one stream the first occurrence persists,

@@ -11,8 +11,11 @@
 //! orders by the supporting episodes' source metadata reachable through
 //! lineage — authority tier first, then data-cutoff recency, with
 //! staleness demotion (WR-RANK.1/.2, WR-TIME.3). Scope filtering
-//! (`qt_scope_filtering`) and the contradiction query arrive with their
-//! own tickets.
+//! (`qt_scope_filtering`) restricts a read to claims whose resolved tag
+//! projection — the union of the supporting episodes' tag sets via the
+//! lineage walk (`ex_tag_inheritance`) — intersects the requested scope;
+//! out-of-scope claims are excluded, never silently blended (WR-SCOPE.1).
+//! The contradiction query arrives with its own ticket.
 
 use crate::store::ClaimStatus;
 use crate::store::sqlite::SqliteStore;
@@ -133,6 +136,11 @@ pub struct StalenessWarning {
 pub struct SearchResult {
     /// Typed traversal outcome (`qt_bounded_traversal`).
     pub status: BudgetStatus,
+    /// The requested scope this answer was computed under
+    /// (`qt_query-schema` scope field) — empty when unscoped. Echoed so
+    /// a consumer can never confuse a filtered answer with an unscoped
+    /// one.
+    pub scope: Vec<String>,
     pub hits: Vec<Hit>,
     /// Present exactly when the best-scoring hit is stale (`qt_ranking`):
     /// a fresh low-authority answer outranking it is the expected shape,
@@ -165,20 +173,45 @@ fn ranking_metadata(
 /// Search the persisted claim graph: every claim whose text contains
 /// `pattern` (case-insensitive) **and** whose lineage resolves, at query
 /// time, to at least one persisted episode (`qt_lineage_traceable` —
-/// lineage-broken claims are invisible). The walk visits claim nodes in
-/// key order under `budget` (`qt_bounded_traversal`): when the budget
-/// stops the walk with claims remaining the answer is `budget-exhausted`;
-/// a completed walk reports `complete`. Hits are ranked by the supporting
-/// episodes' source metadata reachable through lineage (`qt_ranking`,
-/// WR-RANK.1): authority tier first, then data-cutoff recency — and a
-/// stale high-authority hit demotes below fresh lower-authority hits
-/// (WR-RANK.2). The best-scoring hit carries a staleness warning when its
-/// cutoff is stale. Equal ranks break by claim key (deterministic order,
-/// no LLM, no embeddings). Reads never write (`qt_readonly`).
+/// lineage-broken claims are invisible). Unscoped — see [`search_scoped`]
+/// for the scoped form.
 pub fn search(
     db: &SqliteStore,
     pattern: &str,
     budget: usize,
+) -> Result<SearchResult, BajanQueryError> {
+    search_inner(db, pattern, budget, None)
+}
+
+/// Scoped search (`qt_scope_filtering`, WR-SCOPE.1): restrict the answer
+/// to claims whose **resolved tag projection** — the union of the
+/// supporting episodes' tag sets via the lineage walk
+/// (`ex_tag_inheritance`; tags are never stored on the claim) —
+/// intersects the requested scope set. Out-of-scope claims are excluded
+/// from the hits — never silently blended in. The predicate is pure set
+/// intersection: an empty `scope` intersects no projection, so a scoped
+/// answer under an empty scope is honestly empty; the unfiltered read is
+/// the separate [`search`] entry point. The budget walk and
+/// honest stopping are unchanged: out-of-scope claims are walked (they
+/// consume budget like any non-matching claim) but never surface as
+/// hits. The requested scope is echoed on the result (`qt_query-schema`
+/// scope field). Reads never write (`qt_readonly`).
+pub fn search_scoped(
+    db: &SqliteStore,
+    pattern: &str,
+    budget: usize,
+    scope: &[String],
+) -> Result<SearchResult, BajanQueryError> {
+    search_inner(db, pattern, budget, Some(scope))
+}
+
+/// The shared traversal behind both entry points: `None` scope is the
+/// unfiltered read; `Some(scope)` applies `qt_scope_filtering`.
+fn search_inner(
+    db: &SqliteStore,
+    pattern: &str,
+    budget: usize,
+    scope: Option<&[String]>,
 ) -> Result<SearchResult, BajanQueryError> {
     let episodes: Vec<crate::ingest::EpisodeRecord> =
         db.episodes().map_err(|e| BajanQueryError(e.to_string()))?;
@@ -213,6 +246,19 @@ pub fn search(
             continue;
         }
         if node.text.to_lowercase().contains(&needle) {
+            // qt_scope_filtering: the resolved tag projection is the
+            // union of the supporting episodes' tags; the scope
+            // predicate is pure intersection (a scoped read under an
+            // empty scope intersects nothing). `None` = unfiltered.
+            let in_scope = match scope {
+                None => true,
+                Some(scope) => supported
+                    .iter()
+                    .any(|ep| ep.source.tags.iter().any(|tag| scope.contains(tag))),
+            };
+            if !in_scope {
+                continue;
+            }
             let (authority_tier, cutoff_days, stale) = ranking_metadata(&supported, now_days);
             // Surface the freshest well-formed cutoff verbatim; a
             // well-formed-but-absent set stays absent.
@@ -271,6 +317,7 @@ pub fn search(
     };
     Ok(SearchResult {
         status,
+        scope: scope.unwrap_or(&[]).to_vec(),
         hits,
         staleness_warning,
     })
