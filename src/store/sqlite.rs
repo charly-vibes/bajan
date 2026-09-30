@@ -23,8 +23,16 @@ use crate::store::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 pub const SPEC: &str = "specs/graph-model.md";
+
+/// Explicit busy-wait window for contending writers (bajan-di6): a write
+/// against a locked database retries for up to 10s — book-scale bulk
+/// ingest holds write transactions longer than interactive defaults —
+/// then fails honestly with SQLITE_BUSY. Deliberately set at open, never
+/// inherited from library defaults.
+const BUSY_TIMEOUT_MS: u64 = 10_000;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS episodes (
@@ -422,8 +430,23 @@ pub type EdgeWithProvenance = (usize, EdgeLabel, usize, Option<String>);
 
 impl SqliteStore {
     /// Open (creating if needed) an embedded store at `path`.
+    ///
+    /// Concurrency policy (bajan-di6, `gm_embedded_store`: embedded implies
+    /// robust local concurrency, not single-process fragility):
+    /// `journal_mode=WAL` so readers never block the writer and a crashed
+    /// process leaves no hot journal to roll back, plus an EXPLICIT
+    /// `busy_timeout` (not the rusqlite default) — a contending writer
+    /// retries within the window and only then fails honestly with
+    /// SQLITE_BUSY. No multi-writer transactional semantics are claimed.
     pub fn open(path: &str) -> Result<Self, StoreError> {
         let conn = Connection::open(path).map_err(sql_err)?;
+        conn.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))
+            .map_err(sql_err)?;
+        // The pragma returns the resulting mode ("wal" for file dbs;
+        // "memory" for :memory:, where it is a harmless no-op).
+        let _journal_mode: String = conn
+            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+            .map_err(sql_err)?;
         conn.execute_batch(SCHEMA).map_err(sql_err)?;
         migrate_edges_provenance(&conn)?;
         Ok(Self { conn })
@@ -1980,5 +2003,122 @@ impl SqliteStore {
             });
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ingest::SourceMeta;
+    use std::time::{Duration, Instant};
+
+    fn episode(id: &str, text: &str) -> EpisodeRecord {
+        EpisodeRecord {
+            id: id.into(),
+            text: text.into(),
+            locator: Locator::Span("heading:Notes".into()),
+            source: SourceMeta {
+                source_type: "episode".into(),
+                data_cutoff: Some("2026-01-01".into()),
+                authority_tier: 2,
+                tags: vec!["workspace:dev".into()],
+            },
+        }
+    }
+
+    // bajan-di6: journal_mode=WAL is set at open. WAL is a persistent file
+    // property, so a separate raw connection observes it — this pins the
+    // pragma to the open path, not just to the connection that set it.
+    #[test]
+    fn open_sets_wal_journal_mode() {
+        let dir = std::env::temp_dir().join(format!("bajan-di6-wal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("wal.db");
+
+        SqliteStore::open(path.to_str().expect("utf8 path")).expect("open");
+
+        let probe = Connection::open(&path).expect("probe connection");
+        let mode: String = probe
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("journal mode read");
+        assert_eq!(mode, "wal", "embedded store must open in WAL mode");
+    }
+
+    // bajan-di6: busy_timeout is set EXPLICITLY at open — not inherited
+    // from the rusqlite default (5s). Book-scale bulk ingest holds write
+    // transactions longer than interactive defaults; 10s still fails
+    // honestly rather than hanging forever.
+    #[test]
+    fn open_sets_explicit_busy_timeout() {
+        let dir = std::env::temp_dir().join(format!("bajan-di6-tmo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("timeout.db");
+
+        let db = SqliteStore::open(path.to_str().expect("utf8 path")).expect("open");
+        let ms: i64 = db
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("busy timeout read");
+        assert_eq!(ms, 10_000, "busy_timeout must be the explicit store policy");
+
+        let mem = SqliteStore::open_in_memory().expect("open in-memory");
+        let ms: i64 = mem
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("busy timeout read");
+        assert_eq!(ms, 10_000, "in-memory stores get the same policy");
+    }
+
+    // bajan-di6: in-memory stores are unaffected — the pragma is a no-op
+    // there (`memory` journal) and the open path must not fail on it.
+    #[test]
+    fn in_memory_store_unaffected() {
+        let db = SqliteStore::open_in_memory().expect("open in-memory");
+        db.insert_episode(&episode("ep-mem", "in-memory episode"))
+            .expect("write");
+        let mode: String = db
+            .conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("journal mode read");
+        assert_eq!(mode, "memory");
+    }
+
+    // bajan-di6: a second writer blocked by an externally held transaction
+    // retries within busy_timeout and succeeds — honest busy-wait tolerance
+    // (`gm_embedded_store`: embedded implies robust local concurrency, not
+    // single-process fragility). No multi-writer transactional semantics
+    // claimed: the writer waits for the lock, then writes.
+    #[test]
+    fn second_writer_survives_a_held_transaction() {
+        let dir = std::env::temp_dir().join(format!("bajan-di6-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("busy.db");
+
+        {
+            let db = SqliteStore::open(path.to_str().expect("utf8 path")).expect("open");
+            db.insert_episode(&episode("ep-a", "first episode"))
+                .expect("seed");
+        }
+
+        // An external writer holds a write transaction for a short window.
+        let holder = Connection::open(&path).expect("holder connection");
+        holder.execute_batch("BEGIN IMMEDIATE;").expect("begin txn");
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            holder.execute_batch("COMMIT;").expect("commit");
+        });
+
+        // While the txn is held, a second store must retry — not fail
+        // instantly with SQLITE_BUSY.
+        let started = Instant::now();
+        let db =
+            SqliteStore::open(path.to_str().expect("utf8 path")).expect("open under contention");
+        db.insert_episode(&episode("ep-b", "second episode"))
+            .expect("write under contention");
+        assert!(
+            started.elapsed() >= Duration::from_millis(200),
+            "write returned before the holder released — no retry happened"
+        );
+        releaser.join().expect("releaser thread");
     }
 }
