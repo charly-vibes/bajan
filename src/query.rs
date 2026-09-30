@@ -3,17 +3,78 @@
 //! Responsibilities: honest-stopping traversal over stored rows; lineage
 //! traceability filtering; read-only discipline.
 //! Rationale: governed by specs/query-tools.md (`qt_bounded_traversal`,
-//! `qt_lineage_traceable`, `qt_readonly`, `qt_query-schema`): every hit
-//! resolves through lineage to a persisted episode, the traversal runs
-//! under a budget with a typed exhausted marker and honest stopping
-//! (`complete` vs `budget-exhausted`, never a silent partial answer), and
-//! reads never mutate the graph. Ranking (`qt_ranking`), scope filtering
-//! (`qt_scope_filtering`), and the contradiction query arrive with their
-//! own tickets — this module is the first thin read path (bajan-6hz).
+//! `qt_lineage_traceable`, `qt_readonly`, `qt_query-schema`,
+//! `qt_ranking`): every hit resolves through lineage to a persisted
+//! episode, the traversal runs under a budget with a typed exhausted
+//! marker and honest stopping (`complete` vs `budget-exhausted`, never a
+//! silent partial answer), and reads never mutate the graph. Ranking
+//! orders by the supporting episodes' source metadata reachable through
+//! lineage — authority tier first, then data-cutoff recency, with
+//! staleness demotion (WR-RANK.1/.2, WR-TIME.3). Scope filtering
+//! (`qt_scope_filtering`) and the contradiction query arrive with their
+//! own tickets.
 
 use crate::store::ClaimStatus;
 use crate::store::sqlite::SqliteStore;
 use serde::Serialize;
+
+/// Staleness window in days (WR-TIME.3 / EARS glossary: data cutoff older
+/// than the window is stale; default 365, per-workspace config later).
+pub const STALENESS_WINDOW_DAYS: i64 = 365;
+
+/// Days since the Unix epoch for today (UTC) — the common era-integer of
+/// the data-cutoff date form (ISO-8601 calendar dates), so cutoff
+/// comparison and staleness arithmetic stay in one deterministic unit.
+pub fn today_days_utc() -> i64 {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after epoch")
+        .as_secs() as i64;
+    secs.div_euclid(86_400)
+}
+
+/// The ISO-8601 calendar date (YYYY-MM-DD) `days` after 1970-01-01 — the
+/// inverse of the days-since-epoch encoding, with no timezone or locale
+/// input (deterministic date arithmetic, WR-TIME.3 surfacing).
+pub fn iso_from_days(days: i64) -> String {
+    // Howard Hinnant's civil-from-days algorithm (public domain).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Days since 1970-01-01 for an ISO-8601 calendar date (YYYY-MM-DD), or
+/// `None` when the text is not exactly that form (absent cutoffs stay
+/// absent; malformed values are never guessed into a date).
+pub fn days_from_iso(text: &str) -> Option<i64> {
+    let b = text.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let (y, m, d) = (&text[0..4], &text[5..7], &text[8..10]);
+    let y: i64 = y.parse().ok()?;
+    let m: i64 = m.parse().ok()?;
+    let d: i64 = d.parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // Days-from-civil (Hinnant): the inverse of `iso_from_days`.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
 
 pub const SPEC: &str = "specs/query-tools.md";
 
@@ -30,8 +91,12 @@ pub enum BudgetStatus {
 }
 
 /// One search hit (`qt_query-schema`): the claim, its stored status
-/// verbatim (`qt_readonly` — nothing is dropped from results), and the
-/// persisted episodes its lineage resolves to (`qt_lineage_traceable`).
+/// verbatim (`qt_readonly` — nothing is dropped from results), the
+/// persisted episodes its lineage resolves to (`qt_lineage_traceable`),
+/// and the ranking metadata reachable through that lineage
+/// (`qt_ranking`): the supporting episodes' authority tier (best =
+/// lowest), the freshest data cutoff in days-since-epoch, and the
+/// computed staleness flag.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Hit {
     pub claim_key: usize,
@@ -42,14 +107,59 @@ pub struct Hit {
     pub data_cutoff: Option<String>,
     /// Persisted episodes reachable through the claim's lineage edges.
     pub episodes: Vec<String>,
+    /// Best (lowest) authority tier across the hit's persisted episodes
+    /// (`qt_ranking`: ranking metadata reachable through lineage).
+    pub authority_tier: u8,
+    /// Freshest (largest) data cutoff across the hit's persisted episodes,
+    /// as days since 1970-01-01; `None` when no episode carries a
+    /// well-formed cutoff (absent stays absent — never guessed).
+    pub cutoff_days: Option<i64>,
+    /// `qt_ranking` staleness flag: the hit's freshest cutoff is older
+    /// than the staleness window. Absent cutoffs are never stale.
+    pub stale: bool,
 }
 
-/// A search answer: the honest stopping status plus the hits.
+/// The staleness warning carried by the best-scoring hit when its cutoff
+/// is stale (`qt_ranking` / WR-TIME.3): names the hit and the stale
+/// cutoff verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StalenessWarning {
+    pub claim_key: usize,
+    pub data_cutoff: String,
+}
+
+/// A search answer: the honest stopping status plus the ranked hits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SearchResult {
     /// Typed traversal outcome (`qt_bounded_traversal`).
     pub status: BudgetStatus,
     pub hits: Vec<Hit>,
+    /// Present exactly when the best-scoring hit is stale (`qt_ranking`):
+    /// a fresh low-authority answer outranking it is the expected shape,
+    /// so the warning marks the demoted-best, not the ordering.
+    pub staleness_warning: Option<StalenessWarning>,
+}
+
+/// The per-claim ranking key derived from lineage-reachable episode
+/// metadata (`qt_ranking`): best (lowest) authority tier across the
+/// claim's persisted episodes, freshest (largest) data cutoff, and the
+/// staleness flag against `STALENESS_WINDOW_DAYS`. A claim with no
+/// persisted backing never reaches this function (lineage-invisible).
+fn ranking_metadata(
+    supported_episodes: &[&crate::ingest::EpisodeRecord],
+    now_days: i64,
+) -> (u8, Option<i64>, bool) {
+    let authority_tier = supported_episodes
+        .iter()
+        .map(|ep| ep.source.authority_tier)
+        .min()
+        .unwrap_or(u8::MAX);
+    let cutoff_days = supported_episodes
+        .iter()
+        .filter_map(|ep| ep.source.data_cutoff.as_deref().and_then(days_from_iso))
+        .max();
+    let stale = cutoff_days.is_some_and(|d| d < now_days - STALENESS_WINDOW_DAYS);
+    (authority_tier, cutoff_days, stale)
 }
 
 /// Search the persisted claim graph: every claim whose text contains
@@ -58,17 +168,27 @@ pub struct SearchResult {
 /// lineage-broken claims are invisible). The walk visits claim nodes in
 /// key order under `budget` (`qt_bounded_traversal`): when the budget
 /// stops the walk with claims remaining the answer is `budget-exhausted`;
-/// a completed walk reports `complete`. Reads never write (`qt_readonly`).
+/// a completed walk reports `complete`. Hits are ranked by the supporting
+/// episodes' source metadata reachable through lineage (`qt_ranking`,
+/// WR-RANK.1): authority tier first, then data-cutoff recency — and a
+/// stale high-authority hit demotes below fresh lower-authority hits
+/// (WR-RANK.2). The best-scoring hit carries a staleness warning when its
+/// cutoff is stale. Equal ranks break by claim key (deterministic order,
+/// no LLM, no embeddings). Reads never write (`qt_readonly`).
 pub fn search(
     db: &SqliteStore,
     pattern: &str,
     budget: usize,
 ) -> Result<SearchResult, BajanQueryError> {
-    let mut persisted = db
-        .episode_ids()
-        .map_err(|e| BajanQueryError(e.to_string()))?;
-    persisted.sort();
+    let episodes: Vec<crate::ingest::EpisodeRecord> =
+        db.episodes().map_err(|e| BajanQueryError(e.to_string()))?;
+    let persisted: Vec<String> = {
+        let mut ids: Vec<String> = episodes.iter().map(|e| e.id.clone()).collect();
+        ids.sort();
+        ids
+    };
     let needle = pattern.to_lowercase();
+    let now_days = today_days_utc();
     let mut hits = Vec::new();
     let mut truncated = false;
 
@@ -84,36 +204,76 @@ pub fn search(
         }
         // qt_lineage_traceable: at least one lineage edge must resolve to
         // a persisted episode at query time.
-        let resolves = lineage
+        let supported: Vec<&crate::ingest::EpisodeRecord> = lineage
             .iter()
-            .any(|edge| persisted.binary_search(&edge.episode_id).is_ok());
-        if !resolves {
+            .filter(|edge| persisted.binary_search(&edge.episode_id).is_ok())
+            .filter_map(|edge| episodes.iter().find(|e| e.id == edge.episode_id))
+            .collect();
+        if supported.is_empty() {
             continue;
         }
         if node.text.to_lowercase().contains(&needle) {
-            let episodes: Vec<String> = lineage
-                .iter()
-                .filter(|edge| persisted.binary_search(&edge.episode_id).is_ok())
-                .map(|edge| edge.episode_id.clone())
-                .collect();
+            let (authority_tier, cutoff_days, stale) = ranking_metadata(&supported, now_days);
+            // Surface the freshest well-formed cutoff verbatim; a
+            // well-formed-but-absent set stays absent.
+            let data_cutoff = cutoff_days.map(iso_from_days).or_else(|| {
+                supported
+                    .iter()
+                    .filter(|ep| ep.source.data_cutoff.is_some())
+                    .for_each(|_| {});
+                supported
+                    .iter()
+                    .find_map(|ep| ep.source.data_cutoff.clone())
+            });
+            let episodes: Vec<String> = supported.iter().map(|ep| ep.id.clone()).collect();
             hits.push(Hit {
                 claim_key,
                 text: node.text.clone(),
                 status: node.status,
                 scope: node.scope.clone(),
                 source_type: node.source_type.clone(),
-                data_cutoff: node.data_cutoff.clone(),
+                data_cutoff,
                 episodes,
+                authority_tier,
+                cutoff_days,
+                stale,
             });
         }
     }
+
+    // qt_ranking (WR-RANK.2): the ranking key is (authority rank if not
+    // stale else demoted, recency) — a stale hit demotes below every
+    // fresh hit regardless of tier; among stale hits authority still
+    // orders. Then freshest cutoff (absent least fresh), claim key on
+    // ties — a total, deterministic order.
+    hits.sort_by(|a, b| {
+        a.stale
+            .cmp(&b.stale)
+            .then(a.authority_tier.cmp(&b.authority_tier))
+            .then(b.cutoff_days.cmp(&a.cutoff_days))
+            .then(a.claim_key.cmp(&b.claim_key))
+    });
+
+    // WR-TIME.3: the best-scoring hit carries the staleness warning when
+    // its cutoff is stale.
+    let staleness_warning = hits
+        .first()
+        .filter(|hit| hit.stale)
+        .map(|hit| StalenessWarning {
+            claim_key: hit.claim_key,
+            data_cutoff: hit.data_cutoff.clone().unwrap_or_default(),
+        });
 
     let status = if truncated {
         BudgetStatus::BudgetExhausted
     } else {
         BudgetStatus::Complete
     };
-    Ok(SearchResult { status, hits })
+    Ok(SearchResult {
+        status,
+        hits,
+        staleness_warning,
+    })
 }
 
 /// Query-surface error: the search itself is deterministic, so the only
