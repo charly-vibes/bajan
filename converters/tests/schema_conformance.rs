@@ -629,3 +629,201 @@ fn epub_ncx_labels_and_heading_fallback() {
         "no dc:date → absent cutoff"
     );
 }
+
+// --- pdf mapping (bajan-74r) -----------------------------------------------
+
+/// Hand-rolled minimal PDF fixture: N pages, one Helvetica text object per
+/// page (Tj), plus an optional /Info dictionary. Built in-test — no binary
+/// fixture in the repo.
+fn build_fixture_pdf(pages_texts: &[&str]) -> Vec<u8> {
+    build_fixture_pdf_with_info(pages_texts, None)
+}
+
+fn build_fixture_pdf_with_info(pages_texts: &[&str], info: Option<(&str, &str)>) -> Vec<u8> {
+    let mut objects: Vec<Vec<u8>> = Vec::new();
+    let n = pages_texts.len();
+    let mut kids = String::new();
+    let mut page_obj_nums = Vec::new();
+    let mut content_obj_nums = Vec::new();
+    let mut obj_num = 3usize;
+    for _ in pages_texts {
+        kids.push_str(&format!("{obj_num} 0 R "));
+        page_obj_nums.push(obj_num);
+        content_obj_nums.push(obj_num + 1);
+        obj_num += 2;
+    }
+    let font_num = obj_num;
+    objects.push(Vec::new()); // placeholder for object 0
+    objects.push(b"<< /Type /Catalog /Pages 2 0 R >>".to_vec());
+    objects.push(format!("<< /Type /Pages /Kids [{}] /Count {n} >>", kids.trim()).into_bytes());
+    for (i, text) in pages_texts.iter().enumerate() {
+        objects.push(
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {} 0 R /Resources << /Font << /F1 {font_num} 0 R >> >> >>",
+                content_obj_nums[i]
+            )
+            .into_bytes(),
+        );
+        let stream = format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET").into_bytes();
+        let mut content = format!("<< /Length {} >>\nstream\n", stream.len()).into_bytes();
+        content.extend_from_slice(&stream);
+        content.extend_from_slice(b"\nendstream");
+        objects.push(content);
+    }
+    objects.push(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec());
+    let info_num = if info.is_some() { obj_num + 1 } else { 0 };
+    if let Some((title, author)) = info {
+        objects.push(format!("<< /Title ({title}) /Author ({author}) >>").into_bytes());
+    }
+
+    let mut out: Vec<u8> = b"%PDF-1.4\n".to_vec();
+    let mut offsets = vec![0u32; objects.len()];
+    for (num, body) in objects.iter().enumerate().skip(1) {
+        offsets[num] = out.len() as u32;
+        out.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref_pos = out.len() as u32;
+    out.extend_from_slice(format!("xref\n0 {}\n", objects.len()).as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in &offsets[1..] {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    let info_ref = if info.is_some() {
+        format!(" /Info {info_num} 0 R")
+    } else {
+        String::new()
+    };
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R{} >>\nstartxref\n{}\n%%EOF\n",
+            objects.len(),
+            info_ref,
+            xref_pos
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+/// Page-per-episode: each page is one episode with a `page:N` span locator
+/// (1-based), text whitespace-collapsed (ic_verbatim-sanctioned page
+/// locators).
+#[test]
+fn pdf_page_per_episode() {
+    let bytes = build_fixture_pdf(&[
+        "Hello page one.",
+        "Second page text here.",
+        "Final page prose.",
+    ]);
+    let eps = bajan_converters::pdf_episodes(&bytes).expect("converts");
+    assert_eq!(eps.len(), 3);
+    assert_eq!(eps[0].locator, Locator::Span("page:1".into()));
+    assert_eq!(eps[0].text, "Hello page one.");
+    assert_eq!(eps[1].locator, Locator::Span("page:2".into()));
+    assert_eq!(eps[2].locator, Locator::Span("page:3".into()));
+    assert_eq!(eps[2].text, "Final page prose.");
+}
+
+/// Document metadata (/Info title/author) never becomes episodes — the
+/// head-leak lesson (bajan-tx4) at container level.
+#[test]
+fn pdf_metadata_never_episodes() {
+    let bytes = build_fixture_pdf_with_info(
+        &["Real page content."],
+        Some(("Fixture Meta Book", "Nobody")),
+    );
+
+    let eps = bajan_converters::pdf_episodes(&bytes).expect("converts");
+    assert_eq!(
+        eps.len(),
+        1,
+        "{:?}",
+        eps.iter().map(|e| &e.text).collect::<Vec<_>>()
+    );
+    assert!(!eps[0].text.contains("Fixture Meta Book"));
+    assert!(!eps[0].text.contains("Nobody"));
+    assert_eq!(eps[0].text, "Real page content.");
+}
+
+/// Empty pages emit nothing; following pages keep their true page numbers
+/// (page:N is the source position, never renumbered).
+#[test]
+fn pdf_empty_pages_emit_nothing() {
+    let bytes = build_fixture_pdf(&["", "Only page two has text."]);
+    let eps = bajan_converters::pdf_episodes(&bytes).expect("converts");
+    assert_eq!(eps.len(), 1);
+    assert_eq!(eps[0].locator, Locator::Span("page:2".into()));
+}
+
+/// The extractor-version caveat is ON the record: every episode carries
+/// source_type 'pdf' and a tags entry naming the extractor crate+version,
+/// so a version change is visible per-record. Cutoff absent (ic_date_fidelity).
+#[test]
+fn pdf_extractor_version_tag_on_every_record() {
+    let bytes = build_fixture_pdf(&["One.", "Two."]);
+    let eps = bajan_converters::pdf_episodes(&bytes).expect("converts");
+    for ep in &eps {
+        assert_eq!(ep.source.source_type, "pdf");
+        assert_eq!(ep.source.data_cutoff, None);
+        assert_eq!(ep.source.authority_tier, 3);
+        assert!(
+            ep.source
+                .tags
+                .iter()
+                .any(|t| t.starts_with("pdf-extractor:pdf-extract-")),
+            "missing extractor tag: {:?}",
+            ep.source.tags
+        );
+    }
+}
+
+/// The tag names the version the Cargo.toml actually pins — the const and
+/// the pin must co-evolve or the tag lies.
+#[test]
+fn pdf_extractor_tag_matches_pinned_version() {
+    let cargo = include_str!("../Cargo.toml");
+    let pin = cargo
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("pdf-extract = \""))
+        .and_then(|s| s.split('"').next())
+        .expect("pdf-extract pin in Cargo.toml");
+    let bytes = build_fixture_pdf(&["One."]);
+    let eps = bajan_converters::pdf_episodes(&bytes).expect("converts");
+    let expected = format!("pdf-extractor:pdf-extract-{pin}");
+    assert!(
+        eps[0].source.tags.contains(&expected),
+        "tag {:?} != pinned {pin}",
+        eps[0].source.tags
+    );
+}
+
+/// Same file twice → identical streams (same-version determinism; the
+/// resubmission policy keys on these ids).
+#[test]
+fn pdf_deterministic_same_version() {
+    let bytes = build_fixture_pdf(&["One.", "Two."]);
+    let a = bajan_converters::pdf_episodes(&bytes).expect("converts");
+    let b = bajan_converters::pdf_episodes(&bytes).expect("converts");
+    assert_eq!(a, b);
+}
+
+/// Converted pages persist through the real ingest path, all-persisted.
+#[test]
+fn pdf_round_trip_persist_all_persisted() {
+    let bytes = build_fixture_pdf(&["Alpha page.", "Beta page."]);
+    let eps = bajan_converters::pdf_episodes(&bytes).expect("converts");
+    let outcomes = persist_all(&eps);
+    assert_eq!(outcomes.len(), eps.len());
+    assert!(outcomes.iter().all(|o| outcome_of(o) == "persisted"));
+}
+
+/// Corrupt input fails honestly: an error, never a partial or garbage
+/// stream.
+#[test]
+fn pdf_corrupt_input_fails_honestly() {
+    let err =
+        bajan_converters::pdf_episodes(b"this is not a pdf").expect_err("corrupt input must error");
+    assert!(!err.is_empty());
+}

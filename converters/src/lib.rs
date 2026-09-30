@@ -588,3 +588,60 @@ pub fn epub_episodes(input: &[u8]) -> Result<Vec<EpisodeRecord>, String> {
     }
     Ok(episodes)
 }
+
+/// Extractor identity for the PDF converter, stamped on every emitted
+/// episode as a `pdf-extractor:<crate>-<version>` tag. PDF text extraction
+/// is lossy by design: reading order is a heuristic, columns scramble, and
+/// extractor-version changes change output. The tag makes a version change
+/// visible on the record itself, and it MUST be updated together with the
+/// Cargo.toml pin (the pdf_extractor_tag_matches_pinned_version test
+/// enforces the pairing). Re-converting the same PDF under a different
+/// extractor version can yield different text; bajan then rejects the
+/// resubmission with `conflict` (ic_mutated_resubmit) — that rejection is
+/// correct behavior, protecting claims whose lineage text would otherwise
+/// mutate.
+pub const PDF_EXTRACTOR: &str = "pdf-extract";
+pub const PDF_EXTRACTOR_VERSION: &str = "0.12.1";
+
+/// Convert a PDF file into episode records: one episode per PAGE with the
+/// locator `{"kind": "span", "value": "page:N"}` (1-based; page locators
+/// are the ic_verbatim-sanctioned page anchors — reflowable-fidelity
+/// paragraph locators do not exist for PDF text extraction). Page text is
+/// split on blank lines into paragraphs, each whitespace-collapsed (the
+/// same collapse discipline as the other converters); pages with no text
+/// emit nothing but keep their page number (later pages are never
+/// renumbered). Document metadata (/Info title/author) is not episode
+/// content. Metadata: `source_type` `pdf`, `data_cutoff` absent
+/// (ic_date_fidelity — file dates are not data cutoffs), authority_tier 3,
+/// tags carry the extractor-version entry (see PDF_EXTRACTOR). Corruption
+/// errors honestly — never a partial or garbage stream.
+pub fn pdf_episodes(input: &[u8]) -> Result<Vec<EpisodeRecord>, String> {
+    let pages = pdf_extract::extract_text_from_mem_by_pages(input)
+        .map_err(|e| format!("failed to extract PDF text: {e:?}"))?;
+
+    let extractor_tag = format!("pdf-extractor:{PDF_EXTRACTOR}-{PDF_EXTRACTOR_VERSION}");
+    let mut source = default_source("pdf");
+    source.tags.push(extractor_tag);
+
+    let mut episodes = Vec::new();
+    for (i, page) in pages.iter().enumerate() {
+        // pdf-extract's PlainTextOutput prefixes each page with "\n\n"
+        // page-start markers; blank lines separate paragraphs. Collapse
+        // each paragraph, drop empties, join with blank lines.
+        let paras: Vec<String> = page
+            .split("\n\n")
+            .map(collapse)
+            .filter(|p| !p.is_empty())
+            .collect();
+        if paras.is_empty() {
+            continue;
+        }
+        episodes.push(EpisodeRecord {
+            id: format!("page-{:03}", i + 1),
+            text: paras.join("\n\n"),
+            locator: Locator::Span(format!("page:{}", i + 1)),
+            source: source.clone(),
+        });
+    }
+    Ok(episodes)
+}

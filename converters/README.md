@@ -17,11 +17,13 @@ deliberately not a workspace member of bajan and keeps its own lockfile.
 | `md2bajan` | CommonMark on stdin | episode-stream JSON on stdout |
 | `html2bajan` | HTML (html5ever) on stdin | episode-stream JSON on stdout |
 | `epub2bajan` | EPUB file (binary — file argument) | episode-stream JSON on stdout |
+| `pdf2bajan` | PDF file (binary — file argument) | episode-stream JSON on stdout |
 
 ```sh
 md2bajan < doc.md    | bajan --db graph.db ingest
 html2bajan < page.html | bajan --db graph.db ingest
 epub2bajan book.epub   | bajan --db graph.db ingest
+pdf2bajan doc.pdf      | bajan --db graph.db ingest
 ```
 
 ## Mapping rules
@@ -78,17 +80,41 @@ zips that are not EPUBs, and DRM-encumbered files fail honestly with a
 nonzero exit and a diagnostic — never a partial or garbage stream.
 Obfuscated/encrypted fonts are ignored; text extraction is unaffected.
 
+## PDF mapping rules (`pdf2bajan`) — THE CAVEAT, front and center
+
+**PDF text extraction is lossy by design.** Reading order is a heuristic;
+columns, tables, and multi-column layouts scramble; hyphenation and
+ligatures vary; and extractor-version changes change the extracted text.
+That directly threatens verbatim fidelity (ic_verbatim) — the episode text
+is only ever a best-effort extraction of the page, not a guaranteed
+faithful copy.
+
+Consequences implemented, not just documented:
+
+- Every episode carries a tags entry `pdf-extractor:pdf-extract-<version>`
+  naming the exact extractor crate and version, so a version change is
+  visible on the record itself. The version constant co-evolves with the
+  Cargo.toml pin (enforced by a test).
+- Re-converting the same PDF under a different extractor version can
+  yield different text → bajan rejects the resubmission with `conflict`
+  (ic_mutated_resubmit). **That rejection is CORRECT behavior**: it
+  protects claims whose lineage text would otherwise mutate. Do not
+  "fix" it by mutating persisted episodes; treat version changes as new
+  evidence, deliberately adopted.
+- Same-version determinism holds: the same bytes always yield the same
+  stream.
+- Episode ids are `page-NNN` (page position), NOT document-scoped: two
+  different PDFs both emit `page-001`. Ingesting a second, different PDF
+  collides on ids and is rejected `conflict` — the same correct
+  protection. Scope ids downstream if you need multi-document streams.
+- One episode per PAGE, locator `{"kind": "span", "value": "page:N"}`
+  (1-based); pages are the only honest anchor — no paragraph locators
+  exist for extracted PDF text. Empty pages emit nothing but keep their
+  page number (later pages are never renumbered).
+- Document metadata (/Info title/author) never becomes episodes.
+- `data_cutoff` is always absent: PDF file dates are file-management
+  facts, not data cutoffs (ic_date_fidelity).
+
 ## Formats not covered (yet) — and their caveats
 
 Per the bajan-15i converter table:
-
-- **PDF** (`pdf-extract` or `poppler pdftotext`): the **weakest
-  deterministic link**. PDF text extraction is lossy by design — reading
-  order is a heuristic, columns/tables scramble, and the same file can
-  extract differently across extractor versions. That directly threatens
-  the verbatim-persistence contract (ic_verbatim: the episode text is the
-  source text) and idempotent re-ingest (the same PDF re-converted under a
-  different extractor version yields different text → `conflict` on
-  resubmission). The locator-absent-marker contract absorbs the missing
-  page anchors, but not the text instability. Not implemented; if it ever
-  is, the caveat must be stated on every episode it emits.
