@@ -24,7 +24,12 @@ graph remains rebuildable (`gm_embedded-store` semantics, in
 graph.model); a version bump re-extracts as new work, never reusing a
 cache entry from another version. An episode with zero valid candidates is
 legitimately extracted and cached as empty — absence of claims is data,
-not failure.
+not failure. A parked episode — one that exhausted its retry budget on
+repeated call failure (bajan-42y) — holds no cache entry either, so a
+later extraction pass re-attempts it with a fresh retry budget: the park
+is one run's honest stopping (the same honesty as budget-exhaustion in
+query.tools), never a permanent state, and re-ingest neither grants nor
+blocks the retry — eligibility follows cache absence.
 
 Pipeline seam: the three specs' lifecycles hand off as follows — an
 episode leaves `ingestion.contract` as `persisted` and enters this spec's
@@ -46,6 +51,7 @@ that could collide with a real span.
 | id | kind | expr | traces_to |
 |----|------|------|-----------|
 | ex_single_call | invariant | each persisted episode id receives exactly one successful LLM extraction call producing candidate claims and entities; failed calls retry with backoff and park the episode in `rejected` after repeated failure; re-ingest of a successfully extracted episode reuses the (episode id, extractor version)-keyed cached output and starts no new call | [[extraction.claims]] |
+| ex_park_requeue | invariant | an episode parked in `rejected` after repeated call failure holds no extraction-cache entry at the failed extractor version, so a later extraction pass re-attempts it with a fresh retry budget — the park is one run's honest stopping, never a permanent state; every re-attempt writes its own run rows and prior parked run rows persist with their reasons; re-ingest is orthogonal — an unchanged re-submission of a parked episode is an ingest-side no-op (`already_persisted`) that neither grants nor blocks the fresh budget, because eligibility follows cache absence, never re-ingest | [[extraction.claims]] |
 | ex_typed_gate | invariant | a candidate claim persists only if it validates against the published claim schema, carries at least one episode lineage edge, and carries an evidence span that passes `ex_evidence_containment`; invalid candidates are rejected, never repaired; an episode with zero valid candidates is legitimately extracted and cached as empty | [[extraction.claims]] |
 | ex_supersession | invariant | re-extracting an episode at a new extractor version supersedes only that episode's `staged` claims derived from prior extractor versions — they become `rejected` with reason `superseded-by-reextraction`, lineage and evidence intact (a tombstone, not a delete) — while `active` and `rejected` claims from any version are never mutated; new output that conflicts with an `active` claim stages an invalidation proposal per `ex_mutation_proposal`; a superseded claim re-enters `staged` only through an explicit re-stage action, never an automated path | [[extraction.claims]] |
 | ex_run_record | invariant | every extraction call writes one run row — episode id, extractor version, model id when the extractor uses an LLM, started and finished timestamps, finish status — parallel to, and without changing, the `(episode id, extractor version)` cache economics; every failure outcome (an episode parked in `rejected` after repeated call failure, every candidate rejection at the validation gate) carries a machine-readable reason stored on the run or rejection record, never on a claim node | [[extraction.claims]] |
@@ -74,6 +80,7 @@ that could collide with a real span.
 | run | pending | extracted | [[extraction.claims.ex_single_call]] |
 | gate | extracted | validated | [[extraction.claims.ex_typed_gate]] |
 | abort | pending | rejected | [[extraction.claims.ex_single_call]] |
+| requeue | rejected | pending | [[extraction.claims.ex_park_requeue]] |
 | refuse | extracted | rejected | [[extraction.claims.ex_typed_gate]] |
 | supersede | staged | rejected | [[extraction.claims.ex_supersession]] |
 | stage | validated | staged | [[extraction.claims.ex_no_llm_post]] |
@@ -83,6 +90,7 @@ that could collide with a real span.
 | id | kind | derives_from | generator | predicate |
 |----|------|--------------|-----------|-----------|
 | p_single_call | unit | [[extraction.claims.ex_single_call]] | episode corpora ingested, re-ingested unchanged, and re-ingested with a bumped extractor version | exactly one successful call per (episode id, extractor version); re-ingest at the same version produces no new call and reuses cached output; a version bump re-extracts |
+| p_park_requeue | unit | [[extraction.claims.ex_park_requeue]] | episodes parked after retry-budget exhaustion, re-submitted unchanged, then re-run through extraction passes that fail again and succeed | the re-attempt pass starts a fresh retry budget and writes new run rows while prior parked rows persist with their reasons; success caches the output and ends the requeue cycle; renewed exhaustion parks again with a recorded reason; the unchanged re-submission itself emits `already_persisted` and changes neither graph nor run state |
 | p_typed_gate | unit | [[extraction.claims.ex_typed_gate]] | candidate records mixing schema-valid, schema-violating, lineage-less, evidence-less, and zero-candidate episodes | only schema-valid lineage-bearing candidates with a passing evidence span reach `validated`; every violation lands in `rejected` unmodified; a zero-candidate episode caches as legitimately empty |
 | p_supersession | unit | [[extraction.claims.ex_supersession]] | episode corpora re-extracted at bumped extractor versions with prior output in `staged`, `active`, and `rejected` states | only prior-version `staged` claims become `rejected` with reason `superseded-by-reextraction`, lineage and evidence remaining queryable; `active` and `rejected` claims from any version never change status; active conflicts stage invalidation proposals; superseded claims re-enter `staged` only via explicit re-stage |
 | p_run_record | unit | [[extraction.claims.ex_run_record]] | extraction calls with success, repeated-failure, and gate-rejection outcomes | every call writes exactly one run row with episode id, extractor version, model id when present, timestamps, and finish status; every parked episode and gate rejection carries a machine-readable reason; claim nodes expose no reason field |

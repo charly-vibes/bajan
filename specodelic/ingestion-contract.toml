@@ -55,6 +55,12 @@ expr = "a stable id in state rejected may be re-submitted with a corrected recor
 traces_to = "[[ingestion.contract]]"
 
 [[constraints]]
+id = "ic_state_orthogonal"
+kind = "invariant"
+expr = "an ingest outcome record reflects only ingestion outcomes with their own machine-readable reasons (`malformed`, `conflict`, `duplicate`); extraction state never appears on it — an episode parked in extraction's `rejected` after repeated call failure is persisted, so its unchanged re-submission is `already_persisted`, and the parked episode's retry accounting lives exclusively in extraction run records"
+traces_to = "[[ingestion.contract]]"
+
+[[constraints]]
 id = "ic_batch_duplicate"
 kind = "invariant"
 expr = "within one submitted stream, the first occurrence of a stable id persists and every later occurrence of that id in the same stream is rejected with a machine-readable duplicate reason; rejection is per record and never extends to other episodes in the batch"

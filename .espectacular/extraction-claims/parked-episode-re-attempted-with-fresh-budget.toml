@@ -1,0 +1,11 @@
+id = "parked-episode-re-attempted-with-fresh-budget"
+description = "Parked episode re-attempted with fresh budget"
+archetype = "CE"
+status = "active"
+superseded_by = ""
+authored_with = "0.3.0"
+
+[tests]
+cargo = [
+    { flags = "infrastructure_failure_propagates_and_episode_stays_retryable", timeout_seconds = 60 },
+]

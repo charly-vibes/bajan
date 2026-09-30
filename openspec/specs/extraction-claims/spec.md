@@ -77,6 +77,33 @@ gate. Reasons SHALL NOT be stored on claim nodes.
   record, the claim node's field set is unchanged, and no failure is
   silently dropped
 
+### Requirement: Parked episodes are re-attempted with a fresh retry budget
+
+The system SHALL re-attempt an episode parked in `rejected` after repeated
+call failure with a fresh retry budget on any later extraction pass — the
+park is one run's honest stopping, never a permanent state — while
+preserving prior parked run rows with their machine-readable reasons, and
+SHALL keep re-ingest orthogonal: eligibility follows extraction-cache
+absence, never re-ingest.
+
+#### Scenario: Parked episode re-attempted with fresh budget
+
+- **WHEN** an episode parked after repeated call failure is present and a
+  later extraction pass runs
+- **THEN** the pass re-attempts it with a fresh retry budget, new run rows
+  accumulate while prior parked rows persist with their reasons, and a
+  successful re-attempt caches the output (a failed call never caches the
+  episode: retryable at the same version)
+
+#### Scenario: Re-ingest of a parked episode grants no budget and carries no extraction state
+
+- **WHEN** an unchanged record for an episode parked by extraction is
+  re-submitted
+- **THEN** ingest emits `already_persisted` with no extraction state or
+  extraction reasons on the outcome record, and the fresh retry budget
+  arises from the next extraction pass's cache absence, not from the
+  re-ingest
+
 ### Requirement: Candidate claims carry a containment-verified evidence span
 
 The system SHALL require every candidate claim to carry an evidence span —

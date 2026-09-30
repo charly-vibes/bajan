@@ -39,6 +39,16 @@ proptest! {
 }
 
 proptest! {
+    // id: p_park_requeue
+    // generator: episodes parked after retry-budget exhaustion, re-submitted unchanged, then re-run through extraction passes that fail again and succeed
+    // predicate: the re-attempt pass starts a fresh retry budget and writes new run rows while prior parked rows persist with their reasons; success caches the output and ends the requeue cycle; renewed exhaustion parks again with a recorded reason; the unchanged re-submission itself emits `already_persisted` and changes neither graph nor run state
+    #[test]
+    fn p_park_requeue() {
+        todo_predicate!("the re-attempt pass starts a fresh retry budget and writes new run rows while prior parked rows persist with their reasons; success caches the output and ends the requeue cycle; renewed exhaustion parks again with a recorded reason; the unchanged re-submission itself emits `already_persisted` and changes neither graph nor run state");
+    }
+}
+
+proptest! {
     // id: p_typed_gate
     // generator: candidate records mixing schema-valid, schema-violating, lineage-less, evidence-less, and zero-candidate episodes
     // predicate: only schema-valid lineage-bearing candidates with a passing evidence span reach `validated`; every violation lands in `rejected` unmodified; a zero-candidate episode caches as legitimately empty

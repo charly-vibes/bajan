@@ -7,6 +7,12 @@ expr = "each persisted episode id receives exactly one successful LLM extraction
 traces_to = "[[extraction.claims]]"
 
 [[constraints]]
+id = "ex_park_requeue"
+kind = "invariant"
+expr = "an episode parked in `rejected` after repeated call failure holds no extraction-cache entry at the failed extractor version, so a later extraction pass re-attempts it with a fresh retry budget — the park is one run's honest stopping, never a permanent state; every re-attempt writes its own run rows and prior parked run rows persist with their reasons; re-ingest is orthogonal — an unchanged re-submission of a parked episode is an ingest-side no-op (`already_persisted`) that neither grants nor blocks the fresh budget, because eligibility follows cache absence, never re-ingest"
+traces_to = "[[extraction.claims]]"
+
+[[constraints]]
 id = "ex_typed_gate"
 kind = "invariant"
 expr = "a candidate claim persists only if it validates against the published claim schema, carries at least one episode lineage edge, and carries an evidence span that passes `ex_evidence_containment`; invalid candidates are rejected, never repaired; an episode with zero valid candidates is legitimately extracted and cached as empty"

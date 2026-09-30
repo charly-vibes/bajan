@@ -165,6 +165,16 @@ proptest! {
 }
 
 proptest! {
+    // id: p_state_orthogonal
+    // generator: episodes parked by extraction, re-submitted unchanged and with mutations
+    // predicate: the unchanged re-submission emits `already_persisted`; no ingest outcome record carries extraction state or extraction reasons; a mutated re-submission is rejected with a conflict reason as usual
+    #[test]
+    fn p_state_orthogonal() {
+        todo_predicate!("the unchanged re-submission emits `already_persisted`; no ingest outcome record carries extraction state or extraction reasons; a mutated re-submission is rejected with a conflict reason as usual");
+    }
+}
+
+proptest! {
     // id: p_batch_duplicate
     // generator: streams containing repeated ids within one batch, with differing payloads after the first occurrence
     // predicate: exactly the first occurrence persists; each later occurrence is rejected with a duplicate reason; all other episodes in the batch persist
