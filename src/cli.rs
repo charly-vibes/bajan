@@ -14,6 +14,7 @@ use crate::extract;
 use crate::ingest;
 use crate::query;
 use crate::resolve;
+use crate::review;
 use crate::store::StoreError;
 
 /// Top-level CLI: `bajan [--json] <subcommand>`.
@@ -92,6 +93,55 @@ pub enum Command {
         /// least one — a no-op accept must not report success).
         #[arg(num_args = 1.., required = true)]
         claims: Vec<usize>,
+        /// Operator identity; defaults to $USER.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Deterministic entity-resolution pass (er_queue_entry): propose
+    /// possible-duplicate merge candidates into the review queue from
+    /// ranked claims — normalization equivalence/containment only, no LLM,
+    /// no embedding. The queue drains, it never grows by human invention.
+    Er {
+        /// Bounded-candidate budget: maximum pair comparisons examined.
+        #[arg(long, default_value_t = 256)]
+        budget: usize,
+    },
+    /// The human-in-the-loop review surface (er_human_resolution): the
+    /// only HITL commands in an otherwise AFK pipeline — inspect the open
+    /// queue, or resolve one candidate with actor identity. Review
+    /// commands never create candidates; they only resolve them.
+    Review {
+        #[command(subcommand)]
+        action: ReviewAction,
+    },
+}
+
+/// Review actions (`er_human_resolution`): list is a read; approve and
+/// reject are human-only resolutions carrying actor identity.
+#[derive(Debug, Subcommand)]
+pub enum ReviewAction {
+    /// Every open candidate with evidence, episode counts, and queue age
+    /// (er_queue_transparency), oldest-first.
+    List,
+    /// Approve (merge): both sides' lineage survives onto the merged
+    /// entity (er_merge_preserves); one audit record is written.
+    Approve {
+        /// One side of the candidate pair (as listed by `review list`).
+        from: usize,
+        /// The other side of the candidate pair.
+        to: usize,
+        /// Operator identity; defaults to $USER.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Reject: drops only the proposal edge — both claims, their lineage,
+    /// and their claims are untouched (er_reject_drops_edge); one audit
+    /// record is written.
+    Reject {
+        /// One side of the candidate pair (as listed by `review list`).
+        from: usize,
+        /// The other side of the candidate pair.
+        to: usize,
         /// Operator identity; defaults to $USER.
         #[arg(long)]
         actor: Option<String>,
@@ -356,6 +406,174 @@ fn adopt_error_envelope(err: &StoreError) -> serde_json::Value {
     )
 }
 
+// ---- entity review (specs/entity-review.md, bajan-6j1) ----
+
+/// Run the deterministic entity-resolution pass and emit its report
+/// (`er_queue_entry`): the only producer of review-queue candidates.
+fn er_envelope(db_path: &str, budget: usize) -> serde_json::Value {
+    let db = match crate::store::sqlite::SqliteStore::open(db_path) {
+        Ok(db) => db,
+        Err(err) => return review_store_error_envelope(&err, "er"),
+    };
+    er_with(&db, budget)
+}
+
+/// The ER-pass envelope over an already-open store (testable).
+fn er_with(db: &crate::store::sqlite::SqliteStore, budget: usize) -> serde_json::Value {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    match review::run_er_pass(db, budget, now) {
+        Ok(report) => serde_json::to_value(Envelope::success(
+            env!("CARGO_PKG_VERSION"),
+            EnvelopeKind::Ok,
+            report,
+            vec![],
+            vec![],
+        ))
+        .expect("envelope serialization cannot fail"),
+        Err(err) => stub_envelope(&BajanError::Store(err.to_string())),
+    }
+}
+
+/// The review-list envelope (`er_queue_transparency`): every open
+/// candidate with both sides' ids, the evidence that produced the
+/// proposal, supporting-episode counts, and queue age — oldest-first.
+fn review_list_envelope(db_path: &str) -> serde_json::Value {
+    let db = match crate::store::sqlite::SqliteStore::open(db_path) {
+        Ok(db) => db,
+        Err(err) => return review_store_error_envelope(&err, "review"),
+    };
+    review_list_with(&db)
+}
+
+fn review_list_with(db: &crate::store::sqlite::SqliteStore) -> serde_json::Value {
+    let queue = match db.review_queue() {
+        Ok(queue) => queue,
+        Err(err) => return review_store_error_envelope(&err, "review"),
+    };
+    let counts = match db.review_episode_counts(&queue) {
+        Ok(counts) => counts,
+        Err(err) => return review_store_error_envelope(&err, "review"),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    let entries: Vec<serde_json::Value> = queue
+        .iter()
+        .zip(counts)
+        .map(|(record, (from_episodes, to_episodes))| {
+            serde_json::json!({
+                "from_claim": record.from_claim,
+                "to_claim": record.to_claim,
+                "evidence": record.evidence,
+                "from_episodes": from_episodes,
+                "to_episodes": to_episodes,
+                "queued_at": record.queued_at,
+                // Queue age in seconds (`er_queue_transparency`): a human
+                // sees what they are leaving undecided and for how long.
+                "age_seconds": now.saturating_sub(record.queued_at),
+            })
+        })
+        .collect();
+    serde_json::to_value(Envelope::success(
+        env!("CARGO_PKG_VERSION"),
+        EnvelopeKind::Ok,
+        serde_json::json!({ "queue": entries }),
+        vec![],
+        vec![],
+    ))
+    .expect("envelope serialization cannot fail")
+}
+
+/// Resolve one candidate (`er_human_resolution`): approve = merge,
+/// reject = drop the proposal edge. Actor identity is mandatory — the
+/// CLI defaults to $USER, the store refuses an empty actor.
+fn review_resolve_envelope(
+    db_path: &str,
+    from: usize,
+    to: usize,
+    approve: bool,
+    actor: Option<&str>,
+) -> serde_json::Value {
+    let db = match crate::store::sqlite::SqliteStore::open(db_path) {
+        Ok(db) => db,
+        Err(err) => return review_store_error_envelope(&err, "review"),
+    };
+    review_resolve_with(&db, from, to, approve, actor)
+}
+
+fn review_resolve_with(
+    db: &crate::store::sqlite::SqliteStore,
+    from: usize,
+    to: usize,
+    approve: bool,
+    actor: Option<&str>,
+) -> serde_json::Value {
+    let actor = actor
+        .map(str::to_string)
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    let decision = if approve {
+        crate::store::ReviewDecision::Approved
+    } else {
+        crate::store::ReviewDecision::Rejected
+    };
+    match db.resolve_review(from, to, decision, &actor, now) {
+        Ok(()) => {
+            // Read the audit record back (bajan-2sj discipline).
+            let audits = match db.review_audits() {
+                Ok(audits) => audits,
+                Err(err) => return review_store_error_envelope(&err, "review"),
+            };
+            let record = audits
+                .iter()
+                .rev()
+                .find(|a| {
+                    (a.from_claim == from && a.to_claim == to)
+                        || (a.from_claim == to && a.to_claim == from)
+                })
+                .cloned()
+                .unwrap_or_else(|| panic!("just-written audit record must read back"));
+            serde_json::to_value(Envelope::success(
+                env!("CARGO_PKG_VERSION"),
+                EnvelopeKind::Ok,
+                record,
+                vec![],
+                vec![],
+            ))
+            .expect("envelope serialization cannot fail")
+        }
+        Err(err) => review_store_error_envelope(&err, "review"),
+    }
+}
+
+/// Review-spec store errors surface as spec-traced error envelopes
+/// (bajan-2sj discipline) — every refusal names `er_*` and the remedy.
+fn review_store_error_envelope(err: &StoreError, module: &str) -> serde_json::Value {
+    spec_error_envelope(
+        "review_refused",
+        &err.to_string(),
+        Some("specs/entity-review.md"),
+        module,
+        vec![RemediationEntry {
+            command: "bajan review list --json".into(),
+            description: "Inspect the open queue with `bajan review list`; resolve a \
+                          candidate with `bajan review approve|reject <from> <to> --actor <id>`. \
+                          Candidates enter only via the deterministic pass (`bajan er`) — \
+                          review commands never create them (er_queue_entry, \
+                          er_human_resolution)."
+                .into(),
+        }],
+    )
+}
+
 /// Run a command and return its suite envelope as JSON.
 ///
 /// This is the single serialization point: every command's output passes
@@ -384,6 +602,16 @@ pub fn run(command: Command, db_path: &str) -> String {
         } => query_envelope(db_path, pattern, *budget, scope),
         Command::Contradict { claims, budget } => contradict_envelope(db_path, claims, *budget),
         Command::Adopt { claims, actor } => adopt_envelope(db_path, claims, actor.as_deref()),
+        Command::Er { budget } => er_envelope(db_path, *budget),
+        Command::Review { action } => match action {
+            ReviewAction::List => review_list_envelope(db_path),
+            ReviewAction::Approve { from, to, actor } => {
+                review_resolve_envelope(db_path, *from, *to, true, actor.as_deref())
+            }
+            ReviewAction::Reject { from, to, actor } => {
+                review_resolve_envelope(db_path, *from, *to, false, actor.as_deref())
+            }
+        },
     };
     serde_json::to_string(&value).expect("envelope serialization cannot fail")
 }

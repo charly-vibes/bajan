@@ -16,8 +16,9 @@
 use crate::extract::Reason;
 use crate::ingest::{EpisodeRecord, Locator};
 use crate::store::{
-    AuditRecord, ClaimNode, ClaimStatus, EdgeLabel, Evidence, InvalidationProposal, Lineage,
-    StoreError, SupersessionRecord, dropped_hedge_markers,
+    AuditRecord, ClaimNode, ClaimStatus, EdgeLabel, EnqueueOutcome, Evidence, InvalidationProposal,
+    Lineage, ReviewAuditRecord, ReviewDecision, ReviewRecord, ReviewStatus, StoreError,
+    SupersessionRecord, dropped_hedge_markers,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -86,6 +87,26 @@ CREATE TABLE IF NOT EXISTS restages (
     actor TEXT NOT NULL,
     restaged_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reviews (
+    rowid_key INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_claim INTEGER NOT NULL,
+    to_claim INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    queued_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    actor TEXT,
+    decision TEXT
+);
+CREATE TABLE IF NOT EXISTS review_audits (
+    rowid_key INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_claim INTEGER NOT NULL,
+    to_claim INTEGER NOT NULL,
+    decision TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    resolved_at INTEGER NOT NULL
+);
 ";
 
 /// Row mapper shared by `episodes()` and `get_episode()`: reconstructs a
@@ -93,6 +114,48 @@ CREATE TABLE IF NOT EXISTS restages (
 /// Read-path errors — including a corrupted tags column — map to
 /// `StoreError::Sqlite` carrying the governing spec (bajan-2sj), never a
 /// panic: every invocation must emit the suite envelope.
+/// Row mapper shared by the review reads (`er_review-schema`): reconstruct
+/// a queue record from a `reviews` row — status and decision decoded
+/// strictly from the published vocabularies, a corrupt row is a store
+/// error, never a silent guess.
+fn review_row(row: &rusqlite::Row<'_>) -> Result<ReviewRecord, StoreError> {
+    let from_claim: i64 = row.get(0).map_err(sql_err)?;
+    let to_claim: i64 = row.get(1).map_err(sql_err)?;
+    let status_raw: String = row.get(2).map_err(sql_err)?;
+    let status: ReviewStatus =
+        serde_json::from_value(serde_json::Value::String(status_raw.clone())).map_err(|e| {
+            StoreError::Sqlite {
+                message: format!("review status decode failed ({status_raw}): {e}"),
+                spec: SPEC,
+            }
+        })?;
+    let decision_raw: Option<String> = row.get(8).map_err(sql_err)?;
+    let decision = match decision_raw {
+        None => None,
+        Some(raw) => Some(
+            serde_json::from_value::<ReviewDecision>(serde_json::Value::String(raw.clone()))
+                .map_err(|e| StoreError::Sqlite {
+                    message: format!("review decision decode failed ({raw}): {e}"),
+                    spec: SPEC,
+                })?,
+        ),
+    };
+    Ok(ReviewRecord {
+        from_claim: from_claim as usize,
+        to_claim: to_claim as usize,
+        status,
+        evidence: row.get(3).map_err(sql_err)?,
+        fingerprint: row.get(4).map_err(sql_err)?,
+        queued_at: row.get::<_, i64>(5).map_err(sql_err)? as u64,
+        resolved_at: row
+            .get::<_, Option<i64>>(6)
+            .map_err(sql_err)?
+            .map(|t| t as u64),
+        actor: row.get(7).map_err(sql_err)?,
+        decision,
+    })
+}
+
 fn episode_from_row(row: &rusqlite::Row<'_>) -> Result<EpisodeRecord, StoreError> {
     let id: String = row.get(0).map_err(sql_err)?;
     let text: String = row.get(1).map_err(sql_err)?;
@@ -195,6 +258,14 @@ pub struct ExtractionDump {
     /// rejected statuses (gm_embedded_store).
     #[serde(default)]
     pub supersessions: Vec<SupersessionRecord>,
+    /// Entity-review queue rows (`er_review-schema`), row order preserved:
+    /// without these a rebuild would lose the queue and its lifecycle
+    /// states (gm_embedded_store).
+    #[serde(default)]
+    pub reviews: Vec<ReviewRecord>,
+    /// Review-resolution audit records, row order preserved.
+    #[serde(default)]
+    pub review_audits: Vec<ReviewAuditRecord>,
 }
 
 /// One persisted edge in dump form: endpoints are claim keys, the label
@@ -519,6 +590,8 @@ impl SqliteStore {
         let edges = self.edges()?;
         let invalidations = self.invalidations()?;
         let supersessions = self.supersessions()?;
+        let reviews = self.reviews()?;
+        let review_audits = self.review_audits()?;
         Ok(ExtractionDump {
             claims,
             extracted,
@@ -532,6 +605,8 @@ impl SqliteStore {
                 .collect(),
             invalidations,
             supersessions,
+            reviews,
+            review_audits,
         })
     }
 
@@ -601,6 +676,12 @@ impl SqliteStore {
         }
         for record in &dump.supersessions {
             self.insert_supersession_row(record.claim_key, &record.reason, record.superseded_at)?;
+        }
+        for record in &dump.reviews {
+            self.insert_review_row(record)?;
+        }
+        for record in &dump.review_audits {
+            self.insert_review_audit_row(record)?;
         }
         Ok(())
     }
@@ -869,6 +950,365 @@ impl SqliteStore {
             .optional()
             .map_err(sql_err)?;
         Ok(found.is_some())
+    }
+
+    // ---- entity review (specs/entity-review.md, bajan-6j1) ----
+
+    /// Queue a merge candidate for human review (`er_queue_entry`): the
+    /// only way a queue row is born is this call, and the only caller is
+    /// the deterministic ER pass — a candidate pair enters the queue only
+    /// as a `possible_duplicate_of` edge written by that pass. Refused
+    /// honestly (never silently) when the pair is already open
+    /// (`AlreadyProposed`) or a prior rejection covered identical evidence
+    /// (`er_repropose_guard`). Returns the outcome; row order preserved.
+    pub fn enqueue_candidate(
+        &self,
+        from_claim: usize,
+        to_claim: usize,
+        evidence: &str,
+        fingerprint: &str,
+        queued_at: u64,
+    ) -> Result<EnqueueOutcome, StoreError> {
+        if from_claim == to_claim {
+            return Err(StoreError::InvalidReviewPair { spec: SPEC });
+        }
+        for endpoint in [from_claim, to_claim] {
+            if !self.claim_exists(endpoint)? {
+                return Err(StoreError::ClaimNotFound {
+                    claim_key: endpoint,
+                });
+            }
+        }
+        // An open proposal for the unordered pair: the queue drains, it
+        // never doubles up.
+        if self.open_pair_row(from_claim, to_claim)?.is_some() {
+            return Ok(EnqueueOutcome::AlreadyProposed);
+        }
+        // Repropose guard: a rejected pair re-enters only when the
+        // evidence changed since the rejection.
+        if let Some(row) = self.latest_rejected_row(from_claim, to_claim)?
+            && row.fingerprint == fingerprint
+        {
+            return Ok(EnqueueOutcome::RejectedWithoutNewEvidence);
+        }
+        // The queue row traces to an edge: write both.
+        self.insert_edge(from_claim, EdgeLabel::PossibleDuplicateOf, to_claim)?;
+        self.conn
+            .execute(
+                "INSERT INTO reviews (from_claim, to_claim, status, evidence, fingerprint, \
+                 queued_at) VALUES (?1, ?2, 'proposed', ?3, ?4, ?5)",
+                params![
+                    from_claim as i64,
+                    to_claim as i64,
+                    evidence,
+                    fingerprint,
+                    queued_at as i64
+                ],
+            )
+            .map_err(sql_err)?;
+        Ok(EnqueueOutcome::Queued)
+    }
+
+    /// All review records in insertion row order (the audit trail of the
+    /// queue itself: open and resolved rows alike).
+    pub fn reviews(&self) -> Result<Vec<ReviewRecord>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT from_claim, to_claim, status, evidence, fingerprint, queued_at, \
+                 resolved_at, actor, decision FROM reviews ORDER BY rowid",
+            )
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push(review_row(row)?);
+        }
+        Ok(out)
+    }
+
+    /// The open queue (`er_queue_transparency`): every `proposed` row,
+    /// oldest-first (queue age visible in the ordering itself) — a human
+    /// can see what they are deciding and what they are leaving undecided.
+    pub fn review_queue(&self) -> Result<Vec<ReviewRecord>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT from_claim, to_claim, status, evidence, fingerprint, queued_at, \
+                 resolved_at, actor, decision FROM reviews WHERE status = 'proposed' \
+                 ORDER BY queued_at, rowid",
+            )
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push(review_row(row)?);
+        }
+        Ok(out)
+    }
+
+    /// Supporting-episode counts for both sides of each listed candidate
+    /// (`er_queue_transparency` claim counts): how well-evidenced each
+    /// side of the pair is, in the listed order.
+    pub fn review_episode_counts(
+        &self,
+        queue: &[ReviewRecord],
+    ) -> Result<Vec<(usize, usize)>, StoreError> {
+        let mut out = Vec::with_capacity(queue.len());
+        for record in queue {
+            let count = |key: usize| -> Result<usize, StoreError> {
+                self.conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM lineage WHERE claim_key = ?1",
+                        params![key as i64],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map(|n| n as usize)
+                    .map_err(sql_err)
+            };
+            out.push((count(record.from_claim)?, count(record.to_claim)?));
+        }
+        Ok(out)
+    }
+
+    /// Resolve one open candidate (`er_human_resolution`): the ONLY path
+    /// out of `proposed` — an explicit human command carrying actor
+    /// identity. Approve performs the merge (`er_merge_preserves`: the
+    /// union of both sides' lineage survives onto the merged entity);
+    /// reject drops only the `possible_duplicate_of` edge
+    /// (`er_reject_drops_edge`). Either way: the proposal edge is
+    /// consumed and exactly one audit record is written.
+    pub fn resolve_review(
+        &self,
+        from_claim: usize,
+        to_claim: usize,
+        decision: ReviewDecision,
+        actor: &str,
+        resolved_at: u64,
+    ) -> Result<(), StoreError> {
+        if actor.is_empty() {
+            return Err(StoreError::ReviewActorRequired { spec: SPEC });
+        }
+        let row =
+            self.open_pair_row(from_claim, to_claim)?
+                .ok_or(StoreError::ReviewNotProposed {
+                    from_claim,
+                    to_claim,
+                    spec: SPEC,
+                })?;
+        let new_status = match decision {
+            ReviewDecision::Approved => {
+                // er_merge_preserves: every lineage edge from both sides
+                // survives onto the merged entity (the surviving side).
+                let absorbed = self.lineage_of(to_claim)?;
+                let survivor = self.lineage_of(from_claim)?;
+                let missing: Vec<&Lineage> = absorbed
+                    .iter()
+                    .filter(|edge| {
+                        !survivor.iter().any(|keep| {
+                            keep.episode_id == edge.episode_id
+                                && keep.extractor_version == edge.extractor_version
+                        })
+                    })
+                    .collect();
+                self.insert_lineage(
+                    from_claim,
+                    &missing.into_iter().cloned().collect::<Vec<Lineage>>(),
+                )?;
+                "resolved_approved"
+            }
+            ReviewDecision::Rejected => "resolved_rejected",
+        };
+        // The proposal edge is consumed by the resolution — after approve
+        // the relation is realized, after reject it is withdrawn; the
+        // queue contents keep equalling the open proposal edges.
+        self.conn
+            .execute(
+                "DELETE FROM edges WHERE label = 'possible_duplicate_of' AND \
+                 ((from_claim = ?1 AND to_claim = ?2) OR (from_claim = ?2 AND to_claim = ?1))",
+                params![from_claim as i64, to_claim as i64],
+            )
+            .map_err(sql_err)?;
+        self.conn
+            .execute(
+                "UPDATE reviews SET status = ?3, resolved_at = ?4, actor = ?5, decision = ?6 \
+                 WHERE rowid_key = ?7",
+                params![
+                    from_claim as i64,
+                    to_claim as i64,
+                    new_status,
+                    resolved_at as i64,
+                    actor,
+                    match decision {
+                        ReviewDecision::Approved => "approved",
+                        ReviewDecision::Rejected => "rejected",
+                    },
+                    row.0,
+                ],
+            )
+            .map_err(sql_err)?;
+        self.conn
+            .execute(
+                "INSERT INTO review_audits (from_claim, to_claim, decision, actor, resolved_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    from_claim as i64,
+                    to_claim as i64,
+                    match decision {
+                        ReviewDecision::Approved => "approved",
+                        ReviewDecision::Rejected => "rejected",
+                    },
+                    actor,
+                    resolved_at as i64
+                ],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
+    /// All review-resolution audit records in insertion row order
+    /// (`er_merge_preserves` / `er_reject_drops_edge`): the receipt trail.
+    pub fn review_audits(&self) -> Result<Vec<ReviewAuditRecord>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT from_claim, to_claim, decision, actor, resolved_at \
+                 FROM review_audits ORDER BY rowid",
+            )
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            let from_claim: i64 = row.get(0).map_err(sql_err)?;
+            let to_claim: i64 = row.get(1).map_err(sql_err)?;
+            let decision_raw: String = row.get(2).map_err(sql_err)?;
+            let decision: ReviewDecision = serde_json::from_value(serde_json::Value::String(
+                decision_raw.clone(),
+            ))
+            .map_err(|e| StoreError::Sqlite {
+                message: format!("review decision decode failed ({decision_raw}): {e}"),
+                spec: SPEC,
+            })?;
+            out.push(ReviewAuditRecord {
+                from_claim: from_claim as usize,
+                to_claim: to_claim as usize,
+                decision,
+                actor: row.get(3).map_err(sql_err)?,
+                resolved_at: row.get::<_, i64>(4).map_err(sql_err)? as u64,
+            });
+        }
+        Ok(out)
+    }
+
+    /// The `proposed` row for the unordered pair, if any, with its rowid.
+    fn open_pair_row(
+        &self,
+        from_claim: usize,
+        to_claim: usize,
+    ) -> Result<Option<(i64, ReviewRecord)>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT from_claim, to_claim, status, evidence, fingerprint, queued_at, \
+                 resolved_at, actor, decision, rowid_key FROM reviews \
+                 WHERE status = 'proposed' AND \
+                 ((from_claim = ?1 AND to_claim = ?2) OR (from_claim = ?2 AND to_claim = ?1))",
+            )
+            .map_err(sql_err)?;
+        let mut rows = stmt
+            .query(params![from_claim as i64, to_claim as i64])
+            .map_err(sql_err)?;
+        match rows.next().map_err(sql_err)? {
+            Some(row) => {
+                let rowid: i64 = row.get(9).map_err(sql_err)?;
+                Ok(Some((rowid, review_row(row)?)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// The latest `resolved_rejected` row for the unordered pair, if any
+    /// (`er_repropose_guard`): its fingerprint is what new evidence must
+    /// differ from.
+    fn latest_rejected_row(
+        &self,
+        from_claim: usize,
+        to_claim: usize,
+    ) -> Result<Option<ReviewRecord>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT from_claim, to_claim, status, evidence, fingerprint, queued_at, \
+                 resolved_at, actor, decision FROM reviews \
+                 WHERE status = 'resolved_rejected' AND \
+                 ((from_claim = ?1 AND to_claim = ?2) OR (from_claim = ?2 AND to_claim = ?1)) \
+                 ORDER BY rowid DESC LIMIT 1",
+            )
+            .map_err(sql_err)?;
+        let mut rows = stmt
+            .query(params![from_claim as i64, to_claim as i64])
+            .map_err(sql_err)?;
+        match rows.next().map_err(sql_err)? {
+            Some(row) => Ok(Some(review_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Raw review-row insert used only by dump-recreate
+    /// (`gm_embedded_store`): the rebuild must reproduce queue rows and
+    /// their lifecycle states verbatim — `enqueue_candidate`'s guards are
+    /// pipeline semantics, not rebuild semantics.
+    fn insert_review_row(&self, record: &ReviewRecord) -> Result<(), StoreError> {
+        let status = match record.status {
+            ReviewStatus::Proposed => "proposed",
+            ReviewStatus::ResolvedApproved => "resolved_approved",
+            ReviewStatus::ResolvedRejected => "resolved_rejected",
+        };
+        let decision = record.decision.map(|d| match d {
+            ReviewDecision::Approved => "approved",
+            ReviewDecision::Rejected => "rejected",
+        });
+        self.conn
+            .execute(
+                "INSERT INTO reviews (from_claim, to_claim, status, evidence, fingerprint, \
+                 queued_at, resolved_at, actor, decision) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    record.from_claim as i64,
+                    record.to_claim as i64,
+                    status,
+                    record.evidence,
+                    record.fingerprint,
+                    record.queued_at as i64,
+                    record.resolved_at.map(|t| t as i64),
+                    record.actor,
+                    decision,
+                ],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
+    /// Raw audit-row insert used only by dump-recreate.
+    fn insert_review_audit_row(&self, record: &ReviewAuditRecord) -> Result<(), StoreError> {
+        let decision = match record.decision {
+            ReviewDecision::Approved => "approved",
+            ReviewDecision::Rejected => "rejected",
+        };
+        self.conn
+            .execute(
+                "INSERT INTO review_audits (from_claim, to_claim, decision, actor, resolved_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    record.from_claim as i64,
+                    record.to_claim as i64,
+                    decision,
+                    record.actor,
+                    record.resolved_at as i64
+                ],
+            )
+            .map_err(sql_err)?;
+        Ok(())
     }
 
     /// Human adopt at the SQL layer (`gm_human_adopt`): the sole path from

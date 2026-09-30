@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a70cbc52fefa28fac2a0d1e43364a7632b8bc695df0af4c58fc77a784107fbe8 # shrinks to actor = "aaa"
+cc 030b74b5dbacd1d3f4109d85f4cc2e051c298d8f9103398a7afb356ee2ebca9a # shrinks to actor = "aaa"
+cc dc8b14e8cc6a106e649c904ee54683adf2b7f921707e310f07889b65d4a29a0c # shrinks to text = "aaa  ", actor = "aaa"
+cc 6108fa22bd6f59445bb201597350794e6b6a16c8994102c4f025b976f29544df # shrinks to text_a = " aa a", text_b = "aaaa "

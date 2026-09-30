@@ -9,4 +9,5 @@ pub mod extract;
 pub mod ingest;
 pub mod query;
 pub mod resolve;
+pub mod review;
 pub mod store;

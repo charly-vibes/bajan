@@ -242,6 +242,76 @@ pub fn dropped_hedge_markers(span: &str, episode: &str) -> Vec<String> {
         .collect()
 }
 
+/// The entity-review resolution decision (`er_review-schema` published
+/// vocabulary): the closed set a human resolution command may carry —
+/// approve (merge) or reject (drop the proposal edge). Nothing else is
+/// representable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDecision {
+    Approved,
+    Rejected,
+}
+
+/// Queue-entry lifecycle state (specs/entity-review.md model):
+/// `proposed` until a human resolution moves it to
+/// `resolved_approved`/`resolved_rejected`; re-propose inserts a new row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    Proposed,
+    ResolvedApproved,
+    ResolvedRejected,
+}
+
+/// One entity-review queue record (`er_review-schema`): the candidate
+/// pair (endpoints are claim keys — the entity role in this claim-graph
+/// slice), the normalization evidence that produced the proposal, the
+/// evidence fingerprint the repropose guard compares against, and — once
+/// resolved — the actor, timestamp, and decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRecord {
+    pub from_claim: usize,
+    pub to_claim: usize,
+    pub status: ReviewStatus,
+    pub evidence: String,
+    /// Evidence fingerprint at queue time (texts + supporting episode
+    /// ids): the repropose guard refuses re-entry unless this changed.
+    pub fingerprint: String,
+    pub queued_at: u64,
+    pub resolved_at: Option<u64>,
+    pub actor: Option<String>,
+    pub decision: Option<ReviewDecision>,
+}
+
+/// One review resolution audit record (`er_merge_preserves` /
+/// `er_reject_drops_edge`): exactly one per resolution — actor, timestamp,
+/// both entity ids, decision. A merge that loses provenance is the
+/// graph-killing defect; the audit trail is the receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewAuditRecord {
+    pub from_claim: usize,
+    pub to_claim: usize,
+    pub decision: ReviewDecision,
+    pub actor: String,
+    pub resolved_at: u64,
+}
+
+/// Outcome of a candidate-enqueue attempt (`er_queue_entry` /
+/// `er_repropose_guard`): the queue drains, it never doubles up, and a
+/// rejected pair re-enters only with new evidence — refusals are honest
+/// outcomes, never silent successes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnqueueOutcome {
+    /// The pair is now an open candidate (edge + queue row written).
+    Queued,
+    /// An open proposal for this pair already exists — refused.
+    AlreadyProposed,
+    /// The pair was rejected and the evidence fingerprint is unchanged —
+    /// refused by the repropose guard.
+    RejectedWithoutNewEvidence,
+}
+
 /// Store-side error: every variant carries the governing spec so errors
 /// stay traceable to the invariant they guard.
 #[derive(Debug, thiserror::Error)]
@@ -278,6 +348,28 @@ pub enum StoreError {
     RestageRefused {
         claim_key: usize,
         current: ClaimStatus,
+        spec: &'static str,
+    },
+
+    #[error(
+        "a review candidate pair must join two distinct claims \
+         (see {spec}, er_queue_entry)"
+    )]
+    InvalidReviewPair { spec: &'static str },
+
+    #[error(
+        "review resolution requires actor identity — resolutions without \
+         an actor are refused (see {spec}, er_human_resolution)"
+    )]
+    ReviewActorRequired { spec: &'static str },
+
+    #[error(
+        "review candidate ({from_claim}, {to_claim}) is not in `proposed`; a resolved \
+         candidate cannot resolve again (see {spec}, er_human_resolution)"
+    )]
+    ReviewNotProposed {
+        from_claim: usize,
+        to_claim: usize,
         spec: &'static str,
     },
 }
