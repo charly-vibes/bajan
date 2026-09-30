@@ -115,6 +115,17 @@ pub struct SupersessionRecord {
     pub superseded_at: u64,
 }
 
+/// Record for one explicit re-stage action (`ex_supersession`): the
+/// only path from a superseded claim back to `staged`, carrying the
+/// operator identity and timestamp — the human-owned counterpart of the
+/// tombstone, mirroring the adopt audit trail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestageRecord {
+    pub claim_key: usize,
+    pub actor: String,
+    pub restaged_at: u64,
+}
+
 /// An invalidation proposal staged by a candidate claim that conflicts
 /// with an existing active claim (`ex_mutation_proposal`): carries the
 /// causing-episode lineage; the active claim itself is never mutated by
@@ -255,6 +266,16 @@ pub enum StoreError {
          (see {spec}, gm_human_adopt)"
     )]
     AdoptRefused {
+        claim_key: usize,
+        current: ClaimStatus,
+        spec: &'static str,
+    },
+
+    #[error(
+        "claim {claim_key} is in status {current:?}; re-stage applies to superseded \
+         (tombstoned) claims only (see {spec}, ex_supersession)"
+    )]
+    RestageRefused {
         claim_key: usize,
         current: ClaimStatus,
         spec: &'static str,

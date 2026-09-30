@@ -124,11 +124,14 @@ pub struct GateRejection {
 /// zero-candidate episode is yet another class — legitimately extracted
 /// and cached as empty (`ex_typed_gate`) — and cannot arise in this
 /// slice: the deterministic proposer always proposes exactly one
-/// candidate.
+/// candidate. A version-bump re-extraction additionally tombstones the
+/// episode's prior-version `staged` claims (`ex_supersession`), counted
+/// in `superseded` — `active` and `rejected` claims are never touched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExtractReport {
     pub episodes_processed: usize,
     pub candidates_proposed: usize,
+    pub superseded: usize,
     pub gate_rejections: Vec<GateRejection>,
 }
 
@@ -184,10 +187,19 @@ pub fn run_extract(
     let mut report = ExtractReport {
         episodes_processed: pending.len(),
         candidates_proposed: 0,
+        superseded: 0,
         gate_rejections: Vec::new(),
     };
     for episode in &pending {
         let started_at = epoch_millis();
+        // Supersede first (`ex_supersession`): re-extracting this episode
+        // at a new version tombstones its prior-version `staged` claims
+        // regardless of the new candidate's gate outcome — the event is
+        // the re-extraction, not the candidate's acceptance. Same-version
+        // provenance inequality does the prior-version test, so a retry
+        // at the same version supersedes nothing.
+        let tombstoned = db.supersede_prior_versions(&episode.id, extractor_version, started_at)?;
+        report.superseded += tombstoned.len();
         let evidence = match &episode.locator {
             crate::ingest::Locator::Span(locator) => Evidence::Span {
                 text: episode.text.clone(),

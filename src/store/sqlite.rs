@@ -1,19 +1,23 @@
 //! Purpose: SQLite persistence of the claim graph as plain rows in a single
 //! embedded database (`gm_embedded_store`) — episodes, claim nodes, lineage
-//! edges, extraction-cache markers, and adoption audit records.
+//! edges, extraction-cache markers, adoption audit records, supersession
+//! tombstones, and re-stage records.
 //! Responsibilities: durable persistence; the dump/recreate round-trip
-//! (`p_embedded_store`); SQL-level adopt (`gm_human_adopt`); read-path
-//! error discipline (bajan-2sj) — every read maps failures to
-//! `StoreError::Sqlite` carrying the governing spec, so a corrupt store
-//! surfaces as an envelope, never a process panic.
+//! (`p_embedded_store`, tombstones included); SQL-level adopt
+//! (`gm_human_adopt`); SQL-level supersession and explicit re-stage
+//! (`ex_supersession`); read-path error discipline (bajan-2sj) — every
+//! read maps failures to `StoreError::Sqlite` carrying the governing
+//! spec, so a corrupt store surfaces as an envelope, never a process
+//! panic.
 //! Rationale: plain rows in one SQLite file, fully rebuildable from the
 //! episode stream plus extraction output — dump-then-recreate reproduces
 //! the graph exactly, so the store never becomes a second source of truth.
 
+use crate::extract::Reason;
 use crate::ingest::{EpisodeRecord, Locator};
 use crate::store::{
     AuditRecord, ClaimNode, ClaimStatus, EdgeLabel, Evidence, InvalidationProposal, Lineage,
-    StoreError, dropped_hedge_markers,
+    StoreError, SupersessionRecord, dropped_hedge_markers,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -69,6 +73,18 @@ CREATE TABLE IF NOT EXISTS invalidations (
     rowid_key INTEGER PRIMARY KEY AUTOINCREMENT,
     claim_key INTEGER NOT NULL,
     causing_episode_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS supersessions (
+    rowid_key INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_key INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    superseded_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS restages (
+    rowid_key INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_key INTEGER NOT NULL,
+    actor TEXT NOT NULL,
+    restaged_at INTEGER NOT NULL
 );
 ";
 
@@ -174,6 +190,11 @@ pub struct ExtractionDump {
     /// preserved.
     #[serde(default)]
     pub invalidations: Vec<InvalidationProposal>,
+    /// Supersession tombstones (`ex_supersession`), row order preserved:
+    /// without these a rebuild would lose the tombstone trail behind
+    /// rejected statuses (gm_embedded_store).
+    #[serde(default)]
+    pub supersessions: Vec<SupersessionRecord>,
 }
 
 /// One persisted edge in dump form: endpoints are claim keys, the label
@@ -497,6 +518,7 @@ impl SqliteStore {
         let extracted = self.extracted_pairs()?;
         let edges = self.edges()?;
         let invalidations = self.invalidations()?;
+        let supersessions = self.supersessions()?;
         Ok(ExtractionDump {
             claims,
             extracted,
@@ -509,6 +531,7 @@ impl SqliteStore {
                 })
                 .collect(),
             invalidations,
+            supersessions,
         })
     }
 
@@ -575,6 +598,9 @@ impl SqliteStore {
         }
         for proposal in &dump.invalidations {
             self.stage_invalidation_proposal(proposal.claim_key, &proposal.causing_episode_id)?;
+        }
+        for record in &dump.supersessions {
+            self.insert_supersession_row(record.claim_key, &record.reason, record.superseded_at)?;
         }
         Ok(())
     }
@@ -675,6 +701,161 @@ impl SqliteStore {
             });
         }
         Ok(out)
+    }
+
+    /// Supersede on version-bump re-extraction (`ex_supersession`), at
+    /// the SQL layer — the wired mirror of the in-memory `ClaimStore`
+    /// semantics: tombstones — moves to `rejected` — only this episode's
+    /// `staged` claims derived from extractor versions other than the
+    /// re-extract version, writing one supersession row per claim with
+    /// reason `superseded_by_reextraction`. `active` and `rejected`
+    /// claims (any episode, any version) and other episodes' claims are
+    /// never touched; lineage and evidence stay intact. Provenance
+    /// inequality is the honest prior-version test (the pipeline
+    /// re-extracts in version order). Returns the superseded keys in
+    /// stored row order.
+    pub fn supersede_prior_versions(
+        &self,
+        episode_id: &str,
+        extractor_version: &str,
+        superseded_at: u64,
+    ) -> Result<Vec<usize>, StoreError> {
+        let mut superseded = Vec::new();
+        for (claim_key, node, lineage) in self.claims_with_lineage()? {
+            let on_episode = lineage.iter().any(|l| l.episode_id == episode_id);
+            if !on_episode
+                || lineage
+                    .iter()
+                    .any(|l| l.extractor_version == extractor_version)
+            {
+                continue;
+            }
+            if node.status == ClaimStatus::Staged {
+                self.insert_supersession_row(
+                    claim_key,
+                    &Reason::SupersededByReextraction,
+                    superseded_at,
+                )?;
+                self.conn
+                    .execute(
+                        "UPDATE claims SET status = 'rejected' WHERE claim_key = ?1",
+                        params![claim_key as i64],
+                    )
+                    .map_err(sql_err)?;
+                superseded.push(claim_key);
+            }
+        }
+        Ok(superseded)
+    }
+
+    /// Supersession tombstone trail in insertion row order
+    /// (`ex_supersession`). A corrupted reason column is a store error,
+    /// never a panic (bajan-2sj).
+    pub fn supersessions(&self) -> Result<Vec<SupersessionRecord>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT claim_key, reason, superseded_at FROM supersessions ORDER BY rowid")
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            let claim_key = row.get::<_, i64>(0).map_err(sql_err)? as usize;
+            let reason_raw: String = row.get(1).map_err(sql_err)?;
+            let reason = serde_json::from_str(&reason_raw).map_err(|e| StoreError::Sqlite {
+                message: format!(
+                    "reason column decode failed for supersession of claim {claim_key}: {e}"
+                ),
+                spec: SPEC,
+            })?;
+            out.push(SupersessionRecord {
+                claim_key,
+                reason,
+                superseded_at: row.get::<_, i64>(2).map_err(sql_err)? as u64,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Persist one supersession tombstone row (used by supersession and
+    /// restore; the reason is stored as its serde encoding and decoded
+    /// strictly at read).
+    fn insert_supersession_row(
+        &self,
+        claim_key: usize,
+        reason: &Reason,
+        superseded_at: u64,
+    ) -> Result<(), StoreError> {
+        let reason_raw = serde_json::to_string(reason).map_err(|e| StoreError::Sqlite {
+            message: format!("reason encode failed for claim {claim_key}: {e}"),
+            spec: SPEC,
+        })?;
+        self.conn
+            .execute(
+                "INSERT INTO supersessions (claim_key, reason, superseded_at) \
+                 VALUES (?1, ?2, ?3)",
+                params![claim_key as i64, reason_raw, superseded_at as i64],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
+    /// Explicit re-stage (`ex_supersession`): the ONLY path from a
+    /// superseded claim back to `staged` — a claim is eligible only when
+    /// it is `rejected` AND carries a supersession tombstone. Staged,
+    /// active, and gate-refused (tombstone-less rejected) claims are
+    /// refused; unknown keys are refused. One restage record per action
+    /// carries actor identity and timestamp.
+    pub fn restage(
+        &self,
+        claim_key: usize,
+        actor: &str,
+        restaged_at: u64,
+    ) -> Result<(), StoreError> {
+        let current: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT status FROM claims WHERE claim_key = ?1",
+                params![claim_key as i64],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_err)?;
+        let current = match current {
+            None => return Err(StoreError::ClaimNotFound { claim_key }),
+            Some(status) => match status.as_str() {
+                "staged" => ClaimStatus::Staged,
+                "active" => ClaimStatus::Active,
+                _ => ClaimStatus::Rejected,
+            },
+        };
+        let tombstoned: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM supersessions WHERE claim_key = ?1",
+                params![claim_key as i64],
+                |row| row.get(0),
+            )
+            .map_err(sql_err)?;
+        if current != ClaimStatus::Rejected || tombstoned == 0 {
+            return Err(StoreError::RestageRefused {
+                claim_key,
+                current,
+                spec: SPEC,
+            });
+        }
+        self.conn
+            .execute(
+                "UPDATE claims SET status = 'staged' WHERE claim_key = ?1",
+                params![claim_key as i64],
+            )
+            .map_err(sql_err)?;
+        self.conn
+            .execute(
+                "INSERT INTO restages (claim_key, actor, restaged_at) VALUES (?1, ?2, ?3)",
+                params![claim_key as i64, actor, restaged_at as i64],
+            )
+            .map_err(sql_err)?;
+        Ok(())
     }
 
     fn claim_exists(&self, claim_key: usize) -> Result<bool, StoreError> {

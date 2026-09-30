@@ -16,8 +16,8 @@ pub mod sqlite;
 
 pub use nodes::{
     ClaimNode, ClaimStatus, EdgeLabel, Evidence, HEDGE_MARKERS, InvalidationProposal, Lineage,
-    MigrationReport, StoreError, SupersessionRecord, V1ClaimNode, collapse, dropped_hedge_markers,
-    migrate_v1_to_v2,
+    MigrationReport, RestageRecord, StoreError, SupersessionRecord, V1ClaimNode, collapse,
+    dropped_hedge_markers, migrate_v1_to_v2,
 };
 
 pub const SPEC: &str = "specs/graph-model.md";

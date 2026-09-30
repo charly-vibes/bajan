@@ -47,8 +47,19 @@ pub enum Command {
     /// Propose candidate claims from persisted episodes (deterministic
     /// single-call pass over pending episodes).
     Extract,
-    /// Resolve claim identity across versions (stub).
-    Resolve,
+    /// Resolve claim identity across versions (bajan-7q8): report every
+    /// persisted claim's lineage, status, supersession tombstones, and
+    /// staged invalidation proposals — or, with `--restage`, perform the
+    /// explicit human-only re-stage of one superseded claim back to
+    /// `staged` (`ex_supersession`: the only path back, never automated).
+    Resolve {
+        /// Re-stage this superseded claim (explicit human action).
+        #[arg(long)]
+        restage: Option<usize>,
+        /// Operator identity for --restage; defaults to $USER.
+        #[arg(long)]
+        actor: Option<String>,
+    },
     /// Search the persisted claim graph (first read command).
     Query {
         /// Text to search for (case-insensitive substring match).
@@ -94,12 +105,6 @@ pub enum Command {
 /// invariant they guard.
 #[derive(Debug, thiserror::Error)]
 pub enum BajanError {
-    #[error("{module} is not implemented in this scaffold (see {spec})")]
-    NotImplemented {
-        module: &'static str,
-        spec: &'static str,
-    },
-
     #[error("{0}")]
     Store(String),
 }
@@ -160,26 +165,11 @@ fn spec_error_envelope(
         .expect("envelope serialization cannot fail")
 }
 
-/// Convert a stub module result into an error envelope.
-fn stub_envelope(result: &Result<(), BajanError>) -> serde_json::Value {
-    let err = match result {
-        Ok(()) => unreachable!("scaffold stubs always fail; wire success only when implemented"),
-        Err(e) => e,
-    };
+/// Convert a pipeline error into its error envelope (bajan-cdi: no
+/// unreachable arm — every module returns real data, errors are the
+/// only thing this sees).
+fn stub_envelope(err: &BajanError) -> serde_json::Value {
     match err {
-        BajanError::NotImplemented { module, spec } => spec_error_envelope(
-            "not_implemented",
-            &format!("{module} is not implemented in this scaffold"),
-            Some(spec),
-            module,
-            vec![RemediationEntry {
-                command: format!("cat {spec}"),
-                description: format!(
-                    "Read the governing spec for {module}; implementation arrives via the \
-                     gated beads tickets (`bd ready`)."
-                ),
-            }],
-        ),
         BajanError::Store(message) => spec_error_envelope(
             "store_error",
             message,
@@ -193,6 +183,86 @@ fn stub_envelope(result: &Result<(), BajanError>) -> serde_json::Value {
             }],
         ),
     }
+}
+
+/// Envelope for the resolve command (bajan-7q8): either the identity
+/// report — every persisted claim's lineage, status, supersession
+/// tombstones, and staged invalidation proposals (`ex_supersession`,
+/// `ex_mutation_proposal`) — or, with `--restage`, the explicit
+/// human-only re-stage of one superseded claim back to `staged` (the
+/// only path back, never an automated one). Read-only without
+/// `--restage` (qt_readonly).
+fn resolve_envelope(
+    db_path: &str,
+    restage: Option<usize>,
+    actor: Option<&str>,
+) -> serde_json::Value {
+    let db = match crate::store::sqlite::SqliteStore::open(db_path) {
+        Ok(db) => db,
+        Err(err) => return stub_envelope(&BajanError::Store(err.to_string())),
+    };
+    resolve_with(&db, restage, actor)
+}
+
+/// The resolve envelope over an already-open store (testable seeding
+/// point).
+fn resolve_with(
+    db: &crate::store::sqlite::SqliteStore,
+    restage: Option<usize>,
+    actor: Option<&str>,
+) -> serde_json::Value {
+    match restage {
+        None => match resolve::resolve(db) {
+            Ok(report) => serde_json::to_value(Envelope::success(
+                env!("CARGO_PKG_VERSION"),
+                EnvelopeKind::Ok,
+                report,
+                vec![],
+                vec![],
+            ))
+            .expect("envelope serialization cannot fail"),
+            Err(err) => resolve_error_envelope(&err),
+        },
+        Some(claim_key) => {
+            let actor = actor
+                .map(str::to_string)
+                .or_else(|| std::env::var("USER").ok())
+                .unwrap_or_else(|| "unknown".to_string());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default();
+            match resolve::restage(db, claim_key, &actor, now) {
+                Ok(record) => serde_json::to_value(Envelope::success(
+                    env!("CARGO_PKG_VERSION"),
+                    EnvelopeKind::Ok,
+                    record,
+                    vec![],
+                    vec![],
+                ))
+                .expect("envelope serialization cannot fail"),
+                Err(err) => resolve_error_envelope(&err),
+            }
+        }
+    }
+}
+
+/// Error envelope for a refused or failed resolve (ex_supersession:
+/// re-stage applies to superseded tombstoned claims only).
+fn resolve_error_envelope(err: &BajanError) -> serde_json::Value {
+    spec_error_envelope(
+        "resolve_failed",
+        &err.to_string(),
+        Some(resolve::SPEC),
+        "resolve",
+        vec![RemediationEntry {
+            command: "bajan resolve".into(),
+            description: "Read the identity report first; only superseded (tombstoned) \
+                          rejected claims can be re-staged, and only through this \
+                          explicit action (ex_supersession)."
+                .into(),
+        }],
+    )
 }
 
 /// Envelope for the human accept path (`gm_human_adopt`), backed by the
@@ -304,7 +374,9 @@ pub fn run(command: Command, db_path: &str) -> String {
             ingest_stream_envelope(db_path, &input)
         }
         Command::Extract => extract_envelope(db_path),
-        Command::Resolve => stub_envelope(&resolve::run()),
+        Command::Resolve { restage, actor } => {
+            resolve_envelope(db_path, *restage, actor.as_deref())
+        }
         Command::Query {
             pattern,
             budget,
@@ -422,7 +494,7 @@ fn extract_with(db: &crate::store::sqlite::SqliteStore) -> serde_json::Value {
             vec![],
         ))
         .expect("envelope serialization cannot fail"),
-        Err(err) => stub_envelope(&Err(err)),
+        Err(err) => stub_envelope(&err),
     }
 }
 
@@ -464,7 +536,7 @@ fn query_with(
             vec![],
         ))
         .expect("envelope serialization cannot fail"),
-        Err(err) => stub_envelope(&Err(BajanError::Store(err.to_string()))),
+        Err(err) => stub_envelope(&BajanError::Store(err.to_string())),
     }
 }
 
@@ -496,7 +568,7 @@ fn contradict_with(
             vec![],
         ))
         .expect("envelope serialization cannot fail"),
-        Err(err) => stub_envelope(&Err(BajanError::Store(err.to_string()))),
+        Err(err) => stub_envelope(&BajanError::Store(err.to_string())),
     }
 }
 
@@ -901,8 +973,18 @@ mod tests {
     }
 
     #[test]
-    fn resolve_still_stub_errors_with_remediation() {
-        let v = envelope_of(Command::Resolve);
+    fn resolve_report_on_empty_store_is_an_honest_empty_read() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        let v = resolve_with(&db, None, None);
+        assert_eq!(v["ok"].as_bool(), Some(true));
+        assert_eq!(v["data"]["claims"].as_array().map(|a| a.len()), Some(0));
+        assert_eq!(v["data"]["superseded"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn resolve_restage_refusal_is_spec_traced_error_with_remediation() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        let v = resolve_with(&db, Some(7), Some("sasha"));
         assert_eq!(v["ok"].as_bool(), Some(false));
         assert_eq!(v["envelope_kind"].as_str(), Some("error"));
         assert_eq!(
@@ -911,6 +993,22 @@ mod tests {
         );
         let remediation = v["data"]["remediation"].as_array().unwrap();
         assert!(!remediation.is_empty(), "Invariant 3.2.5");
+    }
+
+    #[test]
+    fn resolve_cli_args_parse() {
+        let cli = Cli::try_parse_from(["bajan", "resolve"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Resolve { restage: None, .. }
+        ));
+        let cli = Cli::try_parse_from(["bajan", "resolve", "--restage", "3", "--actor", "sasha"])
+            .unwrap();
+        let Command::Resolve { restage, actor } = cli.command else {
+            panic!("expected resolve")
+        };
+        assert_eq!(restage, Some(3));
+        assert_eq!(actor.as_deref(), Some("sasha"));
     }
 
     #[test]
@@ -925,12 +1023,37 @@ mod tests {
     fn exit_code_is_zero_only_for_ok_envelopes() {
         // bajan-aan: exit status mirrors the envelope.
         assert_eq!(exit_code(&run(Command::Version, ":memory:")), 0);
-        assert_eq!(exit_code(&run(Command::Resolve, ":memory:")), 1);
+        assert_eq!(
+            exit_code(&run(
+                Command::Resolve {
+                    restage: None,
+                    actor: None
+                },
+                ":memory:"
+            )),
+            0
+        );
+        assert_eq!(
+            exit_code(&run(
+                Command::Resolve {
+                    restage: Some(7),
+                    actor: None
+                },
+                ":memory:"
+            )),
+            1
+        );
     }
 
     #[test]
     fn text_render_includes_remediation_hint() {
-        let text = render_text(&run(Command::Resolve, ":memory:"));
+        let text = render_text(&run(
+            Command::Resolve {
+                restage: Some(7),
+                actor: None,
+            },
+            ":memory:",
+        ));
         assert!(text.contains("error:"), "got: {text}");
         assert!(text.contains("specs/extraction-claims.md"), "got: {text}");
     }
