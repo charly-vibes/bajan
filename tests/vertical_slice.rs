@@ -357,8 +357,8 @@ proptest! {
 
         let mut runs_a = bajan::extract::ExtractionRunStore::default();
         let mut runs_b = bajan::extract::ExtractionRunStore::default();
-        bajan::extract::run_extract(&a, "0.1.0", &mut runs_a).expect("extract a");
-        bajan::extract::run_extract(&b, "0.1.0", &mut runs_b).expect("extract b");
+        bajan::extract::run_extract_versioned(&a, "0.1.0", &mut runs_a).expect("extract a");
+        bajan::extract::run_extract_versioned(&b, "0.1.0", &mut runs_b).expect("extract b");
 
         prop_assert_eq!(a.episodes().expect("episodes a"), b.episodes().expect("episodes b"));
         prop_assert_eq!(claims_multiset(&a), claims_multiset(&b));
@@ -378,7 +378,7 @@ fn end_to_end_ingest_extract_then_first_query() {
     ingest::persist(&db, &episode("ep-a", EPISODE_TEXT)).expect("persist");
 
     let mut runs = bajan::extract::ExtractionRunStore::default();
-    let report = bajan::extract::run_extract(&db, "0.1.0", &mut runs).expect("extract");
+    let report = bajan::extract::run_extract_versioned(&db, "0.1.0", &mut runs).expect("extract");
     assert_eq!(report.episodes_processed, 1);
     assert_eq!(report.candidates_proposed, 1, "one deterministic candidate");
     assert!(
@@ -401,7 +401,8 @@ fn end_to_end_ingest_extract_then_first_query() {
 
     // Same-version re-extract is a cache hit: no new work, no new claims.
     let mut again_runs = bajan::extract::ExtractionRunStore::default();
-    let again = bajan::extract::run_extract(&db, "0.1.0", &mut again_runs).expect("re-extract");
+    let again =
+        bajan::extract::run_extract_versioned(&db, "0.1.0", &mut again_runs).expect("re-extract");
     assert_eq!(again.episodes_processed, 0, "cache hit: no new work");
     assert_eq!(
         again_runs.rows().count(),
@@ -444,7 +445,7 @@ fn infrastructure_failure_propagates_and_episode_stays_retryable() {
     );
 
     let mut runs = bajan::extract::ExtractionRunStore::default();
-    let outcome = bajan::extract::run_extract(&db, "0.1.0", &mut runs);
+    let outcome = bajan::extract::run_extract_versioned(&db, "0.1.0", &mut runs);
     assert!(
         outcome.is_err(),
         "infrastructure failures propagate; they are never reported as gate rejections"
@@ -500,7 +501,7 @@ fn corrupt_store_reads_error_instead_of_panic() {
     // corrupt rows.
     let mut runs = bajan::extract::ExtractionRunStore::default();
     assert!(
-        bajan::extract::run_extract(&db, "0.1.0", &mut runs).is_err(),
+        bajan::extract::run_extract_versioned(&db, "0.1.0", &mut runs).is_err(),
         "extraction over a corrupt store errors, never panics"
     );
 

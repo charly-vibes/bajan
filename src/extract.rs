@@ -7,6 +7,7 @@
 //! implementation tickets.
 
 use crate::cli::BajanError;
+use crate::ingest::EpisodeRecord;
 use crate::store::{ClaimNode, Evidence, Lineage};
 use serde::{Deserialize, Serialize};
 
@@ -113,6 +114,58 @@ pub struct GateRejection {
     pub reason: Reason,
 }
 
+/// One candidate claim proposed by an extractor — exactly the fields an
+/// extractor may set: claim text, temporal bounds, and typed evidence.
+/// Status, scope, source type, data cutoff, and lineage are NOT the
+/// extractor's business — the pipeline projects them from the episode
+/// record and its configuration (`gm_schema_v2` stays closed; extractors
+/// never fabricate metadata they cannot know).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateClaim {
+    pub text: String,
+    pub valid_at: Option<String>,
+    pub invalid_at: Option<String>,
+    pub evidence: Evidence,
+}
+
+/// Why an extractor failed to propose for one episode.
+/// Infrastructure failures (network, auth, malformed provider response)
+/// are NOT gate rejections — they fail the run honestly (`ex_run_record`
+/// class separation, bajan-r1h discipline).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ExtractionFailure {
+    /// The extractor could not complete its call. Propagates — the run
+    /// fails; the episode stays pending and retryable.
+    #[error("extraction infrastructure failure: {0}")]
+    Infrastructure(String),
+}
+
+/// The extractor seam (bajan-9av): the boundary between persisted
+/// episodes and candidate proposals. `ex_single_call`/`ex_run_record`
+/// name the contract but not the implementation — this trait makes
+/// "the proposer differs, the contract does not" structural.
+///
+/// Implementors propose candidates for ONE episode per `propose` call;
+/// the pipeline (not the extractor) owns the gate, the cache, the
+/// run-row telemetry, supersession, and scope/lineage projection.
+/// A version bump (any change to `version()`) re-extracts every episode
+/// under the new key — the version is the cache identity.
+pub trait Extractor: std::fmt::Debug {
+    /// Cache-identity version of this extractor (`ex_single_call`:
+    /// the (episode id, extractor version) pair keys the cache).
+    fn version(&self) -> &str;
+    /// Model id when this extractor uses an LLM — lands verbatim on the
+    /// run rows (`ex_run_record`); `None` for deterministic extractors.
+    fn model_id(&self) -> Option<&str> {
+        None
+    }
+    /// Propose candidate claims for one episode. Batch semantics: the
+    /// returned set is staged all-or-nothing — one gate failure in the
+    /// batch refuses the whole episode's candidates (no partial
+    /// staging, per-episode gate outcome).
+    fn propose(&self, episode: &EpisodeRecord) -> Result<Vec<CandidateClaim>, ExtractionFailure>;
+}
+
 /// The vertical-slice extractor report: one deterministic single-call
 /// pass over pending episodes (`ex_single_call`), one candidate per
 /// episode, typed at the door by the gate (`ex_typed_gate`), cached per
@@ -138,7 +191,10 @@ pub struct ExtractReport {
 /// Classify a store refusal at the wired gate (bajan-r1h): a gate-level
 /// refusal maps to its machine-readable reason; an infrastructure
 /// failure (SQL) is never a gate rejection — it propagates and the run
-/// fails honestly instead of being swallowed into the report.
+/// fails honestly instead of being swallowed into the report. The wired
+/// path pre-validates batches (see run_extract_with); this classifier
+/// survives for run-row/test parity of the refusal taxonomy.
+#[allow(dead_code)]
 fn classify_refusal(err: &crate::store::StoreError) -> Result<Reason, BajanError> {
     match err {
         crate::store::StoreError::HedgeMarkerDropped { .. } => Ok(Reason::HedgeMarkerDropped),
@@ -154,36 +210,194 @@ fn epoch_millis() -> u64 {
         .unwrap_or(0)
 }
 
-/// Run the deterministic extraction pass over every persisted episode
-/// without extraction output cached at `extractor_version`, recording
-/// one run row per call into `runs` (`ex_run_record` — additive
-/// telemetry, never cache economics).
+/// The legacy deterministic proposer (bajan-9av default): the
+/// whole-episode-text candidate of the vertical slice, byte-stable with
+/// the pre-seam behavior — one candidate per pending episode, verbatim
+/// span evidence (locator from the episode record when derivable, typed
+/// absent marker otherwise). Deterministic: `model_id()` stays `None`
+/// and the version is carried by the caller's run context.
+#[derive(Debug)]
+struct LegacyProposer {
+    version: String,
+}
+
+impl Extractor for LegacyProposer {
+    fn version(&self) -> &str {
+        &self.version
+    }
+    fn propose(&self, episode: &EpisodeRecord) -> Result<Vec<CandidateClaim>, ExtractionFailure> {
+        let evidence = match &episode.locator {
+            crate::ingest::Locator::Span(locator) => Evidence::Span {
+                text: episode.text.clone(),
+                locator: locator.clone(),
+            },
+            crate::ingest::Locator::Absent => Evidence::Unknown,
+        };
+        Ok(vec![CandidateClaim {
+            text: episode.text.clone(),
+            valid_at: None,
+            invalid_at: None,
+            evidence,
+        }])
+    }
+}
+
+/// Extractor selection configuration (bajan-9av): which extractor runs,
+/// and its provider-agnostic LLM parameters. Provider-agnostic on
+/// purpose — base URL + model + API-key ENV VAR NAME (never the key
+/// itself in config); no provider SDK crates (anti-goal: heavyweight
+/// provider deps in bajan). Consumed by bajan-vg6's LLM extractor.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExtractorConfig {
+    /// Extractor kind: `legacy` (the deterministic whole-episode
+    /// proposer, the default) — `llm` selects the LLM extractor
+    /// (implemented by bajan-vg6).
+    pub kind: String,
+    /// Model id when kind = llm (e.g. `gpt-4o-mini`).
+    pub model_id: Option<String>,
+    /// OpenAI-compatible chat-completions base URL when kind = llm.
+    pub base_url: Option<String>,
+    /// NAME of the environment variable carrying the API key when
+    /// kind = llm — the key itself is read at call time, never stored
+    /// in config or envelopes.
+    pub api_key_env: Option<String>,
+}
+
+/// Machine-readable extractor-selection errors — envelope surface,
+/// never panics.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ExtractorConfigError {
+    /// Unknown BAJAN_EXTRACTOR kind.
+    #[error("unknown extractor kind: {kind}")]
+    UnknownKind { kind: String },
+    /// kind = llm selected but its required parameter is missing.
+    #[error("extractor llm requires {param}")]
+    MissingParam { param: &'static str },
+    /// The selected extractor is not implemented in this build — honest
+    /// gate until bajan-vg6 lands the LLM extractor.
+    #[error("extractor not available in this build: {kind}")]
+    NotImplemented { kind: String },
+}
+
+impl ExtractorConfig {
+    /// Parse the config from an injected environment lookup — pure and
+    /// race-free for tests; `from_env` wraps `std::env::var`.
+    pub fn from_env_with(lookup: &dyn Fn(&str) -> Option<String>) -> Self {
+        ExtractorConfig {
+            kind: lookup("BAJAN_EXTRACTOR").unwrap_or_else(|| "legacy".to_string()),
+            model_id: lookup("BAJAN_EXTRACTOR_MODEL"),
+            base_url: lookup("BAJAN_EXTRACTOR_BASE_URL"),
+            api_key_env: lookup("BAJAN_EXTRACTOR_API_KEY_ENV"),
+        }
+    }
+
+    /// Parse the config from the process environment.
+    pub fn from_env() -> Self {
+        Self::from_env_with(&|key| std::env::var(key).ok())
+    }
+
+    /// Validate + build the extractor for this configuration.
+    pub fn select(&self) -> Result<Box<dyn Extractor>, ExtractorConfigError> {
+        match self.kind.as_str() {
+            "legacy" => Ok(Box::new(LegacyProposer {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            })),
+            "llm" => {
+                // Validate the parameter surface now so misconfiguration
+                // fails at selection, not mid-run (bajan-vg6 consumes).
+                if self.model_id.is_none() {
+                    return Err(ExtractorConfigError::MissingParam {
+                        param: "BAJAN_EXTRACTOR_MODEL",
+                    });
+                }
+                if self.base_url.is_none() {
+                    return Err(ExtractorConfigError::MissingParam {
+                        param: "BAJAN_EXTRACTOR_BASE_URL",
+                    });
+                }
+                if self.api_key_env.is_none() {
+                    return Err(ExtractorConfigError::MissingParam {
+                        param: "BAJAN_EXTRACTOR_API_KEY_ENV",
+                    });
+                }
+                Err(ExtractorConfigError::NotImplemented {
+                    kind: self.kind.clone(),
+                })
+            }
+            other => Err(ExtractorConfigError::UnknownKind {
+                kind: other.to_string(),
+            }),
+        }
+    }
+}
+
+/// Run the extraction pass with the default (legacy deterministic)
+/// extractor over every persisted episode without extraction output
+/// cached at its version.
+pub fn run_extract(
+    db: &crate::store::sqlite::SqliteStore,
+    runs: &mut ExtractionRunStore,
+) -> Result<ExtractReport, BajanError> {
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    run_extract_with(db, &LegacyProposer { version }, runs)
+}
+
+/// Run the legacy deterministic proposer at an EXPLICIT version — the
+/// version-bump test surface: supersession and cache dynamics across
+/// versions are contract behavior independent of which extractor runs
+/// (`ex_single_call`, `ex_supersession`).
+pub fn run_extract_versioned(
+    db: &crate::store::sqlite::SqliteStore,
+    extractor_version: &str,
+    runs: &mut ExtractionRunStore,
+) -> Result<ExtractReport, BajanError> {
+    run_extract_with(
+        db,
+        &LegacyProposer {
+            version: extractor_version.to_string(),
+        },
+        runs,
+    )
+}
+
+/// Run an extractor's pass over every persisted episode without
+/// extraction output cached at the extractor's version, recording one
+/// run row per call into `runs` (`ex_run_record` — additive telemetry,
+/// never cache economics).
 ///
-/// Each pending episode yields one candidate: the whole episode text as
-/// the claim text with a verbatim-span evidence (locator from the episode
-/// record when derivable, typed absent marker otherwise). Candidates pass
-/// through the same typed gate + hedge-anchor persistence checks as any
-/// future LLM extractor — the proposer differs, the contract does not.
+/// Pipeline-owned responsibilities (the seam contract): the gate
+/// (containment + store-side hedge/schema checks), the cache (keyed on
+/// (episode id, extractor version)), supersession on version bumps,
+/// run-row telemetry with the extractor's model id, and the projection
+/// of scope/source-type/data-cutoff/lineage onto each candidate
+/// (`gm_schema_v2` stays closed — extractors never fabricate metadata).
+///
+/// Batch semantics (seam decision, all-or-nothing): one gate failure in
+/// an episode's candidate batch refuses the WHOLE episode's batch — no
+/// partial staging. A half-proposed episode is neither a claim set nor a
+/// rejection; it is a broken extraction.
 ///
 /// Caching policy (decided in bajan-r1h, honest): a gate-refused episode
 /// is NOT cached at this version — it stays pending and is retryable at
 /// the same version — and its refusal is recorded on the report and the
-/// run row with a machine-readable reason. Zero-candidate episodes
-/// (legitimately cached as empty per `ex_typed_gate`) cannot arise in
-/// this slice; infrastructure failures propagate as errors and are never
-/// reported as gate rejections.
+/// run row with a machine-readable reason. Zero-candidate episodes are
+/// legitimately extracted and cached as empty (`ex_typed_gate`);
+/// infrastructure failures propagate as errors and are never reported
+/// as gate rejections.
 ///
 /// CORR-001 (bajan-15i design note): when a future LLM extractor chunks
 /// input, chunking is *assembly for exactly one call* — chunks are
 /// concatenated into one multi-part prompt and the output is cached under
 /// the single (episode id, extractor version) key. Never one call per
 /// chunk (`ex_single_call`, specs/extraction-claims.md).
-pub fn run_extract(
+pub fn run_extract_with(
     db: &crate::store::sqlite::SqliteStore,
-    extractor_version: &str,
+    extractor: &dyn Extractor,
     runs: &mut ExtractionRunStore,
 ) -> Result<ExtractReport, BajanError> {
-    let pending = db.pending_episodes(extractor_version)?;
+    let extractor_version = extractor.version().to_string();
+    let model_id = extractor.model_id().map(|m| m.to_string());
+    let pending = db.pending_episodes(&extractor_version)?;
     let mut report = ExtractReport {
         episodes_processed: pending.len(),
         candidates_proposed: 0,
@@ -198,53 +412,82 @@ pub fn run_extract(
         // the re-extraction, not the candidate's acceptance. Same-version
         // provenance inequality does the prior-version test, so a retry
         // at the same version supersedes nothing.
-        let tombstoned = db.supersede_prior_versions(&episode.id, extractor_version, started_at)?;
+        let tombstoned =
+            db.supersede_prior_versions(&episode.id, &extractor_version, started_at)?;
         report.superseded += tombstoned.len();
-        let evidence = match &episode.locator {
-            crate::ingest::Locator::Span(locator) => Evidence::Span {
-                text: episode.text.clone(),
-                locator: locator.clone(),
-            },
-            crate::ingest::Locator::Absent => Evidence::Unknown,
-        };
-        let candidate = ClaimNode {
-            text: episode.text.clone(),
-            valid_at: None,
-            invalid_at: None,
-            data_cutoff: episode.source.data_cutoff.clone(),
-            status: crate::store::ClaimStatus::Staged,
-            // The slice scope: the episode's own workspace tags projected
-            // onto the proposed claim (ex_tag_inheritance refines later;
-            // untagged episodes stay unscoped rather than invented).
-            scope: episode
-                .source
-                .tags
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "workspace:unscoped".into()),
-            source_type: episode.source.source_type.clone(),
-            evidence,
-        };
+        // Propose through the seam. Infrastructure failures propagate —
+        // the run fails honestly; the episode stays pending and the
+        // failure is never misreported as a gate rejection.
+        let proposed = extractor
+            .propose(episode)
+            .map_err(|e| BajanError::Store(e.to_string()))?;
         let lineage = Lineage {
             episode_id: episode.id.clone(),
-            extractor_version: extractor_version.to_string(),
+            extractor_version: extractor_version.clone(),
         };
-        // Typed gate in the wired path: containment first
+        // Project every candidate into a full claim node — status, scope,
+        // source type, and data cutoff come from the episode record, never
+        // from the extractor.
+        let candidates: Vec<ClaimNode> = proposed
+            .into_iter()
+            .map(|c| ClaimNode {
+                text: c.text,
+                valid_at: c.valid_at,
+                invalid_at: c.invalid_at,
+                data_cutoff: episode.source.data_cutoff.clone(),
+                status: crate::store::ClaimStatus::Staged,
+                // The slice scope: the episode's own workspace tags
+                // projected onto the proposed claim (ex_tag_inheritance
+                // refines later; untagged episodes stay unscoped rather
+                // than invented).
+                scope: episode
+                    .source
+                    .tags
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "workspace:unscoped".into()),
+                source_type: episode.source.source_type.clone(),
+                evidence: c.evidence,
+            })
+            .collect();
+        // Typed gate, all-or-nothing: containment per candidate first
         // (`ex_evidence_containment`), then the store-side gate checks
-        // (hedge anchors, schema) at persistence. Refusals are classified;
+        // (hedge anchors, schema) at persistence. The store stages
+        // candidates one INSERT at a time, so all-or-nothing is enforced
+        // by pre-validating the whole batch BEFORE the first insert:
+        // containment here, hedge-marker survival here (same predicate
+        // the store applies at insert). Refusals are classified;
         // infrastructure failures propagate, never counted as refusals.
-        let outcome = match check_evidence_containment(&candidate.evidence, &episode.text) {
-            Err(reason) => Err(reason),
-            Ok(()) => match db.insert_claim(&candidate, &[lineage], &episode.text) {
-                Ok(_key) => Ok(()),
-                Err(err) => Err(classify_refusal(&err)?),
-            },
+        let mut batch_reason: Option<Reason> = None;
+        for candidate in &candidates {
+            if let Err(reason) = check_evidence_containment(&candidate.evidence, &episode.text) {
+                batch_reason = Some(reason);
+                break;
+            }
+            if let Evidence::Span { text, .. } = &candidate.evidence {
+                let dropped = crate::store::dropped_hedge_markers(text, &episode.text);
+                if !dropped.is_empty() {
+                    batch_reason = Some(Reason::HedgeMarkerDropped);
+                    break;
+                }
+            }
+        }
+        let outcome = match batch_reason {
+            Some(reason) => Err(reason),
+            None => {
+                // Pre-validated batch: insert all. A store error here is
+                // infrastructure (SQL), not a gate refusal — propagates.
+                for candidate in &candidates {
+                    db.insert_claim(candidate, std::slice::from_ref(&lineage), &episode.text)?;
+                }
+                Ok(())
+            }
         };
         let finished_at = epoch_millis();
         let finish = match outcome {
             Ok(()) => {
-                report.candidates_proposed += 1;
-                db.mark_extracted(&episode.id, extractor_version)?;
+                report.candidates_proposed += candidates.len();
+                db.mark_extracted(&episode.id, &extractor_version)?;
                 Finish::Succeeded
             }
             Err(reason) => {
@@ -259,8 +502,8 @@ pub fn run_extract(
         };
         runs.record(ExtractionRun {
             episode_id: episode.id.clone(),
-            extractor_version: extractor_version.to_string(),
-            model_id: None,
+            extractor_version: extractor_version.clone(),
+            model_id: model_id.clone(),
             started_at,
             finished_at,
             finish,

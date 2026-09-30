@@ -709,11 +709,32 @@ fn extract_envelope(db_path: &str) -> serde_json::Value {
 
 /// The extraction envelope over an already-open store (testable).
 fn extract_with(db: &crate::store::sqlite::SqliteStore) -> serde_json::Value {
+    // Extractor selection from the environment (bajan-9av): misconfig
+    // fails at selection with a machine-readable spec error envelope —
+    // never mid-run.
+    let config = extract::ExtractorConfig::from_env();
+    let extractor = match config.select() {
+        Ok(extractor) => extractor,
+        Err(err) => {
+            return spec_error_envelope(
+                "extractor_config",
+                &err.to_string(),
+                Some("specs/extraction-claims.md"),
+                "extract",
+                vec![RemediationEntry {
+                    command: "BAJAN_EXTRACTOR=legacy bajan extract".into(),
+                    description: "Select the default deterministic extractor (legacy is the \
+                                  default; the llm extractor arrives with bajan-vg6)."
+                        .into(),
+                }],
+            );
+        }
+    };
     // Run-record telemetry for this invocation (`ex_run_record`): one row
-    // per extraction call, recorded by run_extract. Rows are per-process
-    // here; durable run-row persistence is future work.
+    // per extraction call, recorded by run_extract_with. Rows are
+    // per-process here; durable run-row persistence is future work.
     let mut runs = extract::ExtractionRunStore::default();
-    match extract::run_extract(db, env!("CARGO_PKG_VERSION"), &mut runs) {
+    match extract::run_extract_with(db, extractor.as_ref(), &mut runs) {
         Ok(report) => serde_json::to_value(Envelope::success(
             env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,

@@ -89,7 +89,8 @@ fn version_bump_supersedes_only_prior_version_staged_claims() {
     let other = seed(&db, "ep-b", "beta claim text", V1, ClaimStatus::Staged);
     db.mark_extracted("ep-b", V2).expect("cache marker");
 
-    let report = extract::run_extract(&db, V2, &mut Default::default()).expect("extract v2");
+    let report =
+        extract::run_extract_versioned(&db, V2, &mut Default::default()).expect("extract v2");
     assert_eq!(
         report.superseded, 1,
         "only the ep-a prior-version staged claim"
@@ -126,11 +127,11 @@ fn same_version_reextract_supersedes_nothing() {
     let ep = episode("ep-a", "alpha claim text");
     bajan::ingest::persist(&db, &ep).expect("persist");
 
-    extract::run_extract(&db, V1, &mut Default::default()).expect("extract v1");
+    extract::run_extract_versioned(&db, V1, &mut Default::default()).expect("extract v1");
     assert!(db.supersessions().expect("read").is_empty());
     assert_eq!(db.claims_with_lineage().expect("read").len(), 1);
 
-    extract::run_extract(&db, V1, &mut Default::default()).expect("re-extract v1");
+    extract::run_extract_versioned(&db, V1, &mut Default::default()).expect("re-extract v1");
     assert!(db.supersessions().expect("read").is_empty());
     assert_eq!(db.claims_with_lineage().expect("read").len(), 1);
 }
@@ -142,16 +143,16 @@ fn same_version_reextract_supersedes_nothing() {
 fn no_automated_recovery_of_superseded_claims() {
     let db = SqliteStore::open_in_memory().expect("open");
     let staged = seed(&db, "ep-a", "alpha claim text", V1, ClaimStatus::Staged);
-    extract::run_extract(&db, V2, &mut Default::default()).expect("extract v2");
+    extract::run_extract_versioned(&db, V2, &mut Default::default()).expect("extract v2");
     assert_eq!(status_of(&db, staged), ClaimStatus::Rejected);
 
     // Cache hit: nothing happens at all.
-    extract::run_extract(&db, V2, &mut Default::default()).expect("re-extract v2");
+    extract::run_extract_versioned(&db, V2, &mut Default::default()).expect("re-extract v2");
     assert_eq!(status_of(&db, staged), ClaimStatus::Rejected);
 
     // A further bump tombstones the (staged) v2 claim; the v1 tombstone
     // is never revived by it.
-    extract::run_extract(&db, "0.3.0", &mut Default::default()).expect("extract v3");
+    extract::run_extract_versioned(&db, "0.3.0", &mut Default::default()).expect("extract v3");
     assert_eq!(status_of(&db, staged), ClaimStatus::Rejected);
     assert!(
         db.supersessions()
@@ -169,7 +170,7 @@ fn report_joins_lineage_tombstones_and_proposals() {
     let db = SqliteStore::open_in_memory().expect("open");
     let staged = seed(&db, "ep-a", "alpha claim text", V1, ClaimStatus::Staged);
     let active = seed(&db, "ep-a", "alpha active text", V1, ClaimStatus::Active);
-    extract::run_extract(&db, V2, &mut Default::default()).expect("extract v2");
+    extract::run_extract_versioned(&db, V2, &mut Default::default()).expect("extract v2");
     db.stage_invalidation_proposal(active, "ep-new")
         .expect("proposal");
 
@@ -217,7 +218,7 @@ fn report_joins_lineage_tombstones_and_proposals() {
 fn explicit_restage_moves_superseded_claim_back_to_staged() {
     let db = SqliteStore::open_in_memory().expect("open");
     let staged = seed(&db, "ep-a", "alpha claim text", V1, ClaimStatus::Staged);
-    extract::run_extract(&db, V2, &mut Default::default()).expect("extract v2");
+    extract::run_extract_versioned(&db, V2, &mut Default::default()).expect("extract v2");
     assert_eq!(status_of(&db, staged), ClaimStatus::Rejected);
 
     let record = resolve::restage(&db, staged, "sasha", 1_000).expect("restage");
@@ -279,7 +280,7 @@ fn restage_refused_without_tombstone() {
 fn dump_recreate_preserves_supersession_tombstones() {
     let db = SqliteStore::open_in_memory().expect("open");
     let staged = seed(&db, "ep-a", "alpha claim text", V1, ClaimStatus::Staged);
-    extract::run_extract(&db, V2, &mut Default::default()).expect("extract v2");
+    extract::run_extract_versioned(&db, V2, &mut Default::default()).expect("extract v2");
 
     let dump = db.dump_extraction_output().expect("dump");
     let fresh = SqliteStore::open_in_memory().expect("open");
@@ -317,7 +318,7 @@ proptest! {
             kept_keys.push(active);
         }
 
-        extract::run_extract(&db, V2, &mut Default::default()).expect("extract v2");
+        extract::run_extract_versioned(&db, V2, &mut Default::default()).expect("extract v2");
 
         for key in &staged_keys {
             prop_assert_eq!(status_of(&db, *key), ClaimStatus::Rejected);
