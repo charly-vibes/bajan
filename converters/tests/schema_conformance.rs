@@ -827,3 +827,117 @@ fn pdf_corrupt_input_fails_honestly() {
         bajan_converters::pdf_episodes(b"this is not a pdf").expect_err("corrupt input must error");
     assert!(!err.is_empty());
 }
+
+// --- RO5U round-2 fixes (bajan-87z, bajan-80x, bajan-8cg) ------------------
+
+/// PDF with a dangling object reference: the font object is referenced by
+/// /Resources but absent from the body — pdf-extract PANICS on this class
+/// (missing object reference), so pdf_episodes must catch the panic and
+/// return an honest error instead (bajan-87z). Before the fix this test
+/// aborts the runner.
+#[test]
+fn pdf_dangling_object_reference_is_error_not_panic() {
+    let content1 = b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET";
+    let mut objects: Vec<Vec<u8>> = vec![Vec::new()];
+    objects.push(b"<< /Type /Catalog /Pages 2 0 R >>".to_vec());
+    objects.push(b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec());
+    objects.push(
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_vec(),
+    );
+    let mut content = format!("<< /Length {} >>\nstream\n", content1.len()).into_bytes();
+    content.extend_from_slice(content1);
+    content.extend_from_slice(b"\nendstream");
+    objects.push(content);
+    // Object 5 (the font) deliberately absent from the body AND the xref.
+    let mut out: Vec<u8> = b"%PDF-1.4\n".to_vec();
+    let mut offsets = vec![0u32; objects.len()];
+    for (num, body) in objects.iter().enumerate().skip(1) {
+        offsets[num] = out.len() as u32;
+        out.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref_pos = out.len() as u32;
+    out.extend_from_slice(format!("xref\n0 {}\n", objects.len()).as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in &offsets[1..] {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            objects.len(),
+            xref_pos
+        )
+        .as_bytes(),
+    );
+
+    let err = bajan_converters::pdf_episodes(&out).expect_err("dangling ref must error");
+    assert!(!err.is_empty());
+}
+
+/// A chapter with invalid UTF-8 bytes (a valid EPUB 2 windows-1252 book)
+/// must never be SILENTLY dropped: the text survives with U+FFFD marks on
+/// the record (bajan-80x), or the whole conversion errors — never a
+/// silently shorter stream.
+#[test]
+fn epub_non_utf8_chapter_is_marked_not_silent() {
+    // Rebuild a two-chapter book directly: c2 carries raw latin-1 bytes.
+    let mut z = ZipBuilder::new();
+    z.add("mimetype", b"application/epub+zip");
+    z.add(
+        "META-INF/container.xml",
+        b"<?xml version=\"1.0\"?><container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\"><rootfiles><rootfile full-path=\"content.opf\" media-type=\"application/oebps-package+xml\"/></rootfiles></container>",
+    );
+    z.add(
+        "content.opf",
+        b"<?xml version=\"1.0\"?><package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"uid\"><metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:identifier id=\"uid\">u</dc:identifier><dc:title>Bad Enc</dc:title><dc:language>en</dc:language></metadata><manifest><item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/><item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/><item id=\"c2\" href=\"c2.xhtml\" media-type=\"application/xhtml+xml\"/></manifest><spine><itemref idref=\"c1\"/><itemref idref=\"c2\"/></spine></package>",
+    );
+    z.add(
+        "nav.xhtml",
+        b"<?xml version=\"1.0\"?><html xmlns=\"http://www.w3.org/1999/xhtml\"><body><nav epub:type=\"toc\" xmlns:epub=\"http://www.idpf.org/2007/ops\"><ol><li><a href=\"c1.xhtml\">Alpha</a></li><li><a href=\"c2.xhtml\">Beta</a></li></ol></nav></body></html>",
+    );
+    z.add(
+        "c1.xhtml",
+        xhtml("A", "<h1>Alpha</h1><p>Fine chapter.</p>").as_bytes(),
+    );
+    let mut ch2 = b"<?xml version=\"1.0\"?><html xmlns=\"http://www.w3.org/1999/xhtml\"><body><h1>Beta</h1><p>caf".to_vec();
+    ch2.push(0xE9); // latin-1 'é' — invalid UTF-8
+    ch2.extend_from_slice(b" r\xE9sum\xE9.</p></body></html>");
+    z.add("c2.xhtml", &ch2);
+    let bytes = z.finish();
+
+    let eps = bajan_converters::epub_episodes(&bytes).expect("converts");
+    assert_eq!(
+        eps.len(),
+        2,
+        "both chapters must appear: {:?}",
+        eps.iter().map(|e| &e.id).collect::<Vec<_>>()
+    );
+    let beta = &eps[1];
+    assert!(
+        beta.text.contains("caf\u{FFFD}"),
+        "damage must be marked on the record, got {:?}",
+        beta.text
+    );
+}
+
+/// civil_date validates month length: Feb 30 impossible, Feb 29 only in
+/// leap years, Apr 31 impossible (bajan-8cg). Exercised through dc:date.
+#[test]
+fn civil_date_month_length_enforced() {
+    for (date, expected) in [
+        ("2023-02-30", None),
+        ("2024-02-29", Some("2024-02-29")),
+        ("2023-02-29", None),
+        ("2023-04-31", None),
+        ("2000-02-29", Some("2000-02-29")), // divisible by 400 → leap
+        ("1900-02-29", None),               // divisible by 100 but not 400
+        ("2023-12-31", Some("2023-12-31")),
+    ] {
+        let bytes = build_fixture_epub(date);
+        let eps = bajan_converters::epub_episodes(&bytes).expect("converts");
+        let got = eps[0].source.data_cutoff.clone();
+        assert_eq!(got, expected.map(str::to_string), "dc:date {date}");
+    }
+}

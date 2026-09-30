@@ -237,8 +237,10 @@ fn is_block_container(name: &str) -> bool {
 }
 
 /// Parse a civil date (YYYY-MM-DD) strictly: two-digit month 01-12 and
-/// two-digit day 01-31 at the exact positions. Anything else (natural
-/// language dates, year-only, extra text) is not a civil date — the caller
+/// a day that exists in that month — including the February rule (28,
+/// 29 only in leap years: divisible by 4, except centuries unless by
+/// 400). Anything else (natural language dates, year-only, extra text,
+/// or impossible dates like 2023-02-30) is not a civil date — the caller
 /// leaves data_cutoff absent (ic_date_fidelity: never invent a date).
 fn civil_date(s: &str) -> Option<String> {
     let b = s.as_bytes();
@@ -249,13 +251,34 @@ fn civil_date(s: &str) -> Option<String> {
     if !(digits(&b[0..4]) && digits(&b[5..7]) && digits(&b[8..10])) {
         return None;
     }
+    let year = (b[0] - b'0') as i64 * 1000
+        + (b[1] - b'0') as i64 * 100
+        + (b[2] - b'0') as i64 * 10
+        + (b[3] - b'0') as i64;
     let month = (b[5] - b'0') as u16 * 10 + (b[6] - b'0') as u16;
     let day = (b[8] - b'0') as u16 * 10 + (b[9] - b'0') as u16;
-    if (1..=12).contains(&month) && (1..=31).contains(&day) {
-        Some(s.to_string())
-    } else {
-        None
+    if !(1..=12).contains(&month) {
+        return None;
     }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let month_len: [u16; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if !(1..=month_len[(month - 1) as usize]).contains(&day) {
+        return None;
+    }
+    Some(s.to_string())
 }
 
 /// Append the element's descendant text, skipping subtrees matched by
@@ -544,10 +567,14 @@ pub fn epub_episodes(input: &[u8]) -> Result<Vec<EpisodeRecord>, String> {
             .and_then(|r| r.properties.as_deref())
             .is_some_and(|p| p.split_ascii_whitespace().any(|t| t == "nav"))
             || mime.contains("dtbncx");
-        if !is_nav
-            && let Some(path) = doc.get_current_path()
-            && let Ok(html) = std::string::String::from_utf8(bytes)
-        {
+        if !is_nav && let Some(path) = doc.get_current_path() {
+            // Chapters are decoded LOSSY, never gated on validity: a
+            // non-UTF-8 chapter (a valid EPUB 2 windows-1252 book) must
+            // appear in the stream with U+FFFD marks on the record —
+            // silent content loss is the one forbidden outcome
+            // (bajan-80x). html5ever handles the surrounding document
+            // fine; only the undecodable bytes are replaced.
+            let html = String::from_utf8_lossy(&bytes).into_owned();
             // Reuse the HTML mapping rules verbatim per spine document;
             // join the chapter's non-empty segments into one episode text.
             let paras: Vec<String> = html_segments(&html)
@@ -616,7 +643,28 @@ pub const PDF_EXTRACTOR_VERSION: &str = "0.12.1";
 /// tags carry the extractor-version entry (see PDF_EXTRACTOR). Corruption
 /// errors honestly — never a partial or garbage stream.
 pub fn pdf_episodes(input: &[u8]) -> Result<Vec<EpisodeRecord>, String> {
-    let pages = pdf_extract::extract_text_from_mem_by_pages(input)
+    // pdf-extract panics (not Err) on some malformed-but-parseable PDFs —
+    // e.g. a manifest object referenced but absent from the body — so the
+    // panic is caught and surfaced as the same honest error class
+    // (bajan-87z): an Err, never an abort and never a partial stream. The
+    // default panic hook is suppressed for the call scope (and restored
+    // after) so the abort report does not masquerade as a second failure —
+    // the diagnostic travels in the returned Err instead.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let extracted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pdf_extract::extract_text_from_mem_by_pages(input)
+    }));
+    std::panic::set_hook(prev_hook);
+    let pages = extracted
+        .map_err(|payload| {
+            let detail = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "pdf extractor panicked".to_string());
+            format!("failed to extract PDF text: {detail}")
+        })?
         .map_err(|e| format!("failed to extract PDF text: {e:?}"))?;
 
     let extractor_tag = format!("pdf-extractor:{PDF_EXTRACTOR}-{PDF_EXTRACTOR_VERSION}");
