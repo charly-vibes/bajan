@@ -15,7 +15,7 @@ pub mod nodes;
 pub mod sqlite;
 
 pub use nodes::{
-    ClaimNode, ClaimStatus, Evidence, HEDGE_MARKERS, InvalidationProposal, Lineage,
+    ClaimNode, ClaimStatus, EdgeLabel, Evidence, HEDGE_MARKERS, InvalidationProposal, Lineage,
     MigrationReport, StoreError, SupersessionRecord, V1ClaimNode, collapse, dropped_hedge_markers,
     migrate_v1_to_v2,
 };

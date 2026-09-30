@@ -63,6 +63,17 @@ pub enum Command {
         #[arg(long = "scope", value_delimiter = ',')]
         scope: Vec<String>,
     },
+    /// Report contradict pairs and staged invalidation proposals over the
+    /// given claims (graph structure only, never adjudicated).
+    Contradict {
+        /// Claim keys to run the contradiction traversal over (at least
+        /// one — a no-op read must not report success).
+        #[arg(num_args = 1.., required = true)]
+        claims: Vec<usize>,
+        /// Bounded-traversal budget: maximum walked edges.
+        #[arg(long, default_value_t = 256)]
+        budget: usize,
+    },
     /// Human accept action: move staged claims to active (one audit record
     /// per claim).
     Adopt {
@@ -299,6 +310,7 @@ pub fn run(command: Command, db_path: &str) -> String {
             budget,
             scope,
         } => query_envelope(db_path, pattern, *budget, scope),
+        Command::Contradict { claims, budget } => contradict_envelope(db_path, claims, *budget),
         Command::Adopt { claims, actor } => adopt_envelope(db_path, claims, actor.as_deref()),
     };
     serde_json::to_string(&value).expect("envelope serialization cannot fail")
@@ -444,6 +456,38 @@ fn query_with(
         query::search_scoped(db, pattern, budget, scope)
     };
     match result {
+        Ok(result) => serde_json::to_value(Envelope::success(
+            env!("CARGO_PKG_VERSION"),
+            EnvelopeKind::Ok,
+            result,
+            vec![],
+            vec![],
+        ))
+        .expect("envelope serialization cannot fail"),
+        Err(err) => stub_envelope(&Err(BajanError::Store(err.to_string()))),
+    }
+}
+
+/// Run the contradiction read and emit the result record
+/// (qt_contradiction_query: contradicts pairs plus staged invalidation
+/// proposals over the queried claims — graph structure only, never
+/// adjudicated).
+fn contradict_envelope(db_path: &str, claims: &[usize], budget: usize) -> serde_json::Value {
+    let db = match command_store(db_path) {
+        Ok(db) => db,
+        Err(value) => return value,
+    };
+    contradict_with(&db, claims, budget)
+}
+
+/// The contradiction envelope over an already-open store (testable
+/// seeding point).
+fn contradict_with(
+    db: &crate::store::sqlite::SqliteStore,
+    claims: &[usize],
+    budget: usize,
+) -> serde_json::Value {
+    match query::contradictions(db, claims, budget) {
         Ok(result) => serde_json::to_value(Envelope::success(
             env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,
@@ -742,6 +786,53 @@ mod tests {
             panic!("expected the query subcommand");
         };
         assert_eq!(scope.len(), 3);
+    }
+
+    // qt_contradiction_query at the CLI layer: `bajan contradict` returns
+    // exactly the contradicts edges plus staged proposals over the queried
+    // claims — structure only, statuses verbatim, no verdict field.
+    #[test]
+    fn contradict_subcommand_reports_pairs_and_proposals() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        ingest_with(&db, &stream_json());
+        extract_with(&db);
+        let (node, lineage) = staged_seed_node();
+        db.insert_claim(
+            &node,
+            &[lineage],
+            "The parser resolves spans deterministically.",
+        )
+        .unwrap();
+        // Claim 0 (from extract) contradicts claim 1 (seeded above);
+        // a proposal is staged against claim 1.
+        db.insert_edge(0, crate::store::EdgeLabel::Contradicts, 1)
+            .unwrap();
+        db.stage_invalidation_proposal(1, "ep-seed").unwrap();
+
+        let v = contradict_with(&db, &[0], 16);
+        assert_eq!(v["ok"].as_bool(), Some(true), "{v}");
+        let pairs = v["data"]["pairs"].as_array().unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0]["from"]["claim_key"], 0);
+        assert_eq!(pairs[0]["to"]["claim_key"], 1);
+        assert_eq!(pairs[0]["to"]["status"], "staged");
+        assert_eq!(pairs[0]["to"]["episodes"][0], "ep-seed");
+        // The proposal is against an unqueried claim here — not reported.
+        assert_eq!(v["data"]["proposals"].as_array().map(Vec::len), Some(0));
+
+        let v = contradict_with(&db, &[1], 16);
+        let proposals = v["data"]["proposals"].as_array().unwrap();
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0]["causing_episode_id"], "ep-seed");
+
+        // The subcommand parses with multiple claim keys and --budget.
+        let cli = Cli::try_parse_from(["bajan", "contradict", "0", "1", "--budget", "8"])
+            .expect("contradict parses");
+        let Command::Contradict { claims, budget } = cli.command else {
+            panic!("expected the contradict subcommand");
+        };
+        assert_eq!(claims, vec![0, 1]);
+        assert_eq!(budget, 8);
     }
 
     // ic_batch_duplicate: within one stream the first occurrence persists,

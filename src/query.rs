@@ -15,7 +15,9 @@
 //! projection — the union of the supporting episodes' tag sets via the
 //! lineage walk (`ex_tag_inheritance`) — intersects the requested scope;
 //! out-of-scope claims are excluded, never silently blended (WR-SCOPE.1).
-//! The contradiction query arrives with its own ticket.
+//! The contradiction query traverses `contradicts` edges plus staged
+//! invalidation proposals — graph structure only, never adjudicated
+//! (`qt_contradiction_query`).
 
 use crate::store::ClaimStatus;
 use crate::store::sqlite::SqliteStore;
@@ -329,6 +331,160 @@ fn search_inner(
 #[derive(Debug, thiserror::Error)]
 #[error("query failed: {0}")]
 pub struct BajanQueryError(pub String);
+
+/// One side of a contradiction pair (`qt_contradiction_query`): the
+/// claim, its stored status verbatim, and the persisted episodes its
+/// lineage resolves to (`qt_lineage_traceable`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ContradictionSide {
+    pub claim_key: usize,
+    pub text: String,
+    pub status: ClaimStatus,
+    /// Persisted episodes reachable through the claim's lineage edges.
+    pub episodes: Vec<String>,
+}
+
+/// A pair joined by a `contradicts` edge (`qt_contradiction_query`):
+/// both sides carried with their lineage and status — graph structure
+/// only, never adjudicated (the query has no verdict field).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ContradictionPair {
+    /// The claim the edge is stored from.
+    pub from: ContradictionSide,
+    /// The claim the edge points to.
+    pub to: ContradictionSide,
+}
+
+/// A staged invalidation proposal against a queried claim
+/// (`qt_contradiction_query` per `ex_mutation_proposal`): reported with
+/// the claim's lineage and status — never resolved by the query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StagedInvalidation {
+    pub claim_key: usize,
+    pub text: String,
+    pub status: ClaimStatus,
+    pub episodes: Vec<String>,
+    pub causing_episode_id: String,
+}
+
+/// A contradiction answer (`qt_contradiction_query`): the typed traversal
+/// outcome, the contradict pairs over the queried claims, and the staged
+/// invalidation proposals against them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ContradictionResult {
+    /// Typed traversal outcome (`qt_bounded_traversal`): the edge walk is
+    /// bounded; `budget-exhausted` when edges remained unwalked.
+    pub status: BudgetStatus,
+    pub pairs: Vec<ContradictionPair>,
+    pub proposals: Vec<StagedInvalidation>,
+}
+
+/// Contradiction read (`qt_contradiction_query`): over the claims in
+/// `claim_keys`, return exactly the `contradicts` edges joining queried
+/// claims (either direction — the edge joins the pair) plus the staged
+/// invalidation proposals against them, each hit carrying both sides'
+/// lineage and status. The query reports graph structure only and never
+/// adjudicates which side is true. Sides whose lineage reaches no
+/// persisted episode are invisible (`qt_lineage_traceable`) — a pair
+/// over a lineage-broken claim is not returned. The edge walk visits
+/// edges in stored row order under `budget` (`qt_bounded_traversal`):
+/// when the budget stops the walk with edges remaining the answer is
+/// `budget-exhausted`; a completed walk reports `complete` — and an
+/// unconnected queried claim produces no hits, honestly. Reads never
+/// write (`qt_readonly`).
+pub fn contradictions(
+    db: &SqliteStore,
+    claim_keys: &[usize],
+    budget: usize,
+) -> Result<ContradictionResult, BajanQueryError> {
+    let episodes: Vec<crate::ingest::EpisodeRecord> =
+        db.episodes().map_err(|e| BajanQueryError(e.to_string()))?;
+    let persisted: Vec<String> = {
+        let mut ids: Vec<String> = episodes.iter().map(|e| e.id.clone()).collect();
+        ids.sort();
+        ids
+    };
+    // Resolve each claim once: node + persisted lineage episodes.
+    let mut sides: std::collections::HashMap<usize, ContradictionSide> =
+        std::collections::HashMap::new();
+    for (claim_key, node, lineage) in db
+        .claims_with_lineage()
+        .map_err(|e| BajanQueryError(e.to_string()))?
+    {
+        let eps: Vec<String> = lineage
+            .iter()
+            .filter(|edge| persisted.binary_search(&edge.episode_id).is_ok())
+            .map(|edge| edge.episode_id.clone())
+            .collect();
+        sides.insert(
+            claim_key,
+            ContradictionSide {
+                claim_key,
+                text: node.text,
+                status: node.status,
+                episodes: eps,
+            },
+        );
+    }
+    let side_of = |key: usize| -> Option<ContradictionSide> {
+        sides.get(&key).filter(|s| !s.episodes.is_empty()).cloned()
+    };
+    let queried = |key: &usize| claim_keys.contains(key);
+
+    // qt_bounded_traversal: bounded edge walk in stored row order.
+    let edges = db.edges().map_err(|e| BajanQueryError(e.to_string()))?;
+    let mut pairs = Vec::new();
+    let mut truncated = false;
+    for (walked, (from, label, to)) in edges.iter().enumerate() {
+        if walked >= budget {
+            truncated = true;
+            break;
+        }
+        if *label != crate::store::EdgeLabel::Contradicts {
+            continue;
+        }
+        if !(queried(from) || queried(to)) {
+            continue;
+        }
+        // qt_lineage_traceable: both sides must resolve to persisted
+        // episodes; a lineage-broken side hides the pair.
+        let (Some(from_side), Some(to_side)) = (side_of(*from), side_of(*to)) else {
+            continue;
+        };
+        pairs.push(ContradictionPair {
+            from: from_side,
+            to: to_side,
+        });
+    }
+
+    let proposals = db
+        .invalidations()
+        .map_err(|e| BajanQueryError(e.to_string()))?
+        .into_iter()
+        .filter(|p| queried(&p.claim_key))
+        .filter_map(|p| {
+            let side = side_of(p.claim_key)?;
+            Some(StagedInvalidation {
+                claim_key: p.claim_key,
+                text: side.text,
+                status: side.status,
+                episodes: side.episodes,
+                causing_episode_id: p.causing_episode_id,
+            })
+        })
+        .collect();
+
+    let status = if truncated {
+        BudgetStatus::BudgetExhausted
+    } else {
+        BudgetStatus::Complete
+    };
+    Ok(ContradictionResult {
+        status,
+        pairs,
+        proposals,
+    })
+}
 
 #[cfg(test)]
 mod tests {

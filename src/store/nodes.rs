@@ -36,6 +36,21 @@ pub enum ClaimStatus {
     Rejected,
 }
 
+/// A typed claim-relation edge (`gm_relation_typing` extension point):
+/// the published vocabulary — `mentions`, `contradicts`, `supports`,
+/// `derived_from`, `possible_duplicate_of`. The typed enum makes an
+/// out-of-vocabulary label unrepresentable (`p_relation_typing`); edges
+/// persist as plain rows joining two persisted claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeLabel {
+    Mentions,
+    Contradicts,
+    Supports,
+    DerivedFrom,
+    PossibleDuplicateOf,
+}
+
 /// Evidence carried by a v2 claim node (`gm_schema_v2`): a verbatim span
 /// of the supporting episode text plus its episode locator, or the typed
 /// absent marker when sentence alignment failed.

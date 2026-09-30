@@ -12,7 +12,8 @@
 
 use crate::ingest::{EpisodeRecord, Locator};
 use crate::store::{
-    AuditRecord, ClaimNode, ClaimStatus, Evidence, Lineage, StoreError, dropped_hedge_markers,
+    AuditRecord, ClaimNode, ClaimStatus, EdgeLabel, Evidence, InvalidationProposal, Lineage,
+    StoreError, dropped_hedge_markers,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,17 @@ CREATE TABLE IF NOT EXISTS audits (
     claim_key INTEGER NOT NULL,
     actor TEXT NOT NULL,
     adopted_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS edges (
+    rowid_key INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_claim INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    to_claim INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS invalidations (
+    rowid_key INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_key INTEGER NOT NULL,
+    causing_episode_id TEXT NOT NULL
 );
 ";
 
@@ -147,11 +159,30 @@ pub struct DumpedClaim {
 }
 
 /// The extraction-output half of the rebuildable pair: claims + lineage
-/// plus the (episode, version) extraction-cache markers.
+/// plus the (episode, version) extraction-cache markers — and the typed
+/// relation edges plus staged invalidation proposals, so a dump-recreate
+/// reproduces the graph's structure exactly (`gm_embedded_store`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtractionDump {
     pub claims: Vec<DumpedClaim>,
     pub extracted: Vec<(String, String)>,
+    /// Typed claim-relation edges (`gm_relation_typing`), row order
+    /// preserved.
+    #[serde(default)]
+    pub edges: Vec<DumpedEdge>,
+    /// Staged invalidation proposals (`ex_mutation_proposal`), row order
+    /// preserved.
+    #[serde(default)]
+    pub invalidations: Vec<InvalidationProposal>,
+}
+
+/// One persisted edge in dump form: endpoints are claim keys, the label
+/// a member of the published relation vocabulary (`p_relation_typing`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DumpedEdge {
+    pub from_claim: usize,
+    pub label: EdgeLabel,
+    pub to_claim: usize,
 }
 
 /// The embedded SQLite claim-graph store: a single Connection over plain
@@ -464,7 +495,21 @@ impl SqliteStore {
             })
             .collect();
         let extracted = self.extracted_pairs()?;
-        Ok(ExtractionDump { claims, extracted })
+        let edges = self.edges()?;
+        let invalidations = self.invalidations()?;
+        Ok(ExtractionDump {
+            claims,
+            extracted,
+            edges: edges
+                .into_iter()
+                .map(|(from_claim, label, to_claim)| DumpedEdge {
+                    from_claim,
+                    label,
+                    to_claim,
+                })
+                .collect(),
+            invalidations,
+        })
     }
 
     fn extracted_pairs(&self) -> Result<Vec<(String, String)>, StoreError> {
@@ -525,7 +570,124 @@ impl SqliteStore {
         for (episode_id, version) in &dump.extracted {
             self.mark_extracted(episode_id, version)?;
         }
+        for edge in &dump.edges {
+            self.insert_edge(edge.from_claim, edge.label, edge.to_claim)?;
+        }
+        for proposal in &dump.invalidations {
+            self.stage_invalidation_proposal(proposal.claim_key, &proposal.causing_episode_id)?;
+        }
         Ok(())
+    }
+
+    /// Persist a typed claim-relation edge (`gm_relation_typing`): the
+    /// label is a member of the published vocabulary (the `EdgeLabel`
+    /// enum makes an out-of-vocabulary label unrepresentable) and both
+    /// endpoints must be persisted claims — an edge always joins two
+    /// claims. Row order is preserved for dump-recreate.
+    pub fn insert_edge(
+        &self,
+        from_claim: usize,
+        label: EdgeLabel,
+        to_claim: usize,
+    ) -> Result<(), StoreError> {
+        for endpoint in [from_claim, to_claim] {
+            if !self.claim_exists(endpoint)? {
+                return Err(StoreError::ClaimNotFound {
+                    claim_key: endpoint,
+                });
+            }
+        }
+        let label = match label {
+            EdgeLabel::Mentions => "mentions",
+            EdgeLabel::Contradicts => "contradicts",
+            EdgeLabel::Supports => "supports",
+            EdgeLabel::DerivedFrom => "derived_from",
+            EdgeLabel::PossibleDuplicateOf => "possible_duplicate_of",
+        };
+        self.conn
+            .execute(
+                "INSERT INTO edges (from_claim, label, to_claim) VALUES (?1, ?2, ?3)",
+                params![from_claim as i64, label, to_claim as i64],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
+    /// Persisted typed edges in insertion row order (`gm_relation_typing`):
+    /// endpoints as claim keys, label decoded strictly from the published
+    /// vocabulary — an out-of-vocabulary row is a store error, never a
+    /// silent guess.
+    pub fn edges(&self) -> Result<Vec<(usize, EdgeLabel, usize)>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT from_claim, label, to_claim FROM edges ORDER BY rowid")
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            let from_claim: i64 = row.get(0).map_err(sql_err)?;
+            let label_raw: String = row.get(1).map_err(sql_err)?;
+            let to_claim: i64 = row.get(2).map_err(sql_err)?;
+            let label: EdgeLabel = serde_json::from_value(serde_json::Value::String(label_raw))
+                .map_err(|e| StoreError::Sqlite {
+                    message: format!("edge label decode failed: {e}"),
+                    spec: SPEC,
+                })?;
+            out.push((from_claim as usize, label, to_claim as usize));
+        }
+        Ok(out)
+    }
+
+    /// Stage an invalidation proposal against a claim
+    /// (`ex_mutation_proposal`): the proposal carries the causing-episode
+    /// lineage; the claim is not mutated. Unknown claim keys are refused.
+    /// Row order is preserved for dump-recreate.
+    pub fn stage_invalidation_proposal(
+        &self,
+        claim_key: usize,
+        causing_episode_id: &str,
+    ) -> Result<(), StoreError> {
+        if !self.claim_exists(claim_key)? {
+            return Err(StoreError::ClaimNotFound { claim_key });
+        }
+        self.conn
+            .execute(
+                "INSERT INTO invalidations (claim_key, causing_episode_id) VALUES (?1, ?2)",
+                params![claim_key as i64, causing_episode_id],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
+    /// Staged invalidation proposals in insertion row order
+    /// (`ex_mutation_proposal`).
+    pub fn invalidations(&self) -> Result<Vec<InvalidationProposal>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT claim_key, causing_episode_id FROM invalidations ORDER BY rowid")
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push(InvalidationProposal {
+                claim_key: row.get::<_, i64>(0).map_err(sql_err)? as usize,
+                causing_episode_id: row.get(1).map_err(sql_err)?,
+            });
+        }
+        Ok(out)
+    }
+
+    fn claim_exists(&self, claim_key: usize) -> Result<bool, StoreError> {
+        let found: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM claims WHERE claim_key = ?1",
+                params![claim_key as i64],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_err)?;
+        Ok(found.is_some())
     }
 
     /// Human adopt at the SQL layer (`gm_human_adopt`): the sole path from
