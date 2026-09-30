@@ -753,3 +753,138 @@ fn review_commands_cannot_create_candidates() {
     assert_eq!(v["ok"].as_bool(), Some(false));
     assert_eq!(v["data"]["code"].as_str(), Some("argument_error"));
 }
+
+// bajan-9pm scale regression: at book scale (2k claims) the pass must
+// COMPLETE within a modest budget — the old all-pairs walk (n*(n-1)/2
+// comparisons, each charged to the budget) exhausted with zero pairs at
+// any realistic budget. Candidate pre-filtering (normalization-equal
+// groups + sound containment blocking) makes the pass usable; honest
+// exhaustion semantics are unchanged (candidates remained unseen =
+// exhausted, no candidates = complete).
+#[test]
+fn er_pass_completes_at_book_scale() {
+    let db = SqliteStore::open_in_memory().expect("open");
+    let n = 2_000usize;
+    for i in 0..n {
+        let ep = episode(&format!("ep{i}"), &format!("episode body {i}"), 1, None);
+        // Distinct claim texts sharing only common filler words — the
+        // unique numbered token keeps containment candidates empty.
+        // Zero-padded: the 5-digit token yields a 4-gram unique to this
+        // claim, so its rarest-gram posting is a singleton (distinctive
+        // content is exactly what makes the containment blocking cheap —
+        // real claims carry content words; unpadded small numbers would
+        // be the degenerate all-filler case).
+        let text = format!("claim {:05} concerns mechanism {:05} in the body", i, i);
+        seed(
+            &db,
+            &ep,
+            &text,
+            &[Lineage {
+                episode_id: format!("ep{i}"),
+                extractor_version: "0.1.0".into(),
+            }],
+        );
+    }
+    // Three normalization-equal pairs among the noise.
+    for i in 0..3 {
+        let ep = episode(&format!("dup{i}"), &format!("duplicate body {i}"), 1, None);
+        seed(
+            &db,
+            &ep,
+            &format!("exact duplicate text {i}"),
+            &[Lineage {
+                episode_id: format!("dup{i}"),
+                extractor_version: "0.1.0".into(),
+            }],
+        );
+        let ep2 = episode(&format!("dup{i}b"), &format!("duplicate body {i}"), 1, None);
+        let k = seed(
+            &db,
+            &ep2,
+            &format!("  EXACT   duplicate text {i} "),
+            &[Lineage {
+                episode_id: format!("dup{i}b"),
+                extractor_version: "0.1.0".into(),
+            }],
+        );
+        assert!(k > 0);
+    }
+    // One containment pair: the short claim's text is contained in the
+    // long claim's text.
+    let ep = episode("epshort", "short body", 1, None);
+    let short = seed(
+        &db,
+        &ep,
+        "alpha beta",
+        &[Lineage {
+            episode_id: "epshort".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+    let ep2 = episode("eplong", "long body", 1, None);
+    let _long = seed(
+        &db,
+        &ep2,
+        "alpha beta gamma detail 777",
+        &[Lineage {
+            episode_id: "eplong".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+
+    // Modest budget: covers the ranked-candidate walk (2006 claims) plus
+    // the handful of candidate comparisons. The old all-pairs walk would
+    // have needed ~2M comparisons and reported budget-exhausted.
+    let report = review::run_er_pass(&db, 2_100, 1_000_000).expect("pass");
+    assert_eq!(
+        report.status,
+        query::BudgetStatus::Complete,
+        "book-scale pass completes within a modest budget"
+    );
+    assert_eq!(report.proposed, 4, "3 equal pairs + 1 contained pair");
+    assert_eq!(report.refused, 0);
+    let queue = db.review_queue().expect("queue");
+    assert_eq!(queue.len(), 4);
+    assert!(
+        queue.iter().any(|r| r.evidence == "normalization-contains"
+            && (r.from_claim == short || r.to_claim == short)),
+        "containment pair proposed with the short claim as suspect"
+    );
+}
+
+// bajan-9pm soundness lock: the rarest-gram blocking must never miss a
+// true containment — even when the short text occurs only MID-TOKEN in
+// the longer one ("audit" inside "preaudits"), which a naive
+// token-equality posting would miss.
+#[test]
+fn er_containment_found_when_shorter_text_embeds_mid_token() {
+    let db = SqliteStore::open_in_memory().expect("open");
+    let ep1 = episode("ep1", "alpha body", 1, None);
+    let short = seed(
+        &db,
+        &ep1,
+        "audit",
+        &[Lineage {
+            episode_id: "ep1".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+    let ep2 = episode("ep2", "beta body", 1, None);
+    let long = seed(
+        &db,
+        &ep2,
+        "preaudits 191 filings",
+        &[Lineage {
+            episode_id: "ep2".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+    let report = review::run_er_pass(&db, 64, 1_000_000).expect("pass");
+    assert_eq!(report.status, query::BudgetStatus::Complete);
+    assert_eq!(report.proposed, 1, "mid-token containment found");
+    assert_eq!(report.pairs, vec![(short, long)]);
+    assert_eq!(
+        db.review_queue().expect("queue")[0].evidence,
+        "normalization-contains"
+    );
+}
