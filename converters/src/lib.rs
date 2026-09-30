@@ -645,7 +645,12 @@ pub const PDF_EXTRACTOR_VERSION: &str = "0.12.1";
 /// split on blank lines into paragraphs, each whitespace-collapsed (the
 /// same collapse discipline as the other converters); pages with no text
 /// emit nothing but keep their page number (later pages are never
-/// renumbered). Document metadata (/Info title/author) is not episode
+/// renumbered). An all-textless document (N>0 pages, every page empty
+/// after collapse) is a probable extractor encoding failure (bajan-98x:
+/// pdf-extract silently returns empty text for some Type0/Identity-H CID
+/// fonts) and errors with the page count — never a silent empty stream;
+/// a 0-page document stays an honest Ok-empty stream. Document metadata
+/// (/Info title/author) is not episode
 /// content. Metadata: `source_type` `pdf`, `data_cutoff` absent
 /// (ic_date_fidelity — file dates are not data cutoffs), authority_tier 3,
 /// tags carry the extractor-version entry (see PDF_EXTRACTOR). Corruption
@@ -698,6 +703,23 @@ pub fn pdf_episodes(input: &[u8]) -> Result<Vec<EpisodeRecord>, String> {
             locator: Locator::Span(format!("page:{}", i + 1)),
             source: source.clone(),
         });
+    }
+    // bajan-98x: an all-textless document is NOT an honest empty stream.
+    // pdf-extract silently returns empty/whitespace text for encodings it
+    // cannot map (Type0 CID fonts with Identity-H), so "N>0 pages, every
+    // one textless after collapse" is a probable extractor encoding
+    // failure — error with the page count instead of emitting a silent
+    // empty stream (exit 0) that would look indistinguishable from an
+    // actually-empty document. A 0-page document stays Ok-empty; empty
+    // pages inside an otherwise-textful book are unaffected (per-page
+    // silence is honest there).
+    if !pages.is_empty() && episodes.is_empty() {
+        return Err(format!(
+            "extracted {} pages but no text: probable PDF encoding failure \
+             (pdf-extract cannot map some Type0/Identity-H CID fonts) — refusing to \
+             emit a silent empty stream",
+            pages.len()
+        ));
     }
     Ok(episodes)
 }

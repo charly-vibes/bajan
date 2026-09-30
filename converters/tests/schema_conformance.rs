@@ -779,6 +779,28 @@ fn pdf_empty_pages_emit_nothing() {
     assert_eq!(eps[0].locator, Locator::Span("page:2".into()));
 }
 
+/// bajan-98x: when N>0 pages ALL yield no text after collapse, that is a
+/// probable extractor encoding failure (pdf-extract silently returns empty
+/// text for Type0/Identity-H CID fonts) — pdf2bajan must exit 1 with a
+/// diagnostic naming the page count, never a silent empty stream.
+#[test]
+fn pdf_all_pages_textless_is_error_naming_page_count() {
+    let bytes = build_fixture_pdf(&["   ", "\n"]);
+    let err = bajan_converters::pdf_episodes(&bytes).expect_err("all-textless pages must error");
+    assert!(
+        err.contains("2"),
+        "diagnostic must name the page count: {err}"
+    );
+}
+
+/// bajan-98x: a 0-page document is an honest empty stream — Ok, exit 0.
+#[test]
+fn pdf_zero_pages_is_honest_empty_stream() {
+    let bytes = build_fixture_pdf(&[]);
+    let eps = bajan_converters::pdf_episodes(&bytes).expect("0-page doc converts");
+    assert!(eps.is_empty());
+}
+
 /// The extractor-version caveat is ON the record: every episode carries
 /// source_type 'pdf' and a tags entry naming the extractor crate+version,
 /// so a version change is visible per-record. Cutoff absent (ic_date_fidelity).

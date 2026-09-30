@@ -114,6 +114,16 @@ Consequences implemented, not just documented:
 - Document metadata (/Info title/author) never becomes episodes.
 - `data_cutoff` is always absent: PDF file dates are file-management
   facts, not data cutoffs (ic_date_fidelity).
+- **Known extractor limitation (bajan-98x)**: pdf-extract 0.12.1 silently
+  returns empty/whitespace text for some Type0 CID fonts with Identity-H
+  encoding (observed on a real text-rich PDF that `pdftotext` reads fine).
+  pdf2bajan therefore refuses to emit a silent empty stream: a document
+  with N>0 pages where EVERY page yields no text after collapse is an
+  error (exit 1) naming the page count — a probable encoding failure,
+  not an empty document. A 0-page document stays an honest empty stream
+  (exit 0). If you hit that error, try `pdftotext` to confirm the PDF is
+  text-rich, then treat the PDF as unsupported by pdf-extract for now —
+  no silent garbage, no silent nothing.
 
 ## Formats not covered (yet) — and their caveats
 
