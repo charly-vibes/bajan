@@ -196,12 +196,21 @@ pub trait Extractor: std::fmt::Debug {
 /// slice: the deterministic proposer always proposes exactly one
 /// candidate. A version-bump re-extraction additionally tombstones the
 /// episode's prior-version `staged` claims (`ex_supersession`), counted
-/// in `superseded` — `active` and `rejected` claims are never touched.
+/// in `superseded` — `staged` claims take the supersession path; an
+/// `active` claim is never mutated (`ex_supersession`): instead, a new
+/// output that CONFLICTS with it stages an invalidation proposal citing
+/// the causing episode (`ex_mutation_proposal`), counted in
+/// `proposals_staged`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExtractReport {
     pub episodes_processed: usize,
     pub candidates_proposed: usize,
     pub superseded: usize,
+    /// Invalidation proposals staged this pass against ACTIVE claims
+    /// whose evidence position the new output conflicts with
+    /// (`ex_mutation_proposal`). Duplicates (same claim + causing
+    /// episode) are idempotent skips, never re-counted.
+    pub proposals_staged: usize,
     pub gate_rejections: Vec<GateRejection>,
     /// Episodes parked this pass after retry-budget exhaustion
     /// (`ex_single_call` abort; `ex_park_requeue`: no cache entry — the
@@ -599,6 +608,7 @@ pub fn run_extract_with(
         episodes_processed: pending.len(),
         candidates_proposed: 0,
         superseded: 0,
+        proposals_staged: 0,
         gate_rejections: Vec::new(),
         parked: Vec::new(),
     };
@@ -708,6 +718,19 @@ pub fn run_extract_with(
         let finished_at = epoch_millis();
         let finish = match outcome {
             Ok(()) => {
+                // ex_mutation_proposal: a new output that conflicts with
+                // an existing ACTIVE claim stages an invalidation
+                // proposal citing the causing episode; the active claim
+                // is not mutated. Before mark_extracted so a store
+                // failure leaves the episode pending (retryable), never
+                // cached half-done.
+                stage_mutation_proposals(
+                    db,
+                    episode,
+                    &candidates,
+                    &extractor_version,
+                    &mut report,
+                )?;
                 report.candidates_proposed += candidates.len();
                 db.mark_extracted(&episode.id, &extractor_version)?;
                 Finish::Succeeded
@@ -732,6 +755,73 @@ pub fn run_extract_with(
         });
     }
     Ok(report)
+}
+
+/// Stage invalidation proposals for re-extraction conflicts with existing
+/// ACTIVE claims (`ex_mutation_proposal`). CONFLICT PREDICATE (bajan-c4p,
+/// pinned operationally): a prior-version ACTIVE claim — lineage on this
+/// episode, provenance inequality vs the re-extract version, the same
+/// prior-version test as `supersede_prior_versions` — conflicts with a
+/// new candidate iff BOTH carry `Span` evidence at the SAME locator
+/// (same evidence position) and the whitespace-collapsed CLAIM texts
+/// DIFFER. The evidence span itself may be identical (it comes from the
+/// same episode) — what conflicts is the claim the new output states at
+/// that position. `Evidence::Unknown` never conflicts (no position). One
+/// proposal per (active claim, causing episode) pair: the store's
+/// duplicate guard turns a re-conflict on a later pass into an
+/// idempotent skip, never an infrastructure failure. The active claim
+/// is never mutated — the proposal waits for the human adopt path.
+fn stage_mutation_proposals(
+    db: &crate::store::sqlite::SqliteStore,
+    episode: &EpisodeRecord,
+    candidates: &[ClaimNode],
+    extractor_version: &str,
+    report: &mut ExtractReport,
+) -> Result<(), BajanError> {
+    for (claim_key, node, lineage) in db.claims_with_lineage()? {
+        let on_episode = lineage.iter().any(|l| l.episode_id == episode.id);
+        if !on_episode
+            || lineage
+                .iter()
+                .any(|l| l.extractor_version == extractor_version)
+        {
+            continue;
+        }
+        if node.status != crate::store::ClaimStatus::Active {
+            continue;
+        }
+        let Evidence::Span {
+            text: _,
+            locator: active_locator,
+        } = &node.evidence
+        else {
+            continue;
+        };
+        for candidate in candidates {
+            let Evidence::Span {
+                text: _,
+                locator: cand_locator,
+            } = &candidate.evidence
+            else {
+                continue;
+            };
+            if cand_locator != active_locator
+                || crate::store::collapse(&candidate.text) == crate::store::collapse(&node.text)
+            {
+                continue;
+            }
+            match db.stage_invalidation_proposal(claim_key, &episode.id) {
+                Ok(()) => report.proposals_staged += 1,
+                // Already proposed by an earlier pass: honest no-op.
+                Err(crate::store::StoreError::DuplicateProposal { .. }) => {}
+                Err(e) => return Err(e.into()),
+            }
+            // One proposal per active claim per pass — a second
+            // conflicting candidate adds no information.
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// Typed-gate containment check (`ex_evidence_containment`): a candidate's

@@ -208,8 +208,24 @@ fn report_joins_lineage_tombstones_and_proposals() {
         .expect("active claim reported");
     assert_eq!(active_record.status, ClaimStatus::Active);
     assert!(active_record.supersessions.is_empty());
-    assert_eq!(active_record.invalidations.len(), 1);
-    assert_eq!(active_record.invalidations[0].claim_key, active);
+    // Two proposals join here: the manually staged one (causing ep-new)
+    // plus the one the V2 re-extraction wired in (bajan-c4p): the V2
+    // output conflicts with this ACTIVE claim — same locator, different
+    // collapsed claim text — staging a proposal citing causing ep-a.
+    assert_eq!(active_record.invalidations.len(), 2);
+    let mut causing: Vec<&str> = active_record
+        .invalidations
+        .iter()
+        .map(|p| p.causing_episode_id.as_str())
+        .collect();
+    causing.sort();
+    assert_eq!(causing, vec!["ep-a", "ep-new"]);
+    assert!(
+        active_record
+            .invalidations
+            .iter()
+            .all(|p| p.claim_key == active)
+    );
 }
 
 // ex_supersession: the explicit re-stage is the only path from a
