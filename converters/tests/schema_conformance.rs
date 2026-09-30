@@ -1,0 +1,186 @@
+//! Purpose: red-first schema-conformance tests for the upstream converters
+//! (bajan-quq) — converter output must be a valid bajan episode stream.
+//! Responsibilities: every emitted record parses as
+//! `bajan::ingest::EpisodeRecord` (ic_stream-schema) and persists through
+//! the real ingest path (`bajan::ingest::persist_stream`) with all-persisted
+//! outcomes (ic_verbatim), round-trips idempotently (ic_idempotent), and the
+//! converter mapping rules hold (headings → locators, absent marker when
+//! none derivable, deterministic ids). The path dep makes structural
+//! conformance a compile-time fact; these tests prove the emitted JSON and
+//! the ingest interaction behave.
+//! Rationale: the ticket's meter — "episode-stream schema round-trip via
+//! bajan ingest" — is the acceptance gate, exercised here against the
+//! actual store, not a copy of the schema.
+
+use bajan::ingest::{EpisodeRecord, IngestOutcome, Locator};
+use bajan::store::sqlite::SqliteStore;
+use bajan_converters::{html_episodes, markdown_episodes};
+
+fn persist_all(records: &[EpisodeRecord]) -> Vec<IngestOutcome> {
+    let db = SqliteStore::open(":memory:").expect("in-memory store");
+    persist_stream_on(&db, records)
+}
+
+fn persist_stream_on(db: &SqliteStore, records: &[EpisodeRecord]) -> Vec<IngestOutcome> {
+    bajan::ingest::persist_stream(db, records)
+        .into_iter()
+        .map(|r| r.expect("no store errors on a fresh store"))
+        .collect()
+}
+
+fn outcome_of(o: &IngestOutcome) -> &'static str {
+    match o {
+        IngestOutcome::Persisted => "persisted",
+        IngestOutcome::AlreadyPersisted => "already_persisted",
+        IngestOutcome::Rejected { .. } => "rejected",
+    }
+}
+
+// --- markdown mapping ---------------------------------------------------
+
+/// Headings become `heading:<text>` locators; text under them carries the
+/// anchor (ic_verbatim: structure the converter derives, bajan persists).
+#[test]
+fn md_heading_becomes_locator() {
+    let eps = markdown_episodes("# Roadmap\n\nShip the thing.\n").expect("converts");
+    assert_eq!(eps.len(), 1);
+    assert_eq!(eps[0].locator, Locator::Span("heading:Roadmap".into()));
+    assert_eq!(eps[0].text, "Ship the thing.");
+}
+
+/// Consecutive paragraphs under one heading join into one episode.
+#[test]
+fn md_paragraphs_under_heading_join() {
+    let eps = markdown_episodes("# A\n\nFirst.\n\nSecond.\n").expect("converts");
+    assert_eq!(eps.len(), 1);
+    assert_eq!(eps[0].text, "First.\n\nSecond.");
+}
+
+/// A document with no headings at all: one episode with the typed absent
+/// marker (ic_verbatim: explicit absent, never a fake span) — and it must
+/// still persist through bajan.
+#[test]
+fn md_no_headings_yields_absent_locator_and_persists() {
+    let eps = markdown_episodes("Just some prose, no structure.\n").expect("converts");
+    assert_eq!(eps.len(), 1);
+    assert_eq!(eps[0].locator, Locator::Absent);
+    let outcomes = persist_all(&eps);
+    assert_eq!(outcomes, vec![IngestOutcome::Persisted]);
+}
+
+/// Nested headings: each heading opens a new episode keyed on its own
+/// anchor.
+#[test]
+fn md_nested_headings_split_episodes() {
+    let eps = markdown_episodes("# Top\n\nIntro.\n\n## Sub\n\nDetail.\n\n# Next\n\nMore.\n")
+        .expect("converts");
+    assert_eq!(eps.len(), 3);
+    assert_eq!(eps[0].locator, Locator::Span("heading:Top".into()));
+    assert_eq!(eps[1].locator, Locator::Span("heading:Sub".into()));
+    assert_eq!(eps[2].locator, Locator::Span("heading:Next".into()));
+    assert_eq!(eps[1].text, "Detail.");
+}
+
+// --- id determinism ------------------------------------------------------
+
+/// Ids are deterministic for the same input (stable ids are the identity
+/// bajan's resubmission policy hangs off).
+#[test]
+fn md_ids_deterministic() {
+    let input = "# H\n\nOne.\n\n## H\n\nTwo.\n";
+    let a = markdown_episodes(input).expect("converts");
+    let b = markdown_episodes(input).expect("converts");
+    assert_eq!(a, b);
+    assert_ne!(
+        a[0].id, a[1].id,
+        "same-heading anchors still get distinct ids"
+    );
+}
+
+/// Same document converted twice and ingested into the same store:
+/// second submission is already_persisted, never a duplicate (ic_idempotent).
+#[test]
+fn md_round_trip_idempotent() {
+    let eps = markdown_episodes("# H\n\nBody.\n").expect("converts");
+    let db = SqliteStore::open(":memory:").expect("store");
+    assert_eq!(persist_stream_on(&db, &eps), vec![IngestOutcome::Persisted]);
+    assert_eq!(
+        persist_stream_on(&db, &markdown_episodes("# H\n\nBody.\n").expect("converts")),
+        vec![IngestOutcome::AlreadyPersisted]
+    );
+}
+
+// --- html mapping --------------------------------------------------------
+
+/// h1..h6 elements become heading anchors; text between them joins into
+/// episodes under the nearest preceding heading.
+#[test]
+fn html_headings_become_locators() {
+    let eps = html_episodes("<h1>Spec</h1><p>Normative text.</p><h2>Detail</h2><p>More text.</p>")
+        .expect("converts");
+    assert_eq!(eps.len(), 2);
+    assert_eq!(eps[0].locator, Locator::Span("heading:Spec".into()));
+    assert_eq!(eps[0].text, "Normative text.");
+    assert_eq!(eps[1].locator, Locator::Span("heading:Detail".into()));
+    assert_eq!(eps[1].text, "More text.");
+}
+
+/// Leading content before any heading gets the absent locator and still
+/// persists (locator-absent-marker contract).
+#[test]
+fn html_leading_content_absent_locator() {
+    let eps = html_episodes("<p>Preamble.</p><h1>H</h1><p>Body.</p>").expect("converts");
+    assert_eq!(eps.len(), 2);
+    assert_eq!(eps[0].locator, Locator::Absent);
+    assert_eq!(eps[0].text, "Preamble.");
+    assert_eq!(eps[1].locator, Locator::Span("heading:H".into()));
+    let outcomes = persist_all(&eps);
+    assert!(outcomes.iter().all(|o| outcome_of(o) == "persisted"));
+}
+
+/// Script/style content never leaks into episode text.
+#[test]
+fn html_script_style_dropped() {
+    let eps = html_episodes("<h1>T</h1><style>.x{}</style><script>evil()</script><p>Real.</p>")
+        .expect("converts");
+    assert_eq!(eps.len(), 1);
+    assert_eq!(eps[0].text, "Real.");
+}
+
+/// Whitespace-only segments produce no episodes (ic_malformed would reject
+/// them at ingest; the converter never emits them).
+#[test]
+fn html_whitespace_only_produces_nothing() {
+    let eps = html_episodes("<h1></h1><p>   </p>").expect("converts");
+    assert!(eps.is_empty());
+}
+
+// --- empty input ---------------------------------------------------------
+
+/// Empty input is a valid empty stream (ic_empty_stream is a no-op, never
+/// an error).
+#[test]
+fn empty_inputs_yield_empty_streams() {
+    assert!(markdown_episodes("").expect("converts").is_empty());
+    assert!(html_episodes("").expect("converts").is_empty());
+}
+
+// --- full JSON round-trip ------------------------------------------------
+
+/// The serialized stream (what the bins print) parses back as the exact
+/// records and persists through bajan — the literal converter → ingest
+/// pipe.
+#[test]
+fn serialized_stream_round_trips_through_bajan() {
+    for eps in [
+        markdown_episodes("# A\n\nAlpha.\n\n## B\n\nBeta.\n").expect("converts"),
+        html_episodes("<h1>A</h1><p>Alpha.</p><h2>B</h2><p>Beta.</p>").expect("converts"),
+    ] {
+        let json = serde_json::to_string(&eps).expect("serializes");
+        let parsed: Vec<EpisodeRecord> = serde_json::from_str(&json).expect("schema-valid");
+        assert_eq!(parsed, eps);
+        let outcomes = persist_all(&parsed);
+        assert_eq!(outcomes.len(), eps.len());
+        assert!(outcomes.iter().all(|o| outcome_of(o) == "persisted"));
+    }
+}
