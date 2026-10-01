@@ -89,3 +89,13 @@ requeue, cache keys hold, no silent fabrication. The gaps are operational
 (telemetry F3, retry tuning F2, timeout knob F4, attribution F5) — none
 block correctness. Next burn-in: second corpus (pdf via a CID-clean book,
 or the Wiley EPUBs) + adopt/review pass on the staged 249.
+* Follow-up (2026-10-01, same day): section-noise fixed and measured
+
+The claim review found ~15-25% junk (praise/testimonial/copyright/anecdote
+prose). Landed TDD: ic_section_tags (bajan-0yg) + ex_section_filter
+(bajan-ie0), converter tagging (bajan-pbd), deterministic post-pass filter
+(bajan-162). Re-run on a fresh v2 stream: junk claims 41 → 4 (−90%),
+claims 344 → 246, 4 tagged episodes cached extracted-empty. Residual 4
+junk are content-level (ProfitCON CTA lines inside real chapters) — out of
+reach of section tags by design. Numbers checked into evals/results.md
+(bajan-tq5); finding bajan-9uy closed.
