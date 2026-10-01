@@ -118,12 +118,39 @@ fn finish(seg: &Seg, id: String, source_type: &str) -> Option<EpisodeRecord> {
     if text.is_empty() {
         return None;
     }
+    let mut source = default_source(source_type);
+    source.tags = section_kind_tags(seg.anchor.as_deref());
     Some(EpisodeRecord {
         id,
         text,
         locator: seg.locator.clone(),
-        source: default_source(source_type),
+        source,
     })
+}
+
+/// Section-kind tag derivation (ic_section_tags): deterministic,
+/// case-insensitive substring patterns over the heading text — praise/
+/// testimonials, copyright, acknowledgments (US + UK spelling). This is
+/// the only judgment a converter makes about a section, and it is pure
+/// pattern matching, never content judgment. Tagging rides the existing
+/// episode-stream schema as source metadata; the extraction post-pass
+/// (ex_section_filter) decides what to do with them.
+fn section_kind_tags(heading: Option<&str>) -> Vec<String> {
+    let Some(h) = heading else {
+        return Vec::new();
+    };
+    let h = h.to_lowercase();
+    let mut tags = Vec::new();
+    if h.contains("praise for") || h.contains("testimonials") {
+        tags.push("section-kind:praise".to_string());
+    }
+    if h.contains("copyright") {
+        tags.push("section-kind:copyright".to_string());
+    }
+    if h.contains("acknowledgment") || h.contains("acknowledgement") {
+        tags.push("section-kind:acknowledgments".to_string());
+    }
+    tags
 }
 
 /// Collect finished segments into episode records with ids that are

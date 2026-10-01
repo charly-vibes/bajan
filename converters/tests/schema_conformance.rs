@@ -48,6 +48,71 @@ fn md_heading_becomes_locator() {
     assert_eq!(eps[0].text, "Ship the thing.");
 }
 
+/// Section-kind tags ride the existing tags field (ic_section_tags):
+/// headings matching the praise/testimonials/copyright/acknowledgments
+/// patterns tag their episode; every other heading tags nothing.
+#[test]
+fn md_section_kind_tags_from_headings() {
+    let eps = markdown_episodes(
+        "# MORE PRAISE FOR Profit First\n\nGreat book.\n\n\
+         # TESTIMONIALS FOR Profit First\n\nTen stars.\n\n\
+         # COPYRIGHT\n\nAll rights reserved.\n\n\
+         # ACKNOWLEDGMENTS\n\nThanks to editors.\n\n\
+         # Chapter 1: CASH\n\nProfit first.\n",
+    )
+    .expect("converts");
+    assert_eq!(eps.len(), 5);
+    assert_eq!(eps[0].source.tags, vec!["section-kind:praise".to_string()]);
+    assert_eq!(eps[1].source.tags, vec!["section-kind:praise".to_string()]);
+    assert_eq!(
+        eps[2].source.tags,
+        vec!["section-kind:copyright".to_string()]
+    );
+    assert_eq!(
+        eps[3].source.tags,
+        vec!["section-kind:acknowledgments".to_string()]
+    );
+    assert!(eps[4].source.tags.is_empty());
+}
+
+/// Pattern matching is case-insensitive and substring-based on the same
+/// heading text used for the locator ("PRAISE FOR preface" still tags:
+/// determinism beats rarity of false positives — review can prune).
+#[test]
+fn md_section_kind_matching_is_case_insensitive() {
+    let eps = markdown_episodes(
+        "# acknowledgements\n\nThanks.\n\n\
+         # copyright\n\n(c) someone.\n\n\
+         # The PRAISE FOR preface trap\n\nNope.\n",
+    )
+    .expect("converts");
+    assert_eq!(
+        eps[0].source.tags,
+        vec!["section-kind:acknowledgments".to_string()]
+    );
+    assert_eq!(
+        eps[1].source.tags,
+        vec!["section-kind:copyright".to_string()]
+    );
+    assert_eq!(eps[2].source.tags, vec!["section-kind:praise".to_string()]);
+}
+
+/// The HTML converter applies the same section-kind tagging.
+#[test]
+fn html_section_kind_tags_from_headings() {
+    let eps = html_episodes(
+        "<h1>MORE PRAISE FOR Profit First</h1><p>Great.</p>\
+         <h2>Copyright</h2><p>(c).</p>",
+    )
+    .expect("converts");
+    assert_eq!(eps.len(), 2);
+    assert_eq!(eps[0].source.tags, vec!["section-kind:praise".to_string()]);
+    assert_eq!(
+        eps[1].source.tags,
+        vec!["section-kind:copyright".to_string()]
+    );
+}
+
 /// Consecutive paragraphs under one heading join into one episode.
 #[test]
 fn md_paragraphs_under_heading_join() {
