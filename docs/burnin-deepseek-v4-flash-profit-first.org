@@ -99,3 +99,40 @@ claims 344 → 246, 4 tagged episodes cached extracted-empty. Residual 4
 junk are content-level (ProfitCON CTA lines inside real chapters) — out of
 reach of section tags by design. Numbers checked into evals/results.md
 (bajan-tq5); finding bajan-9uy closed.
+* Second corpus (2026-10-01, in progress at wrap): Berman/Knight — Financial Intelligence for Entrepreneurs (HBR Press, EPUB)
+
+** Setup
+- epub2bajan → 58 episodes, 432k chars → fresh /tmp/bajan-burnin/fi4e.db
+- Same provider/env as corpus 1 (deepseek-v4-flash via OpenRouter)
+
+** Results (pass 1, ~95 min wall-clock)
+| Metric                  | Value                                   |
+|-------------------------+-----------------------------------------|
+| Extracted after pass 1  | 39/58 (67%) — 19 parked (33%, worse than PF's 20-24%) |
+| Claims staged           | 719 (~18.4/extracted episode — far denser than PF's 6.2) |
+| Wall-clock pass 1       | ~95 min (14:57→16:32, incl. retry grinding) |
+| Pass 2 (requeue)        | launched 16:39; 45/58 + 921 claims at 17:04, still running |
+
+** Adopt/review pass on corpus 1 (pf2.db, 246 staged claims)
+- ER pass (budget 1000): complete, 0 candidates — normalization-only ER as expected
+- Deterministic scan: complete, 0 contradicts edges — closed edit classes found nothing
+- Adopt: 246 staged → active, 246 audit records written, batch permitted
+- query "profit" --json: 91 hits, ranking returned active claims; contradict 4 7: 0 pairs/0 proposals (honest empty)
+- Scope cross-validation: section-kind:praise episodes → 0 hits (post-pass filter held)
+
+** New findings
+- F8: query text renderer drops hits — render_text() emits only the status
+  banner for any ok envelope; 91 hits invisible to humans (JSON mode fine).
+  Filed bajan-lp6 with repro + red-first note. Primary human read surface.
+- F9: claim density varies wildly per corpus (PF 6.2 vs FI4E 18.4 claims/episode) —
+  burn-out/eval harness (bajan-2k4) needs per-corpus normalization, not absolute counts.
+- F10: parking rate correlates with provider load windows, not corpus size:
+  same model, similar book, 20-24% vs 33% parked. Reinforces F2 (cross-pass
+  requeue cadence) as the operational fix, not per-call tuning.
+
+** Status at wrap
+- Pass 2 still running (background, nohup; log /tmp/bajan-burnin/fi4e-extract1.log)
+- Spend estimate: ~$0.14 pass 1 (39 eps × ~$0.0035), pass 2 partial ~$0.02-0.05 —
+  within the $0.50 cap regime; exact attribution still impossible (F5)
+- Remaining for bajan-a57: pass-2/3 completion numbers, adopt/review pass on
+  fi4e.db, final verdict line. Pick up via /renew (turu recall).
