@@ -39,6 +39,10 @@ pub enum Reason {
     /// re-extraction (`ex_supersession`). Carried on the supersession
     /// record in the claim store — never on the claim node.
     SupersededByReextraction,
+    /// Every candidate refused by the deterministic section-kind filter
+    /// (`ex_section_filter`): the episode's tags include a non-knowledge
+    /// section kind. Carries the offending tag.
+    SectionFiltered { tag: String },
 }
 
 impl Reason {
@@ -49,6 +53,7 @@ impl Reason {
             Reason::EvidenceNotContained => "evidence_not_contained",
             Reason::HedgeMarkerDropped => "hedge_marker_dropped",
             Reason::SupersededByReextraction => "superseded_by_reextraction",
+            Reason::SectionFiltered { .. } => "section_filtered",
         }
     }
 }
@@ -596,6 +601,17 @@ pub fn run_extract_versioned(
 /// concatenated into one multi-part prompt and the output is cached under
 /// the single (episode id, extractor version) key. Never one call per
 /// chunk (`ex_single_call`, specs/extraction-claims.md).
+/// Non-knowledge section kinds refused wholesale by the deterministic
+/// post-pass (`ex_section_filter`, bajan-162): converter-emitted
+/// `section-kind:` tags whose episodes produce noise, not knowledge —
+/// praise/testimonial blurbs, copyright pages, acknowledgments. Fixed in
+/// code, never an LLM judgment; a config surface (bajan-bku) may revisit.
+pub const SECTION_FILTER_DENY: [&str; 3] = [
+    "section-kind:praise",
+    "section-kind:copyright",
+    "section-kind:acknowledgments",
+];
+
 pub fn run_extract_with(
     db: &crate::store::sqlite::SqliteStore,
     extractor: &dyn Extractor,
@@ -657,6 +673,37 @@ pub fn run_extract_with(
             episode_id: episode.id.clone(),
             extractor_version: extractor_version.clone(),
         };
+        // Section-kind filter (`ex_section_filter`, bajan-162): a tagged
+        // non-knowledge episode refuses every candidate before the gate —
+        // episode-level rejection consistent with the all-or-nothing batch
+        // gate — and is CACHED as extracted, unlike gate rejections: the
+        // filter is a deterministic function of the episode's own tags, so
+        // re-extraction would deterministically re-produce filterable junk
+        // and burn a call on it. Reason lands on the run row and the report
+        // (`ex_run_record`), never on a claim node.
+        if let Some(tag) = episode
+            .source
+            .tags
+            .iter()
+            .find(|t| SECTION_FILTER_DENY.contains(&t.as_str()))
+        {
+            let reason = Reason::SectionFiltered { tag: tag.clone() };
+            db.mark_extracted(&episode.id, &extractor_version)?;
+            let finished_at = epoch_millis();
+            report.gate_rejections.push(GateRejection {
+                episode_id: episode.id.clone(),
+                reason: reason.clone(),
+            });
+            runs.record(ExtractionRun {
+                episode_id: episode.id.clone(),
+                extractor_version: extractor_version.clone(),
+                model_id: model_id.clone(),
+                started_at,
+                finished_at,
+                finish: Finish::GateRejected { reason },
+            });
+            continue;
+        }
         // Project every candidate into a full claim node — status, scope,
         // source type, and data cutoff come from the episode record, never
         // from the extractor.

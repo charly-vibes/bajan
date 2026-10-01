@@ -90,6 +90,59 @@ fn staged_texts(db: &SqliteStore) -> Vec<String> {
         .collect()
 }
 
+// --- section-kind filter (ex_section_filter, bajan-162) ------------------
+
+/// An episode tagged with a non-knowledge section kind has every candidate
+/// refused at the deterministic post-pass: zero staged claims, a gate
+/// rejection entry with the machine-readable `section_filtered` reason, a
+/// run row carrying the same reason (`ex_run_record`), and the episode
+/// CACHED as extracted — re-extraction would deterministically re-produce
+/// filterable junk, so cache economics say one call, never a retry.
+#[test]
+fn section_kind_tag_refuses_candidates_and_caches_extracted() {
+    let db = SqliteStore::open(":memory:").expect("store");
+    let mut tagged = episode("ep-praise", "Praise text one. Praise text two.");
+    tagged.source.tags.push("section-kind:praise".into());
+    ingest::persist(&db, &tagged).expect("persist");
+    ingest::persist(&db, &episode("ep-plain", "Plain text one. Plain text two.")).expect("persist");
+    let outputs = [
+        ("ep-praise", Ok(vec![scripted_claim("Praise text one.")])),
+        ("ep-plain", Ok(vec![scripted_claim("Plain text one.")])),
+    ]
+    .into_iter()
+    .collect();
+    let extractor = FakeExtractor {
+        version: "9.9.9",
+        model_id: None,
+        outputs,
+    };
+    let mut runs = extract::ExtractionRunStore::default();
+    let report = extract::run_extract_with(&db, &extractor, &mut runs).expect("pass runs");
+
+    assert_eq!(staged_texts(&db), vec!["Plain text one.".to_string()]);
+    let rejection = report
+        .gate_rejections
+        .iter()
+        .find(|r| r.episode_id == "ep-praise")
+        .expect("praise refusal reported");
+    assert_eq!(rejection.reason.code(), "section_filtered");
+    let row = runs
+        .rows()
+        .find(|r| r.episode_id == "ep-praise")
+        .expect("run row for the filtered episode");
+    match &row.finish {
+        extract::Finish::GateRejected { reason } => {
+            assert_eq!(reason.code(), "section_filtered")
+        }
+        other => panic!("expected gate-rejected finish, got {other:?}"),
+    }
+
+    // Cached as extracted-empty: a second pass has nothing pending.
+    let second = extract::run_extract_with(&db, &extractor, &mut Default::default())
+        .expect("second pass runs");
+    assert_eq!(second.episodes_processed, 0);
+}
+
 // --- dispatch ------------------------------------------------------------
 
 /// A scripted extractor's candidates reach the store through run_extract:
