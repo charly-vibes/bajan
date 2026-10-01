@@ -20,11 +20,25 @@ young — see [Known limitations](#known-limitations) before relying on it.
 ## Install
 
 ```sh
-cargo install --path .          # from a checkout
+cargo install --path .          # from a checkout — the bajan CLI only
 cargo install bajan             # once published
 ```
 
-Requires Rust 1.85+ (edition 2024).
+Requires Rust 1.85+ (edition 2024). The source converters live in the
+separate `converters/` crate and are built separately:
+
+```sh
+cargo build --release --manifest-path converters/Cargo.toml
+# binaries land in converters/target/release/{epub,html,md,pdf}2bajan
+```
+
+## Data & state
+
+Your whole graph is one SQLite file — **`bajan.db` in the current directory**
+by default. Point every command at the same file (or a different one) with
+the global `--db` flag: `bajan --db corpus.db extract`. Claims are referenced
+by numeric **claim keys**, which appear in extract/query output — text mode
+shows them as `#N` in the hit list.
 
 ## Quickstart
 
@@ -43,6 +57,8 @@ bajan ingest < episodes.json
 bajan extract
 
 # or the LLM extractor (OpenAI-compatible endpoint):
+# NOTE: bajan has NO built-in spend cap — bound cost at the provider side
+# (budget keys, rate limits) before your first real run.
 BAJAN_EXTRACTOR=llm \
 BAJAN_EXTRACTOR_MODEL=deepseek/deepseek-v4-flash \
 BAJAN_EXTRACTOR_BASE_URL=https://openrouter.ai/api/v1 \
@@ -50,22 +66,25 @@ BAJAN_EXTRACTOR_API_KEY_ENV=OPENROUTER_API_KEY \
 bajan extract
 
 # 4. Human-in-the-loop adoption of staged claims
-bajan adopt
+#    (claim keys come from the extract output / `bajan query` hit list)
+bajan adopt 1 2 3
 
-# 5. Entity-review queue: the only human-only resolutions in the pipeline
-bajan er list
-bajan er approve <claim-key> --actor you
-bajan er reject <claim-key> --actor you
+# 5. Entity-review queue — the only human-only resolutions in the pipeline
+bajan review list
+bajan review approve <from> <to> --actor you   # merge a duplicate pair
+bajan review reject <from> <to> --actor you    # drop the merge candidate
 
 # 6. Query — ranked hits with lineage-traceable provenance
 bajan query "profit" --scope workspace:dev
 bajan query "profit" --json | jq '.data.hits'
 
-# 7. Contradictions — closed rule set, plus an optional LLM proposal pass
-bajan contradict
+# 7. Contradictions — closed rule set over specific claims, plus an
+#    optional LLM proposal pass
+bajan contradict 1 2
+bajan scan                                     # deterministic contradicts pass
 bajan propose            # LLM-assisted: stages proposals, never writes edges
 bajan proposal list
-bajan approve <id> --actor you
+bajan proposal approve <from> <to> --actor you  # writes the contradicts edge
 ```
 
 Concepts:
@@ -89,6 +108,9 @@ humans approve. Specifications under `specs/` are linted by
 - **Parked episodes are silent.** When the LLM extractor hits transient
   provider overload it parks 10–24% of episodes per pass; reruns recover
   some, but there is no per-episode failure telemetry yet (bajan-gso).
+- **No built-in spend cap.** The LLM extractor has no cost ceiling; the
+  burn-in run used an externally enforced $0.50 cap. Bound spend at the
+  provider until a cap surface exists.
 - **The eval harness is not built.** Extraction precision/recall numbers are
   not yet published (bajan-2k4, deferred); adopt with judgment.
 - **Cost/usage reporting is thin.** Per-call usage cost is not logged from
