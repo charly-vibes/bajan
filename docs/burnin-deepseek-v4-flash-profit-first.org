@@ -1,0 +1,91 @@
+#+title: Burn-in notes — deepseek-v4-flash, Profit First (book scale)
+#+date: <2026-10-01>
+#+related_issue: bajan-a57
+#+model: deepseek/deepseek-v4-flash via OpenRouter (OpenAI-compatible chat-completions)
+#+corpus: Michalowicz — Profit First (2017, Portfolio/Penguin), EPUB
+#+spend: ~$0.02 bajan-attributable (cap was $0.50; account counter shared with pi sessions, see caveats)
+
+* Setup
+
+- Converter: =epub2bajan= → 50 episodes, 435k chars (~109k tokens est)
+- DB: /tmp/bajan-burnin/pf.db (burn-in scratch, not committed)
+- Env surface: BAJAN_EXTRACTOR=llm, MODEL=deepseek/deepseek-v4-flash,
+  BASE_URL=https://openrouter.ai/api/v1, API_KEY_ENV=OPENROUTER_API_KEY
+- Key bridged from pi's auth.json (read by env-var NAME only — no key in
+  config/logs; design holds)
+
+* Results
+
+| Metric                      | Value                                        |
+|-----------------------------+----------------------------------------------|
+| Episodes                    | 50                                           |
+| Extracted after pass 1      | 38 (76%)                                     |
+| Extracted after pass 2      | 40 (80%)                                     |
+| Claims staged               | 249 (~6.2/extracted episode)                 |
+| Latency, small episode      | ~50s single call (incl. ~4k reasoning tok)   |
+| Latency, largest chapter    | 48s manual unchunked; multi-min under load   |
+| Cost, single chapter call   | $0.0033 (11.5k in + 6.7k out incl. 4k reasoning) |
+| Wall-clock, full pass       | ~90 min (mostly retry grinding)              |
+| Claim-quality gate          | zero evidence_not_contained rejections observed so far |
+
+* Findings
+
+** F1: Parking is stochastic, not size-determined
+Parked set after pass 1 was exactly the 12 largest episodes, but the size
+boundary was not clean: a 32k-char episode succeeded while a 2.7k-char one
+parked. The smallest parked episode succeeded manually (51s, valid JSON,
+20 claims) — failure cause is transient upstream instability, not prompt
+structure, timeout law, or size.
+
+** F2: In-pass retry budget is mis-tuned for transient provider overload
+Backoff is 500ms·2^n capped at 8s — three attempts within ~2s of waiting.
+Cross-pass reruns (minutes-to-hours apart) recovered 2/12 parked episodes;
+a provider-load outage window simply outlasts the in-pass retry budget.
+Consider: longer jittered backoff, or an explicit cross-pass requeue
+cadence (episodes already requeue via cache-absence, but nothing schedules
+or reports it).
+
+** F3: Parking is silent — no failure telemetry
+=bajan extract= prints only the version banner. Parked episodes, retry
+counts, and failure reasons (timeout vs HTTP error vs schema-decode) are
+invisible. Burn-in required sqlite queries + manual curl reproduction to
+diagnose. Run-row telemetry should carry per-episode failure reasons.
+
+** F4: 120s transport timeout is not configurable
+UreqTransport::default hard-codes 120s at the ExtractorConfig::select
+seam (src/llm.rs). Reasoning models under load can exceed it; p50 for a
+chapter was ~50-90s. Not the parking cause (F1), but an unnecessary
+constraint. Env knob (e.g. BAJAN_EXTRACTOR_TIMEOUT_SECS) would do.
+
+** F5: Per-call spend attribution is impossible with a scoped API key
+OpenRouter /api/v1/activity requires a management key; /credits and /key
+counters are account-wide and were polluted by concurrent pi usage on the
+same key. Burn-in cost had to be bounded analytically (worst case ~$0.05-0.10;
+observed manual calls $0.003-0.004/episode). Burn-in runs should either use
+a dedicated key or bajan should log per-call usage from response bodies.
+
+** F6: pdf2bajan refuses honestly on CID-encoded PDFs (working as designed)
+Mike Piper "Accounting Made Simple" (594KB PDF) failed: "extracted 107
+pages but no text: probable PDF encoding failure (Type0/Identity-H CID
+fonts) — refusing to emit a silent empty stream". Honest refusal, correct
+behavior; noted as known corpus coverage gap.
+
+** F7: OpenRouter usage object carries cost
+Response usage.cost gives exact per-call spend — a free telemetry source
+if F5 is addressed by logging it bajan-side.
+
+* Caveats
+
+- Cost attribution is bounded, not measured exactly (F5).
+- target/ vanished mid-burn-in (external cargo clean); rebuilt and
+  resumed — cache-absence requeue worked as designed, no claim loss.
+- Claims are staged, not adopted — downstream review/ER/scan passes are
+  out of scope for this burn-in.
+
+* Verdict
+
+Pipeline is honest under real-provider stress: failures park, reruns
+requeue, cache keys hold, no silent fabrication. The gaps are operational
+(telemetry F3, retry tuning F2, timeout knob F4, attribution F5) — none
+block correctness. Next burn-in: second corpus (pdf via a CID-clean book,
+or the Wiley EPUBs) + adopt/review pass on the staged 249.
