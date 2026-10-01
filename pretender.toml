@@ -1,5 +1,8 @@
 [pretender]
 mode = "tiered"
+# advisory lease (pretender-1te / DDL-dqr): tiered is a dated downgrade from
+# the gate default; renewal = push the date forward (reviewable diff)
+advisory_until = "2027-03-31"
 languages = ["auto"]
 exclude = ["vendor/**", "node_modules/**", "**/*_generated.*"]
 
