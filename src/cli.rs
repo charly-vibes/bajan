@@ -1142,11 +1142,48 @@ pub fn argument_error_envelope(err: &clap::Error) -> String {
 pub fn render_text(json: &str) -> String {
     let v: serde_json::Value = serde_json::from_str(json).expect("run() always emits valid JSON");
     if v["ok"].as_bool().unwrap_or(false) {
+        let data = &v["data"];
+        // bajan-lp6: query results are the primary human read surface —
+        // render the hit list instead of a status banner. All other ok
+        // envelopes (version/ingest/extract/adopt/review/er) keep the
+        // short banner form.
+        if let Some(hits) = data["hits"].as_array() {
+            let status = data["status"].as_str().unwrap_or("ok");
+            let mut out = format!("query {} — {} hit(s)\n", status, hits.len());
+            if hits.is_empty() {
+                out.push_str("  (no matching claims)");
+            }
+            for h in hits {
+                let text = h["text"].as_str().unwrap_or("");
+                let preview: String = text.chars().take(72).collect();
+                let tier = h["authority_tier"].as_u64().unwrap_or(0);
+                let staleness = if h["stale"].as_bool().unwrap_or(false) {
+                    "stale"
+                } else {
+                    "fresh"
+                };
+                out.push_str(&format!(
+                    "  #{} tier={} {} — {}\n",
+                    h["claim_key"].as_u64().unwrap_or(0),
+                    tier,
+                    staleness,
+                    preview,
+                ));
+            }
+            if let Some(warning) = data["staleness_warning"].as_object() {
+                out.push_str(&format!(
+                    "  ! stale best hit #{} (cutoff {})\n",
+                    warning["claim_key"].as_u64().unwrap_or(0),
+                    warning["data_cutoff"].as_str().unwrap_or("?"),
+                ));
+            }
+            return out.trim_end().to_string();
+        }
         format!(
             "{} v{} ({})",
-            v["data"]["name"].as_str().unwrap_or("bajan"),
+            data["name"].as_str().unwrap_or("bajan"),
             v["cli_version"].as_str().unwrap_or("?"),
-            v["data"]["status"].as_str().unwrap_or("ok"),
+            data["status"].as_str().unwrap_or("ok"),
         )
     } else {
         let data = &v["data"];
@@ -1545,6 +1582,28 @@ mod tests {
                 ":memory:"
             )),
             1
+        );
+    }
+
+    // bajan-lp6: text mode must render the query hit list — the banner-only
+    // rendering made the primary human read surface silently empty while
+    // `--json` returned hits.
+    #[test]
+    fn text_render_renders_query_hits() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        ingest_with(&db, &stream_json());
+        extract_with(&db);
+        let json = query_with(&db, "parser", 100, &[]);
+        let text = render_text(&json.to_string());
+        assert!(
+            text.contains("parser resolves spans deterministically"),
+            "hit text missing: {text}"
+        );
+        assert!(text.contains("#"), "claim_key missing: {text}");
+        assert!(text.contains("tier=2"), "authority_tier missing: {text}");
+        assert!(
+            text.contains("stale") || text.contains("fresh"),
+            "staleness missing: {text}"
         );
     }
 
