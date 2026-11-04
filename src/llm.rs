@@ -40,11 +40,30 @@ pub const LLM_DEFAULT_CONTEXT_TOKENS: usize = 8192;
 /// repeated failure).
 pub const LLM_DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
-/// Backoff base between attempts: 500ms · 2^(attempt−1), capped.
-const LLM_BACKOFF_BASE_MS: u64 = 500;
+/// Backoff base between attempts: 2s · 2^(attempt−1), capped (bajan-266,
+/// burn-in F2: provider-load windows outlast short backoff — the old
+/// 500ms base left 3 attempts ~1.5s of total patience, and cross-pass
+/// reruns recovered only 2/12 parked episodes).
+const LLM_BACKOFF_BASE_MS: u64 = 2_000;
 
 /// Backoff cap — a run must not stall forever on a wedged endpoint.
-const LLM_BACKOFF_CAP_MS: u64 = 8_000;
+const LLM_BACKOFF_CAP_MS: u64 = 60_000;
+
+/// Jittered backoff (bajan-266): the deterministic schedule scaled by a
+/// per-call fraction in [0.5, 1.0) derived from the wall clock. Only
+/// the SLEEP is randomized — extraction results stay deterministic;
+/// the point is decorrelating concurrent passes so simultaneous reruns
+/// don't sync their retries onto the same provider load window.
+pub fn jittered_backoff(attempt: u32) -> Duration {
+    let full_ms = llm_backoff(attempt).as_millis() as u64;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64 ^ d.as_secs())
+        .unwrap_or(0);
+    // Hash spread + [0.5, 1.0) scale: cheap decorrelation, no rand dep.
+    let frac_ms = full_ms / 2 + (nanos >> 17) % (full_ms - full_ms / 2 + 1).max(1);
+    Duration::from_millis(frac_ms.min(full_ms))
+}
 
 /// Cache identity for the LLM extractor: llm namespace + model id +
 /// package version. A model change or a prompt change (version bump)
@@ -482,7 +501,7 @@ impl LlmExtractor {
                 return Ok(output);
             }
             if attempt < self.max_attempts {
-                (self.sleep)(llm_backoff(attempt));
+                (self.sleep)(jittered_backoff(attempt));
             }
         }
         Err(ExtractionFailure::Exhausted {

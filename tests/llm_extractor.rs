@@ -16,7 +16,7 @@ use bajan::extract::{
     ExtractionFailure, Extractor, ExtractorConfig, Finish, Reason, run_extract_with,
 };
 use bajan::ingest::{self, EpisodeRecord, Locator, SourceMeta};
-use bajan::llm::{LlmExtractor, LlmTransport, chunk_episode, llm_backoff, strip_json_fence};
+use bajan::llm::{LlmExtractor, LlmTransport, chunk_episode, jittered_backoff, llm_backoff, strip_json_fence};
 use bajan::store::sqlite::SqliteStore;
 use bajan::store::{ClaimStatus, Evidence};
 use proptest::prelude::*;
@@ -480,17 +480,65 @@ fn tiny_budget_still_preserves_text() {
 
 // --- backoff schedule -----------------------------------------------------------
 
-/// Backoff is exponential from 500ms, capped at 8s.
+/// Backoff is exponential from 2s, capped at 60s (bajan-266, burn-in F2:
+/// provider-load windows outlast the old 500ms→8s schedule — 3 attempts
+/// waited ~1.5s total and 2/12 parked episodes recovered only on a
+/// cross-pass rerun).
 #[test]
 fn backoff_is_exponential_and_capped() {
-    assert_eq!(llm_backoff(1), std::time::Duration::from_millis(500));
-    assert_eq!(llm_backoff(2), std::time::Duration::from_millis(1000));
-    assert_eq!(llm_backoff(3), std::time::Duration::from_millis(2000));
+    assert_eq!(llm_backoff(1), std::time::Duration::from_millis(2_000));
+    assert_eq!(llm_backoff(2), std::time::Duration::from_millis(4_000));
+    assert_eq!(llm_backoff(3), std::time::Duration::from_millis(8_000));
     assert_eq!(
         llm_backoff(20),
-        std::time::Duration::from_millis(8_000),
+        std::time::Duration::from_millis(60_000),
         "capped"
     );
+}
+
+/// Jitter decorrelates concurrent passes so simultaneous reruns don't
+/// sync their retries onto the same load window: every sampled sleep is
+/// within [half, full) of the schedule's deterministic backoff.
+#[test]
+fn jittered_backoff_stays_within_half_of_schedule() {
+    for attempt in 1..=6u32 {
+        let full = llm_backoff(attempt).as_millis();
+        for _ in 0..200 {
+            let got = jittered_backoff(attempt).as_millis();
+            assert!(
+                got >= full / 2 && got <= full,
+                "attempt {attempt}: {got}ms outside [{}/2, {full}]",
+                full
+            );
+        }
+    }
+}
+
+/// The retry loop itself sleeps within the jittered bounds — captured
+/// via the injected sleep (durations in [1s,2s] then [2s,4s] for
+/// attempts 1 and 2 of a mid-budget success).
+#[test]
+fn retrying_call_sleeps_within_backoff_bounds() {
+    let script = Script::new(vec![
+        Err("http 503".into()),
+        Err("http 503".into()),
+        Ok(openai_ok(&claims_content(serde_json::json!([
+            { "text": "A is true.", "evidence": "A is true." }
+        ])))),
+    ]);
+    let sleeps: Arc<Mutex<Vec<std::time::Duration>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = sleeps.clone();
+    let extractor = llm_with(script, 3).with_sleep(Box::new(move |d| {
+        sink.lock().expect("sleeps lock").push(d);
+    }));
+    extractor
+        .propose(&episode("ep-1", "A is true."))
+        .expect("third attempt succeeds");
+    let got = sleeps.lock().expect("sleeps lock").clone();
+    assert_eq!(got.len(), 2, "one sleep per failed attempt");
+    let (first_ms, second_ms) = (got[0].as_millis(), got[1].as_millis());
+    assert!((1_000..=2_000).contains(&first_ms), "sleep 1: {first_ms}ms");
+    assert!((2_000..=4_000).contains(&second_ms), "sleep 2: {second_ms}ms");
 }
 
 // --- config surface --------------------------------------------------------------
