@@ -3,8 +3,10 @@
 //! Responsibilities: the published episode-stream record schema
 //! (`ic_stream-schema`), malformed-record rejection (`ic_malformed`),
 //! NFC-normalized id identity (`ic_id_canon`), at most one persisted episode
-//! per stable id (`ic_unique_id`), and idempotent re-ingest (`ic_idempotent`)
-//! — one outcome record per submitted episode (`ic_outcome-schema`).
+//! per stable id (`ic_unique_id`), idempotent re-ingest (`ic_idempotent`),
+//! tombstoned-id rejection with the machine-readable deleted-id reason
+//! (`ic_deleted_tombstone`), and one outcome record per submitted episode
+//! (`ic_outcome-schema`).
 //! Rationale: bajan never parses source formats (`ic_no_format_parsing`);
 //! the converter upstream does. The store persists only what the stream
 //! carries — verbatim text, locator (or typed absent marker), and source

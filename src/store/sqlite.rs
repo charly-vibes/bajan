@@ -1,11 +1,14 @@
 //! Purpose: SQLite persistence of the claim graph as plain rows in a single
 //! embedded database (`gm_embedded_store`) — episodes, claim nodes, lineage
 //! edges, extraction-cache markers, adoption audit records, supersession
-//! tombstones, and re-stage records.
+//! tombstones, re-stage records, and episode deletion tombstones
+//! (`ic_deleted_tombstone`).
 //! Responsibilities: durable persistence; the dump/recreate round-trip
-//! (`p_embedded_store`, tombstones included); SQL-level adopt
-//! (`gm_human_adopt`); SQL-level supersession and explicit re-stage
-//! (`ex_supersession`); read-path error discipline (bajan-2sj) — every
+//! (`p_embedded_store`, supersession tombstones and episode tombstones
+//! included); SQL-level adopt (`gm_human_adopt`); SQL-level supersession and
+//! explicit re-stage (`ex_supersession`); episode delete/revive
+//! (`ic_deleted_tombstone` / `ic_deleted_recreate`); read-path error
+//! discipline (bajan-2sj) — every
 //! read maps failures to `StoreError::Sqlite` carrying the governing
 //! spec, so a corrupt store surfaces as an envelope, never a process
 //! panic.

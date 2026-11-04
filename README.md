@@ -94,16 +94,23 @@ bajan extract
 #    (claim keys come from the extract output / `bajan query` hit list)
 bajan adopt 1 2 3
 
-# 5. Entity-review queue — the only human-only resolutions in the pipeline
+# 5. Episode deletion / revival — operator maintenance (ic_deleted_tombstone)
+bajan delete <episode_id> --actor you   # refused while a claim supports the episode
+bajan revive <episode_id> --actor you   # the only path that clears a tombstone
+# A deleted id is retired: every later submission is rejected with the
+# machine-readable deleted_id reason until revive — re-ingest never
+# resurrects, and dump-recreate carries the tombstone across rebuilds.
+
+# 6. Entity-review queue — the only human-only resolutions in the pipeline
 bajan review list
 bajan review approve <from> <to> --actor you   # merge a duplicate pair
 bajan review reject <from> <to> --actor you    # drop the merge candidate
 
-# 6. Query — ranked hits with lineage-traceable provenance
+# 7. Query — ranked hits with lineage-traceable provenance
 bajan query "profit" --scope workspace:dev
 bajan query "profit" --json | jq '.data.hits'
 
-# 7. Contradictions — closed rule set over specific claims, plus an
+# 8. Contradictions — closed rule set over specific claims, plus an
 #    optional LLM proposal pass
 bajan contradict 1 2
 bajan scan                                     # deterministic contradicts pass
@@ -111,7 +118,7 @@ bajan propose            # LLM-assisted: stages proposals, never writes edges
 bajan proposal list
 bajan proposal approve <from> <to> --actor you  # writes the contradicts edge
 
-# 8. Score an extraction run against a golden corpus (see
+# 9. Score an extraction run against a golden corpus (see
 #    "Evaluating extraction quality" below; the adjudicated corpus
 #    lives in evals/fixtures/gold-fi4e-v1.json)
 bajan eval claims --corpus evals/fixtures/gold-fi4e-v1.json --run run.json
