@@ -1,0 +1,13 @@
+id = "p-outcome-schema"
+description = ""
+archetype = "BP"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "cli::tests::ingest_reports_duplicate_reason_for_intra_batch_repeats", timeout_seconds = 120 },
+    { flags = "ingest::tests::reject_reasons_are_machine_readable", timeout_seconds = 120 },
+    { flags = "cli::tests::empty_stream_is_a_valid_noop", timeout_seconds = 120 },
+]

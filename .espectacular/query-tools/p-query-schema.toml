@@ -1,0 +1,12 @@
+id = "p-query-schema"
+description = ""
+archetype = "BP"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "query::tests::budget_status_vocabulary_is_closed", timeout_seconds = 120 },
+    { flags = "cli::tests::query_json_envelope_carries_coverage_counts", timeout_seconds = 120 },
+]

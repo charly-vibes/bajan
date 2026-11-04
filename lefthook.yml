@@ -8,6 +8,14 @@ pre-commit:
       run: dont prime --json > /dev/null
     espectacular:
       run: ah check
+    spec-drift-gate:
+      # Regenerate the deployed openspec/ mirror from the corpus and fail
+      # unless a fresh redeploy is staged into this commit. The failure
+      # output names the remedy — "current but unstaged" (fresh worktree,
+      # untouched index) vs "staged mirror is stale" — instead of a
+      # misleading "stale" for both (beads bajan-16o; logic in
+      # tools/spec_drift_gate.sh, gently precedent).
+      run: bash tools/spec_drift_gate.sh
     specodelic:
       run: spk lint specs
     pretender:

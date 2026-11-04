@@ -1,0 +1,11 @@
+id = "p-repropose-guard"
+description = ""
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "repropose_guard_requires_new_evidence", timeout_seconds = 120 },
+]

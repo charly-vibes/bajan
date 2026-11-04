@@ -1,0 +1,12 @@
+id = "p-state-orthogonal"
+description = ""
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "reingest_is_idempotent_and_never_duplicates", timeout_seconds = 120 },
+    { flags = "infrastructure_failure_propagates_and_episode_stays_retryable", timeout_seconds = 120 },
+]

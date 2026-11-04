@@ -1,0 +1,11 @@
+id = "p-no-llm-post"
+description = ""
+archetype = "PF"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "extraction_claims::p_no_llm_post", timeout_seconds = 120 },
+]

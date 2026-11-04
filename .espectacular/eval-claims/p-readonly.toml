@@ -1,0 +1,11 @@
+id = "p-readonly"
+description = ""
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "eval_never_touches_store", timeout_seconds = 120 },
+]

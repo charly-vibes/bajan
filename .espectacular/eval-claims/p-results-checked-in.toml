@@ -1,0 +1,11 @@
+id = "p-results-checked-in"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "results_row_reproducible_and_version_stamped", timeout_seconds = 120 },
+]

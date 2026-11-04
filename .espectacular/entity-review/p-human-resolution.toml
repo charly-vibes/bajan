@@ -1,0 +1,13 @@
+id = "p-human-resolution"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "p_human_resolution", timeout_seconds = 120 },
+    { flags = "review_approve_cli_merges_lineage", timeout_seconds = 120 },
+    { flags = "review_reject_cli_drops_only_the_edge", timeout_seconds = 120 },
+]

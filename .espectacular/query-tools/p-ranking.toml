@@ -1,0 +1,15 @@
+id = "p-ranking"
+description = ""
+archetype = "PF"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "ranked_order_is_authority_then_recency", timeout_seconds = 120 },
+    { flags = "stale_high_authority_demotes_below_fresh_low_authority", timeout_seconds = 120 },
+    { flags = "recency_breaks_ties_within_one_tier", timeout_seconds = 120 },
+    { flags = "best_hit_carries_staleness_warning_when_stale", timeout_seconds = 120 },
+    { flags = "absent_cutoff_sorts_least_fresh_without_warning", timeout_seconds = 120 },
+]

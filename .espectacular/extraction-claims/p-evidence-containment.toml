@@ -1,0 +1,14 @@
+id = "p-evidence-containment"
+description = ""
+archetype = "BP"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "extract::tests::gate_rejects_spans_failing_collapsed_containment", timeout_seconds = 120 },
+    { flags = "extract::tests::reflection_flags_unknown_spans_only", timeout_seconds = 120 },
+    { flags = "extract::tests::gate_passes_typed_absent_marker_through", timeout_seconds = 120 },
+    { flags = "extract::tests::gate_passes_whole_episode_spans", timeout_seconds = 120 },
+]

@@ -1,0 +1,11 @@
+id = "p-reflection"
+description = ""
+archetype = "CE"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "extraction_claims::p_reflection", timeout_seconds = 120 },
+]

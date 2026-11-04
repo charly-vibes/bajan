@@ -1,0 +1,12 @@
+id = "p-idempotent"
+description = ""
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "reingest_is_idempotent_and_never_duplicates", timeout_seconds = 120 },
+    { flags = "order_insensitive_ingest_yields_identical_graph", timeout_seconds = 120 },
+]

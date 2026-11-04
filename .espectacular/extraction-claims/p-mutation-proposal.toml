@@ -1,0 +1,14 @@
+id = "p-mutation-proposal"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "active_conflict_stages_invalidation_proposal", timeout_seconds = 120 },
+    { flags = "duplicate_proposal_on_later_conflicting_pass_is_idempotent", timeout_seconds = 120 },
+    { flags = "unknown_evidence_never_conflicts", timeout_seconds = 120 },
+    { flags = "proposal_stages_against_active_claims_only", timeout_seconds = 120 },
+]

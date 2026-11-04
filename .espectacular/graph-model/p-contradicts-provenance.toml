@@ -1,0 +1,14 @@
+id = "p-contradicts-provenance"
+description = ""
+archetype = "CE"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "provenance_carries_pass_identity_and_rule", timeout_seconds = 120 },
+    { flags = "rerun_refuses_duplicates_without_double_edges", timeout_seconds = 120 },
+    { flags = "dump_recreate_preserves_edge_provenance", timeout_seconds = 120 },
+    { flags = "p_contradicts_provenance", timeout_seconds = 120 },
+]

@@ -100,6 +100,30 @@ pub enum Command {
         #[arg(long)]
         actor: Option<String>,
     },
+    /// Operator deletion surface (ic_deleted_tombstone): remove one
+    /// claim-free persisted episode and record a deletion tombstone for
+    /// its stable id — every later submission of the id, unchanged or
+    /// mutated, is rejected with the machine-readable deleted-id reason
+    /// until an explicit revive. Deletion is refused while any claim
+    /// supports the episode (gm_lineage_survives).
+    Delete {
+        /// Stable id of the episode to delete.
+        episode_id: String,
+        /// Operator identity; defaults to $USER.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Operator revive surface (ic_deleted_recreate): the only path that
+    /// clears a deletion tombstone — revive alone changes nothing; the
+    /// next submission of the id persists through the normal acceptance
+    /// path exactly once.
+    Revive {
+        /// Stable id whose deletion tombstone to clear.
+        episode_id: String,
+        /// Operator identity; defaults to $USER.
+        #[arg(long)]
+        actor: Option<String>,
+    },
     /// Deterministic entity-resolution pass (er_queue_entry): propose
     /// possible-duplicate merge candidates into the review queue from
     /// ranked claims — normalization equivalence/containment only, no LLM,
@@ -654,6 +678,128 @@ fn adopt_envelope(db_path: &str, claims: &[usize], actor: Option<&str>) -> serde
     adopt_with(&db, claims, actor)
 }
 
+// ---- episode tombstone operator surface (specs/ingestion-contract.md,
+// ic_deleted_tombstone / ic_deleted_recreate, bajan-aod) ----
+
+/// One operator tombstone action in envelope form.
+#[derive(Serialize)]
+struct TombstoneReport {
+    action: &'static str,
+    episode_id: String,
+    actor: String,
+}
+
+fn operator_actor(actor: Option<&str>) -> String {
+    actor
+        .map(str::to_string)
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn delete_error_envelope(err: &StoreError) -> serde_json::Value {
+    let code = match err {
+        StoreError::DeleteRefused { .. } => "delete_refused",
+        _ => "episode_not_found",
+    };
+    spec_error_envelope(
+        code,
+        &err.to_string(),
+        Some("specs/ingestion-contract.md"),
+        "delete",
+        vec![RemediationEntry {
+            command: "bajan delete <episode_id> --actor <id>".into(),
+            description: "Deletion is permitted only when no claim supports the episode — \
+                          lineage edges pin their episodes (gm_lineage_survives). Resolve or \
+                          supersede the supporting claims first; unknown ids must be \
+                          ingested before they can be deleted."
+                .into(),
+        }],
+    )
+}
+
+fn delete_with(
+    db: &crate::store::sqlite::SqliteStore,
+    episode_id: &str,
+    actor: Option<&str>,
+) -> serde_json::Value {
+    let actor = operator_actor(actor);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    match db.delete_episode(episode_id, now) {
+        Ok(()) => serde_json::to_value(Envelope::success(
+            env!("CARGO_PKG_VERSION"),
+            EnvelopeKind::Ok,
+            TombstoneReport {
+                action: "delete",
+                episode_id: episode_id.to_string(),
+                actor,
+            },
+            vec![],
+            vec![],
+        ))
+        .expect("envelope serialization cannot fail"),
+        Err(err) => delete_error_envelope(&err),
+    }
+}
+
+fn delete_envelope(db_path: &str, episode_id: &str, actor: Option<&str>) -> serde_json::Value {
+    let db = match crate::store::sqlite::SqliteStore::open(db_path) {
+        Ok(db) => db,
+        Err(err) => return delete_error_envelope(&err),
+    };
+    delete_with(&db, episode_id, actor)
+}
+
+fn revive_error_envelope(err: &StoreError) -> serde_json::Value {
+    spec_error_envelope(
+        "revive_refused",
+        &err.to_string(),
+        Some("specs/ingestion-contract.md"),
+        "revive",
+        vec![RemediationEntry {
+            command: "bajan revive <episode_id> --actor <id>".into(),
+            description: "Revive applies to tombstoned ids only — it is the only path that \
+                          clears a deletion tombstone, and no automated path (re-ingest, \
+                          batch replay, dump-recreate rebuild) ever clears one \
+                          (ic_deleted_recreate)."
+                .into(),
+        }],
+    )
+}
+
+fn revive_with(
+    db: &crate::store::sqlite::SqliteStore,
+    episode_id: &str,
+    actor: Option<&str>,
+) -> serde_json::Value {
+    let actor = operator_actor(actor);
+    match db.revive_episode(episode_id) {
+        Ok(()) => serde_json::to_value(Envelope::success(
+            env!("CARGO_PKG_VERSION"),
+            EnvelopeKind::Ok,
+            TombstoneReport {
+                action: "revive",
+                episode_id: episode_id.to_string(),
+                actor,
+            },
+            vec![],
+            vec![],
+        ))
+        .expect("envelope serialization cannot fail"),
+        Err(err) => revive_error_envelope(&err),
+    }
+}
+
+fn revive_envelope(db_path: &str, episode_id: &str, actor: Option<&str>) -> serde_json::Value {
+    let db = match crate::store::sqlite::SqliteStore::open(db_path) {
+        Ok(db) => db,
+        Err(err) => return revive_error_envelope(&err),
+    };
+    revive_with(&db, episode_id, actor)
+}
+
 /// The adopt envelope over an already-open store (testable seeding point).
 fn adopt_with(
     db: &crate::store::sqlite::SqliteStore,
@@ -1122,6 +1268,12 @@ pub fn run(command: Command, db_path: &str) -> String {
             contradict_envelope(db_path, claims, resolve_budget(*budget))
         }
         Command::Adopt { claims, actor } => adopt_envelope(db_path, claims, actor.as_deref()),
+        Command::Delete { episode_id, actor } => {
+            delete_envelope(db_path, episode_id, actor.as_deref())
+        }
+        Command::Revive { episode_id, actor } => {
+            revive_envelope(db_path, episode_id, actor.as_deref())
+        }
         Command::Er { budget } => er_envelope(db_path, resolve_budget(*budget)),
         Command::Scan { budget } => scan_envelope(db_path, resolve_budget(*budget)),
         Command::Review { action } => match action {
@@ -1994,6 +2146,70 @@ mod tests {
         let v = adopt_with(&db, &[0], Some("sasha"));
         assert_eq!(v["ok"].as_bool(), Some(false));
         assert_eq!(v["data"]["spec_ref"], "specs/graph-model.md");
+    }
+
+    // ---- episode tombstone operator surface (bajan-aod) ----
+
+    #[test]
+    fn delete_revive_cli_args_parse() {
+        let cli = Cli::try_parse_from(["bajan", "delete", "ep-001", "--actor", "sasha"]).unwrap();
+        let Command::Delete { episode_id, actor } = cli.command else {
+            panic!("expected delete")
+        };
+        assert_eq!(episode_id, "ep-001");
+        assert_eq!(actor.as_deref(), Some("sasha"));
+
+        let cli = Cli::try_parse_from(["bajan", "revive", "ep-001"]).unwrap();
+        assert!(matches!(cli.command, Command::Revive { .. }));
+    }
+
+    #[test]
+    fn delete_envelope_reports_the_operator_action() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        db.insert_episode(&seed_episode()).unwrap();
+        let v = delete_with(&db, "ep-seed", Some("sasha"));
+        assert_eq!(v["ok"].as_bool(), Some(true), "delete emits ok envelope");
+        assert_eq!(v["data"]["action"], "delete");
+        assert_eq!(v["data"]["episode_id"], "ep-seed");
+        assert_eq!(v["data"]["actor"], "sasha");
+        assert!(db.get_episode("ep-seed").unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_on_unknown_episode_is_honest_error_with_remediation() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        let v = delete_with(&db, "ep-never", Some("sasha"));
+        assert_eq!(v["ok"].as_bool(), Some(false));
+        assert_eq!(v["envelope_kind"].as_str(), Some("error"));
+        assert_eq!(
+            v["data"]["spec_ref"].as_str(),
+            Some("specs/ingestion-contract.md")
+        );
+        assert!(!v["data"]["remediation"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn revive_on_non_tombstoned_id_is_honest_error_with_remediation() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        let v = revive_with(&db, "ep-never", Some("sasha"));
+        assert_eq!(v["ok"].as_bool(), Some(false));
+        assert_eq!(v["envelope_kind"].as_str(), Some("error"));
+        assert_eq!(
+            v["data"]["spec_ref"].as_str(),
+            Some("specs/ingestion-contract.md")
+        );
+        assert!(!v["data"]["remediation"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn revive_envelope_reports_the_operator_action() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        db.insert_episode(&seed_episode()).unwrap();
+        db.delete_episode("ep-seed", 1_700_000_000).unwrap();
+        let v = revive_with(&db, "ep-seed", Some("sasha"));
+        assert_eq!(v["ok"].as_bool(), Some(true), "revive emits ok envelope");
+        assert_eq!(v["data"]["action"], "revive");
+        assert_eq!(v["data"]["episode_id"], "ep-seed");
     }
 
     #[test]

@@ -1,0 +1,14 @@
+id = "p-schema-v2"
+description = ""
+archetype = "BP"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "store::tests::claim_nodes_expose_exactly_the_v2_field_set", timeout_seconds = 120 },
+    { flags = "store::tests::schema_rejects_mistyped_fields", timeout_seconds = 120 },
+    { flags = "store::tests::evidence_is_span_with_locator_or_typed_absent_marker", timeout_seconds = 120 },
+    { flags = "store::tests::migration_backfills_unknown_and_reports_count_loudly", timeout_seconds = 120 },
+]

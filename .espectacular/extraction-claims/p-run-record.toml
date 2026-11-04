@@ -1,0 +1,15 @@
+id = "p-run-record"
+description = ""
+archetype = "CE"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "extract::tests::every_call_writes_exactly_one_run_row", timeout_seconds = 120 },
+    { flags = "extract::tests::failure_outcomes_carry_machine_readable_reasons", timeout_seconds = 120 },
+    { flags = "extract::tests::claim_nodes_expose_no_reason_field", timeout_seconds = 120 },
+    { flags = "extract::tests::gate_rejections_serialize_machine_readable_reasons", timeout_seconds = 120 },
+    { flags = "model_id_lands_on_run_rows", timeout_seconds = 120 },
+]

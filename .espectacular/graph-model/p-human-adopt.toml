@@ -1,0 +1,14 @@
+id = "p-human-adopt"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "store::tests::human_adopt_moves_staged_to_active_with_one_audit_record", timeout_seconds = 120 },
+    { flags = "store::tests::adopt_refuses_non_staged_claims_without_audit", timeout_seconds = 120 },
+    { flags = "store::tests::batch_adopt_writes_one_audit_record_per_claim", timeout_seconds = 120 },
+    { flags = "cli::tests::adopt_envelope_is_ok_for_seeded_store", timeout_seconds = 120 },
+]

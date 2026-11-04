@@ -1,0 +1,13 @@
+id = "p-human-resolution"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "approve_writes_provenanced_edge_and_audit", timeout_seconds = 120 },
+    { flags = "reject_writes_no_edge_and_audits", timeout_seconds = 120 },
+    { flags = "resolution_requires_actor", timeout_seconds = 120 },
+]

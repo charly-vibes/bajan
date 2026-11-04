@@ -1,0 +1,11 @@
+id = "p-section-filter"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "section_kind_tag_refuses_candidates_and_caches_extracted", timeout_seconds = 120 },
+]

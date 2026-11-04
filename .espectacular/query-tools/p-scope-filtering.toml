@@ -1,0 +1,15 @@
+id = "p-scope-filtering"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "scoped_results_are_exactly_the_projection_intersection", timeout_seconds = 120 },
+    { flags = "multi_source_claim_in_scope_via_union", timeout_seconds = 120 },
+    { flags = "scope_returns_only_intersecting_claims", timeout_seconds = 120 },
+    { flags = "disjoint_projection_reports_complete_with_no_hits", timeout_seconds = 120 },
+    { flags = "cli::tests::query_scope_flag_filters_by_tag_projection_and_echoes_scope", timeout_seconds = 120 },
+]

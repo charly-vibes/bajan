@@ -1,0 +1,15 @@
+id = "p-queue-entry"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "p_queue_entry", timeout_seconds = 120 },
+    { flags = "review_commands_cannot_create_candidates", timeout_seconds = 120 },
+    { flags = "alias_matches_route_through_existing_guards", timeout_seconds = 120 },
+    { flags = "er_containment_found_when_shorter_text_embeds_mid_token", timeout_seconds = 120 },
+    { flags = "alias_match_proposes_pair_normalization_misses", timeout_seconds = 120 },
+]

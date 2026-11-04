@@ -1,0 +1,11 @@
+id = "p-review-schema"
+description = ""
+archetype = "BP"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "entity_review::p_review_schema", timeout_seconds = 120 },
+]

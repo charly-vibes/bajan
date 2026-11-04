@@ -1,0 +1,12 @@
+id = "p-reject-drops-edge"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "p_reject_drops_edge", timeout_seconds = 120 },
+    { flags = "review_reject_cli_drops_only_the_edge", timeout_seconds = 120 },
+]

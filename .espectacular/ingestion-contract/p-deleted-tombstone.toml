@@ -1,0 +1,12 @@
+id = "p-deleted-tombstone"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "p_deleted_tombstone", timeout_seconds = 120 },
+    { flags = "delete_is_refused_while_a_claim_supports_the_episode", timeout_seconds = 120 },
+]

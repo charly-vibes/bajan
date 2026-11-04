@@ -1,0 +1,12 @@
+id = "p-golden-corpus"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "golden_corpus_exposes_claims_with_counts_spans_hedges", timeout_seconds = 120 },
+    { flags = "corpus_without_version_is_rejected", timeout_seconds = 120 },
+]

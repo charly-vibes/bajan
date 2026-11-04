@@ -17,9 +17,9 @@ use crate::extract::Reason;
 use crate::ingest::{EpisodeRecord, Locator};
 use crate::store::{
     AuditRecord, ClaimNode, ClaimStatus, ContradictionAuditRecord, ContradictionProposal,
-    EdgeLabel, EnqueueOutcome, Evidence, InvalidationProposal, Lineage, ProposalDecision,
-    ProposalStatus, ProposeOutcome, ReviewAuditRecord, ReviewDecision, ReviewRecord, ReviewStatus,
-    StoreError, SupersessionRecord, dropped_hedge_markers,
+    EdgeLabel, EnqueueOutcome, EpisodeTombstone, Evidence, InvalidationProposal, Lineage,
+    ProposalDecision, ProposalStatus, ProposeOutcome, ReviewAuditRecord, ReviewDecision,
+    ReviewRecord, ReviewStatus, StoreError, SupersessionRecord, dropped_hedge_markers,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -142,6 +142,10 @@ CREATE TABLE IF NOT EXISTS contradiction_proposal_audits (
     decision TEXT NOT NULL,
     actor TEXT NOT NULL,
     resolved_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS episode_tombstones (
+    episode_id TEXT PRIMARY KEY,
+    deleted_at INTEGER NOT NULL
 );
 ";
 
@@ -380,6 +384,12 @@ pub struct ExtractionDump {
     /// Contradiction-proposal audit records, row order preserved.
     #[serde(default)]
     pub contradiction_audits: Vec<ContradictionAuditRecord>,
+    /// Deletion tombstones (`ic_deleted_tombstone`), row order preserved:
+    /// without these a dump-recreate rebuild would clear every tombstone
+    /// and re-ingest would resurrect deleted episodes
+    /// (`ic_deleted_recreate` — no automated path clears a tombstone).
+    #[serde(default)]
+    pub episode_tombstones: Vec<EpisodeTombstone>,
 }
 
 /// One persisted edge in dump form: endpoints are claim keys, the label
@@ -563,6 +573,122 @@ impl SqliteStore {
             )
             .optional()
             .map_err(sql_err)
+    }
+
+    // ---- episode tombstones (specs/ingestion-contract.md, bajan-aod) ----
+
+    /// Delete one persisted episode (`ic_deleted_tombstone`): permitted
+    /// only when no claim supports it (`gm_lineage_survives` — lineage
+    /// edges pin their episodes), refused honestly otherwise. On success
+    /// the episode row is gone and a deletion tombstone records the
+    /// stable id, so any later submission of the id is rejected with the
+    /// machine-readable deleted-id reason at the ingest boundary. The
+    /// stale extraction-cache marker goes with the episode: after a
+    /// revive the id re-enters the normal extraction path.
+    pub fn delete_episode(&self, episode_id: &str, deleted_at: u64) -> Result<(), StoreError> {
+        let exists: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM episodes WHERE id = ?1",
+                params![episode_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_err)?;
+        if exists.is_none() {
+            return Err(StoreError::EpisodeNotFound {
+                episode_id: episode_id.to_string(),
+                spec: SPEC,
+            });
+        }
+        let supporting: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM lineage WHERE episode_id = ?1",
+                params![episode_id],
+                |row| row.get(0),
+            )
+            .map_err(sql_err)?;
+        if supporting > 0 {
+            return Err(StoreError::DeleteRefused {
+                episode_id: episode_id.to_string(),
+                supporting_claims: supporting as usize,
+                spec: SPEC,
+            });
+        }
+        self.conn
+            .execute(
+                "INSERT INTO episode_tombstones (episode_id, deleted_at) VALUES (?1, ?2)",
+                params![episode_id, deleted_at as i64],
+            )
+            .map_err(sql_err)?;
+        self.conn
+            .execute("DELETE FROM episodes WHERE id = ?1", params![episode_id])
+            .map_err(sql_err)?;
+        self.conn
+            .execute(
+                "DELETE FROM extracted WHERE episode_id = ?1",
+                params![episode_id],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
+    /// Revive one tombstoned episode id (`ic_deleted_recreate`): the only
+    /// path that clears a deletion tombstone — an explicit operator
+    /// action, never automated. Revive alone changes nothing; the next
+    /// submission of the id persists through the normal acceptance path.
+    pub fn revive_episode(&self, episode_id: &str) -> Result<(), StoreError> {
+        let cleared = self
+            .conn
+            .execute(
+                "DELETE FROM episode_tombstones WHERE episode_id = ?1",
+                params![episode_id],
+            )
+            .map_err(sql_err)?;
+        if cleared == 0 {
+            return Err(StoreError::NotTombstoned {
+                episode_id: episode_id.to_string(),
+                spec: SPEC,
+            });
+        }
+        Ok(())
+    }
+
+    /// Whether a deletion tombstone exists for the id — the gate the
+    /// ingest boundary consults before any acceptance decision.
+    pub fn is_tombstoned(&self, episode_id: &str) -> Result<bool, StoreError> {
+        let found: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM episode_tombstones WHERE episode_id = ?1",
+                params![episode_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_err)?;
+        Ok(found.is_some())
+    }
+
+    /// Every deletion tombstone, in insertion row order (the dump
+    /// surface; without these a rebuild would lose the retired ids and
+    /// re-ingest would resurrect deleted episodes, `ic_deleted_recreate`).
+    pub fn episode_tombstones(&self) -> Result<Vec<EpisodeTombstone>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT episode_id, deleted_at FROM episode_tombstones ORDER BY rowid")
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            let episode_id: String = row.get(0).map_err(sql_err)?;
+            let deleted_at: i64 = row.get(1).map_err(sql_err)?;
+            out.push(EpisodeTombstone {
+                episode_id,
+                deleted_at: deleted_at as u64,
+            });
+        }
+        Ok(out)
     }
 
     /// Persist a claim node with one or more lineage edges and the
@@ -812,6 +938,7 @@ impl SqliteStore {
         let contradiction_proposals = self.contradiction_proposals()?;
         let contradiction_audits = self.contradiction_audits()?;
         let er_aliases = self.er_aliases()?;
+        let episode_tombstones = self.episode_tombstones()?;
         Ok(ExtractionDump {
             claims,
             extracted,
@@ -831,6 +958,7 @@ impl SqliteStore {
             er_aliases,
             contradiction_proposals,
             contradiction_audits,
+            episode_tombstones,
         })
     }
 
@@ -987,6 +1115,19 @@ impl SqliteStore {
                     message: e.to_string(),
                     spec: SPEC,
                 })?;
+        }
+        // Deletion tombstones restore RAW (INSERT OR IGNORE): whether an
+        // id is retired is REBUILD state, not write-path semantics — a
+        // dump-recreate rebuild never re-litigates a tombstone
+        // (`ic_deleted_recreate`: no automated path clears one).
+        for tombstone in &dump.episode_tombstones {
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO episode_tombstones (episode_id, deleted_at) \
+                     VALUES (?1, ?2)",
+                    params![tombstone.episode_id, tombstone.deleted_at as i64],
+                )
+                .map_err(sql_err)?;
         }
         Ok(())
     }

@@ -1,0 +1,16 @@
+id = "p-supersession"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "version_bump_supersedes_only_prior_version_staged_claims", timeout_seconds = 120 },
+    { flags = "same_version_reextract_supersedes_nothing", timeout_seconds = 120 },
+    { flags = "no_automated_recovery_of_superseded_claims", timeout_seconds = 120 },
+    { flags = "explicit_restage_moves_superseded_claim_back_to_staged", timeout_seconds = 120 },
+    { flags = "restage_refused_without_tombstone", timeout_seconds = 120 },
+    { flags = "store::tests::active_conflict_stages_invalidation_proposal_without_mutating_claim", timeout_seconds = 120 },
+]

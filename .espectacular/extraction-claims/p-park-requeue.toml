@@ -1,0 +1,13 @@
+id = "p-park-requeue"
+description = ""
+archetype = "CE"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "parked_episode_requeues_with_fresh_budget", timeout_seconds = 120 },
+    { flags = "renewed_exhaustion_parks_again", timeout_seconds = 120 },
+    { flags = "infrastructure_failure_propagates_and_episode_stays_retryable", timeout_seconds = 120 },
+]

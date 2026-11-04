@@ -1,0 +1,13 @@
+id = "p-unique-id"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "ingestion_contract::p_unique_id", timeout_seconds = 120 },
+    { flags = "intra_batch_duplicate_is_first_wins", timeout_seconds = 120 },
+    { flags = "cli::tests::ingest_reports_duplicate_reason_for_intra_batch_repeats", timeout_seconds = 120 },
+]

@@ -1,0 +1,14 @@
+id = "p-deterministic-structure"
+description = ""
+archetype = "PF"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "p_chunk_assembly_preserves_text", timeout_seconds = 120 },
+    { flags = "p_under_budget_text_is_one_chunk", timeout_seconds = 120 },
+    { flags = "tiny_budget_still_preserves_text", timeout_seconds = 120 },
+    { flags = "prompt_is_deterministic", timeout_seconds = 120 },
+]

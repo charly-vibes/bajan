@@ -115,6 +115,17 @@ pub struct SupersessionRecord {
     pub superseded_at: u64,
 }
 
+/// Deletion tombstone for an episode (`ic_deleted_tombstone`): the
+/// stable id is retired — any later submission of the id is rejected with
+/// the machine-readable deleted-id reason until an explicit operator
+/// revive clears the tombstone (`ic_deleted_recreate`). The episode row
+/// itself is gone; only this marker remembers the deletion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EpisodeTombstone {
+    pub episode_id: String,
+    pub deleted_at: u64,
+}
+
 /// Record for one explicit re-stage action (`ex_supersession`): the
 /// only path from a superseded claim back to `staged`, carrying the
 /// operator identity and timestamp — the human-owned counterpart of the
@@ -504,6 +515,32 @@ pub enum StoreError {
     ProposalNotProposed {
         from_claim: usize,
         to_claim: usize,
+        spec: &'static str,
+    },
+
+    #[error("no episode keyed {episode_id} in this store (see {spec}, ic_deleted_tombstone)")]
+    EpisodeNotFound {
+        episode_id: String,
+        spec: &'static str,
+    },
+
+    #[error(
+        "episode {episode_id} still has {supporting_claims} supporting claim(s); deletion is \
+         permitted only when no claim supports it (see {spec}, ic_deleted_tombstone / \
+         gm_lineage_survives)"
+    )]
+    DeleteRefused {
+        episode_id: String,
+        supporting_claims: usize,
+        spec: &'static str,
+    },
+
+    #[error(
+        "no tombstone for episode {episode_id}; revive applies to tombstoned ids only \
+         (see {spec}, ic_deleted_recreate)"
+    )]
+    NotTombstoned {
+        episode_id: String,
         spec: &'static str,
     },
 }

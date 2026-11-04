@@ -1,0 +1,13 @@
+id = "p-reified"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "search_is_lineage_traceable_and_bounded", timeout_seconds = 120 },
+    { flags = "end_to_end_ingest_extract_then_first_query", timeout_seconds = 120 },
+    { flags = "report_joins_lineage_tombstones_and_proposals", timeout_seconds = 120 },
+]

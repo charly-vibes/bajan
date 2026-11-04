@@ -1,0 +1,14 @@
+id = "p-single-call"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "p_cache_keyed_on_version_pair", timeout_seconds = 120 },
+    { flags = "same_version_reuses_cache_extractor_agnostically", timeout_seconds = 120 },
+    { flags = "version_bump_reextracts_across_extractors", timeout_seconds = 120 },
+    { flags = "reingest_is_idempotent_and_never_duplicates", timeout_seconds = 120 },
+]

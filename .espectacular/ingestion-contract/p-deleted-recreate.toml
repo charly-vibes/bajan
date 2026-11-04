@@ -1,0 +1,13 @@
+id = "p-deleted-recreate"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "p_deleted_recreate", timeout_seconds = 120 },
+    { flags = "tombstone_survives_dump_recreate_and_gates_the_rebuilt_store", timeout_seconds = 120 },
+    { flags = "delete_of_an_unknown_episode_is_an_honest_error", timeout_seconds = 120 },
+]

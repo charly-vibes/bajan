@@ -1,0 +1,12 @@
+id = "p-stream-schema"
+description = ""
+archetype = "BP"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "malformed_records_are_rejected_never_persisted", timeout_seconds = 120 },
+    { flags = "cli::tests::malformed_stream_is_a_spec_traced_error", timeout_seconds = 120 },
+]

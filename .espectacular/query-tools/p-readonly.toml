@@ -1,0 +1,13 @@
+id = "p-readonly"
+description = ""
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "scoped_read_stays_readonly", timeout_seconds = 120 },
+    { flags = "ranked_read_stays_readonly", timeout_seconds = 120 },
+    { flags = "contradiction_read_stays_readonly", timeout_seconds = 120 },
+]

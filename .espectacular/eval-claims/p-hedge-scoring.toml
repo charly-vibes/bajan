@@ -1,0 +1,15 @@
+id = "p-hedge-scoring"
+description = ""
+archetype = "PF"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "hedge_drop_is_precision_failure_not_match", timeout_seconds = 120 },
+    { flags = "hedge_preserved_matches_and_added_hedges_are_plain_matches", timeout_seconds = 120 },
+    { flags = "hedge_dropped_golden_stays_available_for_clean_candidate", timeout_seconds = 120 },
+    { flags = "p_hedge_scoring", timeout_seconds = 120 },
+    { flags = "hedge_detection_at_text_boundaries", timeout_seconds = 120 },
+]

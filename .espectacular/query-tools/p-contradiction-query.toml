@@ -1,0 +1,14 @@
+id = "p-contradiction-query"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "pairs_are_exactly_edges_over_queried_claims", timeout_seconds = 120 },
+    { flags = "staged_proposals_against_queried_claims_are_reported", timeout_seconds = 120 },
+    { flags = "unconnected_claims_report_honest_empty", timeout_seconds = 120 },
+    { flags = "incoming_contradicts_edges_join_pairs", timeout_seconds = 120 },
+]

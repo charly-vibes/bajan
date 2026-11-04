@@ -1,0 +1,12 @@
+id = "p-queue-transparency"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "queue_lists_open_oldest_first_with_producer_and_rationale", timeout_seconds = 120 },
+    { flags = "cli::tests::contradict_subcommand_reports_pairs_and_proposals", timeout_seconds = 120 },
+]

@@ -1,0 +1,15 @@
+id = "p-deterministic-scoring"
+description = ""
+archetype = "PF"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "replay_produces_identical_judgments", timeout_seconds = 120 },
+    { flags = "p_deterministic_scoring", timeout_seconds = 120 },
+    { flags = "paraphrase_never_matches", timeout_seconds = 120 },
+    { flags = "span_violation_scores_content_miss_never_match", timeout_seconds = 120 },
+    { flags = "duplicate_candidate_is_spurious", timeout_seconds = 120 },
+]

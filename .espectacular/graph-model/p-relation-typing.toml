@@ -1,0 +1,11 @@
+id = "p-relation-typing"
+description = ""
+archetype = "PF"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "edge_labels_stay_within_the_published_vocabulary", timeout_seconds = 120 },
+]

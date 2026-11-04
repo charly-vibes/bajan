@@ -1,0 +1,13 @@
+id = "p-merge-keeps"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "p_merge_preserves", timeout_seconds = 120 },
+    { flags = "review_approve_cli_merges_lineage", timeout_seconds = 120 },
+    { flags = "p_reject_drops_edge", timeout_seconds = 120 },
+]

@@ -1,0 +1,15 @@
+id = "p-proposal-entry"
+description = ""
+archetype = "CE"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "valid_pair_stages_proposal_without_edge", timeout_seconds = 120 },
+    { flags = "self_pair_refused", timeout_seconds = 120 },
+    { flags = "hallucinated_key_refused_honestly", timeout_seconds = 120 },
+    { flags = "duplicate_open_proposal_refused", timeout_seconds = 120 },
+    { flags = "proposer_stages_valid_pairs_with_llm_producer", timeout_seconds = 120 },
+]

@@ -1,0 +1,13 @@
+id = "p-hedge-anchor"
+description = ""
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "store::tests::span_persistence_rejects_dropped_hedge_markers", timeout_seconds = 120 },
+    { flags = "store::tests::span_persistence_rejects_hedge_dropping_span", timeout_seconds = 120 },
+    { flags = "atomic_claims_never_drop_hedge_markers", timeout_seconds = 120 },
+]

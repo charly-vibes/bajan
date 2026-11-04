@@ -1,0 +1,12 @@
+id = "p-scan-untouched"
+description = ""
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "scan_untouched_by_queue_activity", timeout_seconds = 120 },
+    { flags = "pass_is_deterministic", timeout_seconds = 120 },
+]

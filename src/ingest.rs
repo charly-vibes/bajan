@@ -98,6 +98,11 @@ pub enum RejectReason {
     /// (`ic_batch_duplicate`) — first occurrence wins, later ones are
     /// rejected per record.
     Duplicate,
+    /// A deletion tombstone exists for the stable id
+    /// (`ic_deleted_tombstone`): the id was explicitly deleted by an
+    /// operator and every later submission — unchanged or mutated — is
+    /// refused until revive clears the tombstone (`ic_deleted_recreate`).
+    DeletedId,
 }
 
 impl RejectReason {
@@ -109,6 +114,7 @@ impl RejectReason {
             RejectReason::MissingMetadata => "missing_metadata",
             RejectReason::Conflict => "conflict",
             RejectReason::Duplicate => "duplicate",
+            RejectReason::DeletedId => "deleted_id",
         }
     }
 }
@@ -161,6 +167,17 @@ pub fn persist(
         id: normalized_id,
         ..record.clone()
     };
+    // ic_deleted_tombstone: a deletion tombstone retires the stable id —
+    // the gate runs BEFORE any acceptance decision (the episode row is
+    // gone, so an ungated insert would resurrect the deleted episode).
+    // Every submission of a tombstoned id, unchanged or mutated, is
+    // rejected with the machine-readable deleted-id reason; only an
+    // explicit operator revive clears the tombstone (`ic_deleted_recreate`).
+    if db.is_tombstoned(&canonical.id).map_err(BajanError::from)? {
+        return Ok(IngestOutcome::Rejected {
+            reason: RejectReason::DeletedId,
+        });
+    }
     let inserted = db
         .insert_episode(&canonical)
         .map_err(|e| BajanError::Store(e.to_string()))?;
@@ -230,5 +247,6 @@ mod tests {
         assert_eq!(RejectReason::MissingId.code(), "missing_id");
         assert_eq!(RejectReason::MissingText.code(), "missing_text");
         assert_eq!(RejectReason::MissingMetadata.code(), "missing_metadata");
+        assert_eq!(RejectReason::DeletedId.code(), "deleted_id");
     }
 }

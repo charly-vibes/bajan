@@ -1,0 +1,12 @@
+id = "p-precision-recall"
+description = ""
+archetype = "PF"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "precision_recall_exact_with_raw_counts", timeout_seconds = 120 },
+    { flags = "unknown_metrics_explicit_when_denominator_zero", timeout_seconds = 120 },
+]

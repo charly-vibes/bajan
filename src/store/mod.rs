@@ -16,10 +16,10 @@ pub mod sqlite;
 
 pub use nodes::{
     ClaimNode, ClaimStatus, ContradictionAuditRecord, ContradictionProposal, EdgeLabel,
-    EnqueueOutcome, Evidence, HEDGE_MARKERS, InvalidationProposal, Lineage, MigrationReport,
-    ProposalDecision, ProposalStatus, ProposeOutcome, RestageRecord, ReviewAuditRecord,
-    ReviewDecision, ReviewRecord, ReviewStatus, StoreError, SupersessionRecord, V1ClaimNode,
-    collapse, dropped_hedge_markers, hedge_markers_in, migrate_v1_to_v2,
+    EnqueueOutcome, EpisodeTombstone, Evidence, HEDGE_MARKERS, InvalidationProposal, Lineage,
+    MigrationReport, ProposalDecision, ProposalStatus, ProposeOutcome, RestageRecord,
+    ReviewAuditRecord, ReviewDecision, ReviewRecord, ReviewStatus, StoreError, SupersessionRecord,
+    V1ClaimNode, collapse, dropped_hedge_markers, hedge_markers_in, migrate_v1_to_v2,
 };
 
 pub const SPEC: &str = "specs/graph-model.md";

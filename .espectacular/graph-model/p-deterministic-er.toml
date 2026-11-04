@@ -1,0 +1,13 @@
+id = "p-deterministic-er"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "pass_uses_deterministic_normalization_only", timeout_seconds = 120 },
+    { flags = "review_commands_cannot_create_candidates", timeout_seconds = 120 },
+    { flags = "er_pass_completes_at_book_scale", timeout_seconds = 120 },
+]

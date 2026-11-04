@@ -1,0 +1,12 @@
+id = "p-results-schema"
+description = ""
+archetype = "BP"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "reason_vocabulary_closed_in_output", timeout_seconds = 120 },
+    { flags = "eval_claims_envelope_reports_denominators_and_unknowns", timeout_seconds = 120 },
+]

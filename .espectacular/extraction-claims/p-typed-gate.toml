@@ -1,0 +1,15 @@
+id = "p-typed-gate"
+description = ""
+archetype = "BP"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "gate_rejects_hallucinated_evidence", timeout_seconds = 120 },
+    { flags = "missing_required_fields_refused", timeout_seconds = 120 },
+    { flags = "unknown_output_fields_refused", timeout_seconds = 120 },
+    { flags = "zero_claims_caches_as_empty", timeout_seconds = 120 },
+    { flags = "one_gate_failure_in_batch_stages_nothing", timeout_seconds = 120 },
+]

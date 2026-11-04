@@ -1,0 +1,15 @@
+id = "p-embedded-store"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "dump_then_recreate_reproduces_the_graph", timeout_seconds = 120 },
+    { flags = "dump_recreate_preserves_supersession_tombstones", timeout_seconds = 120 },
+    { flags = "dump_recreate_keeps_rows_the_pipeline_refuses", timeout_seconds = 120 },
+    { flags = "review_state_survives_dump_recreate", timeout_seconds = 120 },
+    { flags = "alias_table_survives_dump_recreate", timeout_seconds = 120 },
+]

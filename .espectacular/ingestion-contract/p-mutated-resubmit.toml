@@ -1,0 +1,11 @@
+id = "p-mutated-resubmit"
+description = ""
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "mutated_resubmissions_are_rejected_with_conflict", timeout_seconds = 120 },
+]

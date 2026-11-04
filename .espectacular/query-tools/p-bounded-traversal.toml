@@ -1,0 +1,13 @@
+id = "p-bounded-traversal"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "search_is_lineage_traceable_and_bounded", timeout_seconds = 120 },
+    { flags = "cli::tests::query_envelope_reports_budget_exhaustion_honestly", timeout_seconds = 120 },
+    { flags = "bounded_edge_walk_reports_exhaustion", timeout_seconds = 120 },
+]

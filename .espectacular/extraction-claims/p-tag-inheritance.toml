@@ -1,0 +1,13 @@
+id = "p-tag-inheritance"
+description = ""
+archetype = "NR"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "multi_source_claim_in_scope_via_union", timeout_seconds = 120 },
+    { flags = "scoped_results_are_exactly_the_projection_intersection", timeout_seconds = 120 },
+    { flags = "store::tests::claim_nodes_expose_exactly_the_v2_field_set", timeout_seconds = 120 },
+]

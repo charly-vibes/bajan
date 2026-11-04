@@ -1,0 +1,13 @@
+id = "p-verbatim"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "order_insensitive_ingest_yields_identical_graph", timeout_seconds = 120 },
+    { flags = "dump_then_recreate_reproduces_the_graph", timeout_seconds = 120 },
+    { flags = "p_units_reconcatenate_and_stay_verbatim", timeout_seconds = 120 },
+]

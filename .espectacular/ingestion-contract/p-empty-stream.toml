@@ -1,0 +1,11 @@
+id = "p-empty-stream"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "cli::tests::empty_stream_is_a_valid_noop", timeout_seconds = 120 },
+]

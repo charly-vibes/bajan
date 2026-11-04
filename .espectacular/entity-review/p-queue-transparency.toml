@@ -1,0 +1,12 @@
+id = "p-queue-transparency"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "queue_list_is_transparent_and_oldest_first", timeout_seconds = 120 },
+    { flags = "er_pass_and_review_list_cli_end_to_end", timeout_seconds = 120 },
+]
