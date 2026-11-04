@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bajan — spec-driven knowledge-graph pipeline CLI</title>
+<meta name="description" content="bajan: ingest sources, extract claims, query the graph. Deterministic-first, spec-gated, human-approved.">
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #0d1117; color: #c9d1d9;
+    line-height: 1.6;
+  }
+  main { max-width: 46em; margin: 0 auto; padding: 3rem 1.25rem 4rem; }
+  h1 { font-size: 1.6rem; margin-bottom: 0.2rem; color: #f0f6fc; }
+  h1 .ver { font-size: 0.85rem; color: #58a6ff; vertical-align: middle; margin-left: 0.5rem; }
+  .tag { color: #8b949e; margin: 0 0 2rem; }
+  h2 { font-size: 1.05rem; color: #f0f6fc; border-bottom: 1px solid #21262d; padding-bottom: 0.3rem; margin-top: 2.2rem; }
+  a { color: #58a6ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  pre {
+    background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+    padding: 0.9rem 1rem; overflow-x: auto; font-size: 0.85rem;
+  }
+  code { color: #a5d6ff; }
+  ul { padding-left: 1.4rem; }
+  li { margin: 0.25rem 0; }
+  footer { margin-top: 3rem; color: #8b949e; font-size: 0.8rem; border-top: 1px solid #21262d; padding-top: 1rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>bajan <span class="ver">v0.2.0</span></h1>
+  <p class="tag">Spec-driven knowledge-graph pipeline CLI — ingest sources,
+  extract claims, query the graph. Deterministic-first, spec-gated,
+  human-approved.</p>
+
+  <h2>What it does</h2>
+  <ul>
+    <li><strong>Ingest</strong> normalized episode streams — persisted verbatim,
+      never rewritten, machine-readable outcome per record.</li>
+    <li><strong>Extract</strong> candidate claims — deterministic extractor by
+      default; LLM passes only propose, humans approve.</li>
+    <li><strong>Query</strong> a ranked, lineage-traceable claim graph with
+      bounded traversals and tag-scoped reads.</li>
+    <li><strong>Review</strong> entity-merge and contradiction candidates —
+      the only human-in-the-loop surface; nothing adopts automatically.</li>
+    <li><strong>Maintain</strong> — tombstone retired episodes
+      (<code>bajan delete</code>) and revive them (<code>bajan revive</code>);
+      deleted ids reject re-ingest with a machine-readable reason until revived.</li>
+    <li><strong>Evaluate</strong> extraction runs against a human-adjudicated
+      golden corpus — deterministic precision/recall, hedge fidelity as a
+      first-class number.</li>
+  </ul>
+
+  <h2>Specs are the code</h2>
+  <p>Seven corpus specs (<code>ingestion-contract</code>, <code>extraction-claims</code>,
+  <code>graph-model</code>, <code>query-tools</code>, <code>entity-review</code>,
+  <code>eval-claims</code>, <code>contradiction-review</code>) deploy into a
+  drift-gated mirror, with 68 scenario-scoped property contracts executing
+  against the test suite — every commit is gated on
+  <code>ah check --run-tests</code> staying green.</p>
+
+  <h2>Quickstart</h2>
+  <pre><code># ingest a normalized episode stream (JSON array)
+bajan ingest &lt; episodes.json
+# extract candidate claims (deterministic by default)
+bajan extract
+# adopt staged claims (human-in-the-loop)
+bajan adopt 1 2 3
+# query the graph
+bajan query "profit" --scope workspace:dev</code></pre>
+
+  <h2>Links</h2>
+  <ul>
+    <li><a href="https://github.com/charly-vibes/bajan">Repository</a> —
+      source, issues, full README</li>
+    <li><a href="https://github.com/charly-vibes/bajan/blob/main/CHANGELOG.md">CHANGELOG</a> —
+      release notes (v0.2.0: specs unification + episode tombstones)</li>
+    <li><a href="https://github.com/charly-vibes/bajan/tree/main/openspec/specs">Specs</a> —
+      the deployed spec mirror the code is gated against</li>
+  </ul>
+
+  <footer>Apache-2.0 · bajan is a personal research tool — adopt claims with judgment.</footer>
+</main>
+</body>
+</html>
