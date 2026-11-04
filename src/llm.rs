@@ -250,11 +250,40 @@ impl LlmTransport for UreqTransport {
             .header("Authorization", format!("Bearer {api_key}"))
             .header("Content-Type", "application/json")
             .send(body_json.as_bytes())
-            .map_err(|e| format!("llm transport error: {e}"))?;
+            // Machine-readable class codes (bajan-gso): the extractor
+            // classifies the last error from these prefixes.
+            .map_err(|e| match e {
+                ureq::Error::Timeout(_) => {
+                    "timeout: request exceeded the configured transport timeout".to_string()
+                }
+                ureq::Error::StatusCode(code) => {
+                    format!("http {code}: provider returned an error status")
+                }
+                e => format!("transport: {e}"),
+            })?;
         response
             .body_mut()
             .read_to_string()
-            .map_err(|e| format!("llm transport read error: {e}"))
+            .map_err(|e| format!("transport: body read failed: {e}"))
+    }
+}
+
+/// Machine-readable class from a transport error string (bajan-gso).
+/// Trait convention: Err strings begin with `timeout`, `http <code>`, or
+/// `transport` followed by detail — UreqTransport emits these; scripted
+/// fakes in tests follow the convention. Anything else is Transport.
+fn classify_transport_error(raw: &str) -> crate::extract::FailureClass {
+    use crate::extract::FailureClass;
+    if raw.starts_with("timeout") {
+        FailureClass::Timeout
+    } else if let Some(rest) = raw.strip_prefix("http ") {
+        rest.split([':', ' ', ';'])
+            .next()
+            .and_then(|code| code.parse::<u16>().ok())
+            .map(|code| FailureClass::HttpStatus { code })
+            .unwrap_or(FailureClass::Transport)
+    } else {
+        FailureClass::Transport
     }
 }
 
@@ -444,68 +473,84 @@ impl LlmExtractor {
     /// machine-readable reasons only (`ex_run_record`), and the budget
     /// outcome — not the endpoint's wording — is the durable fact.
     fn retrying_call(&self, body: &str, episode_id: &str) -> Result<LlmOutput, ExtractionFailure> {
+        // Class of the LAST error — the durable fact on exhaustion
+        // (bajan-gso): timeout vs HTTP status vs transport vs schema.
+        let mut last_class = crate::extract::FailureClass::Transport;
         for attempt in 1..=self.max_attempts {
             let outcome = match (self.key_lookup)(&self.api_key_env) {
-                Some(api_key) => self
-                    .transport
-                    .post(&self.base_url, &api_key, body)
-                    .and_then(|response| parse_response(&response).map_err(|e| e.to_string())),
-                None => Err(format!(
-                    "api key environment variable {} is not set",
-                    self.api_key_env
+                Some(api_key) => match self.transport.post(&self.base_url, &api_key, body) {
+                    Ok(response) => parse_response(&response)
+                        .map_err(|e| (crate::extract::FailureClass::Schema, e)),
+                    Err(raw) => {
+                        let class = classify_transport_error(&raw);
+                        Err((class, raw))
+                    }
+                },
+                None => Err((
+                    crate::extract::FailureClass::Transport,
+                    format!(
+                        "api key environment variable {} is not set",
+                        self.api_key_env
+                    ),
                 )),
             };
-            if let Ok((output, cost_micros)) = outcome {
-                // Account the call's spend (bajan-8cc): known cost
-                // accumulates; an unaccountable response (no usage.cost)
-                // marks the instance — the next pre-call gate fails
-                // closed. Success returns regardless: the money is
-                // already spent.
-                match cost_micros {
-                    Some(micros) => self.spent_micros.set(self.spent_micros.get() + micros),
-                    None => {
-                        let n = self.unaccounted_calls.get();
-                        self.unaccounted_calls.set(n + 1);
+            let (output, cost_micros) = match outcome {
+                Ok(pair) => pair,
+                Err((class, _message)) => {
+                    last_class = class;
+                    if attempt < self.max_attempts {
+                        (self.sleep)(jittered_backoff(attempt));
+                    }
+                    continue;
+                }
+            };
+            // Account the call's spend (bajan-8cc): known cost
+            // accumulates; an unaccountable response (no usage.cost)
+            // marks the instance — the next pre-call gate fails
+            // closed. Success returns regardless: the money is
+            // already spent.
+            match cost_micros {
+                Some(micros) => self.spent_micros.set(self.spent_micros.get() + micros),
+                None => {
+                    let n = self.unaccounted_calls.get();
+                    self.unaccounted_calls.set(n + 1);
+                }
+            }
+            // Per-call cost log (bajan-3w4): the exact response
+            // spend, visible where burn-ins look.
+            let cap = self.spend_cap_micros;
+            let line = match cost_micros {
+                Some(micros) => {
+                    let spent = usd_line(self.spent_micros.get());
+                    if cap > 0 {
+                        format!(
+                            "[llm] {episode_id}: attempt {attempt} cost {} — spent {spent} of {}",
+                            usd_line(micros),
+                            usd_line(cap)
+                        )
+                    } else {
+                        format!(
+                            "[llm] {episode_id}: attempt {attempt} cost {} — spent {spent} (no cap)",
+                            usd_line(micros)
+                        )
                     }
                 }
-                // Per-call cost log (bajan-3w4): the exact response
-                // spend, visible where burn-ins look.
-                let cap = self.spend_cap_micros;
-                let line = match cost_micros {
-                    Some(micros) => {
-                        let spent = usd_line(self.spent_micros.get());
-                        if cap > 0 {
-                            format!(
-                                "[llm] {episode_id}: attempt {attempt} cost {} — spent {spent} of {}",
-                                usd_line(micros),
-                                usd_line(cap)
-                            )
-                        } else {
-                            format!(
-                                "[llm] {episode_id}: attempt {attempt} cost {} — spent {spent} (no cap)",
-                                usd_line(micros)
-                            )
-                        }
+                None => {
+                    if cap > 0 {
+                        format!(
+                            "[llm] {episode_id}: attempt {attempt} cost unaccounted — a capped next call fails closed"
+                        )
+                    } else {
+                        format!("[llm] {episode_id}: attempt {attempt} cost unaccounted")
                     }
-                    None => {
-                        if cap > 0 {
-                            format!(
-                                "[llm] {episode_id}: attempt {attempt} cost unaccounted — a capped next call fails closed"
-                            )
-                        } else {
-                            format!("[llm] {episode_id}: attempt {attempt} cost unaccounted")
-                        }
-                    }
-                };
-                (self.call_log)(line);
-                return Ok(output);
-            }
-            if attempt < self.max_attempts {
-                (self.sleep)(jittered_backoff(attempt));
-            }
+                }
+            };
+            (self.call_log)(line);
+            return Ok(output);
         }
         Err(ExtractionFailure::Exhausted {
             attempts: self.max_attempts,
+            class: last_class,
         })
     }
 

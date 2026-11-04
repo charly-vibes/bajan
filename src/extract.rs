@@ -17,6 +17,42 @@ use proptest::prelude::*;
 
 pub const SPEC: &str = "specs/extraction-claims.md";
 
+/// The class of an extractor failure (bajan-gso): timeout vs HTTP
+/// status vs generic transport vs schema-decode — diagnosable from the
+/// report without reproducing the call. Carried on park reasons and
+/// `Exhausted` failures; never on claim nodes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FailureClass {
+    /// The configured transport timeout elapsed.
+    Timeout,
+    /// The provider returned an HTTP error status.
+    HttpStatus { code: u16 },
+    /// Any other transport-level error (connection refused, DNS, auth
+    /// plumbing).
+    Transport,
+    /// The response body did not decode against the published schema.
+    Schema,
+}
+
+impl FailureClass {
+    /// Stable machine-readable code for the text render (gso).
+    pub fn code(&self) -> String {
+        match self {
+            FailureClass::Timeout => "timeout".into(),
+            FailureClass::HttpStatus { code } => format!("http-{code}"),
+            FailureClass::Transport => "transport".into(),
+            FailureClass::Schema => "schema".into(),
+        }
+    }
+}
+
+impl std::fmt::Display for FailureClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.code())
+    }
+}
+
 /// Machine-readable reason for a failure outcome (`ex_run_record`).
 ///
 /// Reasons are stable snake_case codes stored on the run or rejection
@@ -26,8 +62,9 @@ pub const SPEC: &str = "specs/extraction-claims.md";
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum Reason {
     /// Episode parked in `rejected` after repeated call failure
-    /// (`ex_single_call`).
-    RepeatedCallFailure { attempts: u32 },
+    /// (`ex_single_call`). Carries the attempt count and the failure
+    /// class of the last error (bajan-gso).
+    RepeatedCallFailure { attempts: u32, class: FailureClass },
     /// Candidate rejected at the validation gate because its evidence span
     /// fails whitespace-collapsed containment (`ex_evidence_containment`,
     /// enforced from bajan-0hs.7).
@@ -158,8 +195,8 @@ pub enum ExtractionFailure {
     /// `Parked` with reason `repeated_call_failure`, report entry, no
     /// cache entry — the next pass re-attempts with a fresh budget
     /// (`ex_park_requeue`).
-    #[error("extraction retry budget exhausted after {attempts} attempts")]
-    Exhausted { attempts: u32 },
+    #[error("extraction retry budget exhausted after {attempts} attempts ({class})")]
+    Exhausted { attempts: u32, class: FailureClass },
     /// The configured spend cap refused further calls (bajan-8cc): the
     /// pre-call gate found accumulated spend at/over the cap, or a prior
     /// call went unaccounted (response without `usage.cost` — a cap
@@ -754,8 +791,8 @@ pub fn run_extract_with(
         // a gate rejection or a park.
         let proposed = match extractor.propose(episode) {
             Ok(proposed) => proposed,
-            Err(ExtractionFailure::Exhausted { attempts }) => {
-                let reason = Reason::RepeatedCallFailure { attempts };
+            Err(ExtractionFailure::Exhausted { attempts, class }) => {
+                let reason = Reason::RepeatedCallFailure { attempts, class };
                 report.parked.push(ParkedEpisode {
                     episode_id: episode.id.clone(),
                     reason: reason.clone(),
@@ -1088,7 +1125,10 @@ mod tests {
             episode_id in "[a-z0-9-]{3,20}",
             parked in proptest::bool::ANY,
         ) {
-            let reason = Reason::RepeatedCallFailure { attempts: 3 };
+            let reason = Reason::RepeatedCallFailure {
+                attempts: 3,
+                class: FailureClass::Transport,
+            };
             let finish = if parked {
                 Finish::Parked { reason: reason.clone() }
             } else {

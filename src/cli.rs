@@ -1467,6 +1467,30 @@ pub fn render_text(json: &str) -> String {
             if gated > 0 || parked > 0 {
                 out.push_str(&format!("\n  gate-rejected {gated}, parked {parked}"));
             }
+            // Per-episode park telemetry (bajan-gso): id, reason code,
+            // failure class, attempts — diagnosable from the render,
+            // never from sqlite spelunking. Fields read off the Value
+            // (never the Map) so schema drift degrades to "?", not a
+            // panic.
+            for ep in data["parked"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+                let id = ep["episode_id"].as_str().unwrap_or("?");
+                let reason = &ep["reason"];
+                let code = reason["code"].as_str().unwrap_or("unknown");
+                let class = &reason["class"];
+                let class_code = match class["kind"].as_str() {
+                    Some(kind) => match class["code"].as_u64() {
+                        Some(http) => format!("{kind}-{http}"),
+                        None => kind.to_string(),
+                    },
+                    None => "unknown".to_string(),
+                };
+                match reason["attempts"].as_u64() {
+                    Some(attempts) => out.push_str(&format!(
+                        "\n  ! {id} parked: {code} ({class_code}) after {attempts} attempts"
+                    )),
+                    None => out.push_str(&format!("\n  ! {id} parked: {code}")),
+                }
+            }
             if let Some(cap) = data["spend_cap"].as_object() {
                 out.push_str(&format!(
                     "\n  ! spend cap reached: spent ${:.6} of ${:.6} cap ({} unaccounted call(s)); \
@@ -2025,6 +2049,24 @@ mod tests {
             text.contains("BAJAN_MAX_SPEND_USD"),
             "env var named: {text}"
         );
+    }
+
+    /// Per-episode park telemetry (bajan-gso): id, reason code, class,
+    /// attempts — diagnosable from the render, not sqlite spelunking.
+    #[test]
+    fn render_text_extract_names_parked_episodes_with_class_and_attempts() {
+        let json = r#"{"ok":true,"data":{"episodes_processed":1,"candidates_proposed":0,
+            "superseded":0,"proposals_staged":0,"gate_rejections":[],
+            "parked":[{"episode_id":"ep-1","reason":{"code":"repeated_call_failure",
+            "attempts":3,"class":{"kind":"timeout"}}}]}}"#;
+        let text = render_text(json);
+        assert!(text.contains("ep-1 parked"), "got: {text}");
+        assert!(
+            text.contains("repeated_call_failure"),
+            "reason code: {text}"
+        );
+        assert!(text.contains("timeout"), "class code: {text}");
+        assert!(text.contains("3 attempts"), "attempts: {text}");
     }
 
     #[test]

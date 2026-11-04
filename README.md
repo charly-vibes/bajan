@@ -207,12 +207,13 @@ humans approve. Specifications under `specs/` are linted by
 
 ## Known limitations
 
-- **Parked episodes are silent.** When the LLM extractor hits transient
-  provider overload it parks 10–24% of episodes per pass. Retries back
-  off 2s·2^(n−1) with jitter, capped at 60s (bajan-266), but load
-  windows can still outlast a pass's patience — a rerun recovers parked
-  episodes (cache intact; burn-in reruns recovered 2/12). There is no
-  per-episode failure telemetry yet (bajan-gso).
+- **Parked episodes are visible but passive.** When the LLM extractor
+  hits transient provider overload it parks 10–24% of episodes per
+  pass; the extract report now names each parked episode with its
+  failure class (timeout / http-N / transport / schema) and attempt
+  count (bajan-gso). Retries back off 2s·2^(n−1) with jitter, capped at
+  60s (bajan-266); a rerun recovers parked episodes (cache intact;
+  burn-in reruns recovered 2/12).
 - **Spend cap needs `usage.cost`.** The LLM extractor requires
   `BAJAN_MAX_SPEND_USD` and stops the pass when known spend reaches the
   cap (bajan-8cc) — but providers that do not report per-call cost in

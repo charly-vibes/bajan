@@ -12,6 +12,7 @@
 //! real-HTTP end-to-end through the CLI binary against a local fake
 //! OpenAI-compatible server.
 
+use bajan::extract::FailureClass;
 use bajan::extract::{
     ExtractionFailure, Extractor, ExtractorConfig, Finish, Reason, run_extract_with,
 };
@@ -229,7 +230,13 @@ fn malformed_content_is_infrastructure_failure() {
     let extractor = llm_with(Script::new(vec![Ok(openai_ok("this is not json"))]), 1);
     let ep = episode("ep-1", "A is true.");
     let err = extractor.propose(&ep).expect_err("infrastructure failure");
-    assert!(matches!(err, ExtractionFailure::Exhausted { attempts: 1 }));
+    assert!(matches!(
+        err,
+        ExtractionFailure::Exhausted {
+            attempts: 1,
+            class: _
+        }
+    ));
 }
 
 /// Unknown fields in a claim record are refused (strict published schema
@@ -300,7 +307,13 @@ fn missing_api_key_is_infrastructure_failure() {
         .with_key_lookup(Box::new(|_| None));
     let ep = episode("ep-1", "A is true.");
     let err = extractor.propose(&ep).expect_err("infrastructure failure");
-    assert!(matches!(err, ExtractionFailure::Exhausted { attempts: 1 }));
+    assert!(matches!(
+        err,
+        ExtractionFailure::Exhausted {
+            attempts: 1,
+            class: _
+        }
+    ));
 }
 
 /// The prompt is a pure function of the episode text and configuration:
@@ -367,12 +380,18 @@ fn parks_after_budget_exhaustion() {
     assert_eq!(report.parked[0].episode_id, "ep-1");
     assert_eq!(
         report.parked[0].reason,
-        Reason::RepeatedCallFailure { attempts: 3 }
+        Reason::RepeatedCallFailure {
+            attempts: 3,
+            class: FailureClass::HttpStatus { code: 500 },
+        }
     );
     assert_eq!(
         finish_of(&runs),
         vec![&Finish::Parked {
-            reason: Reason::RepeatedCallFailure { attempts: 3 }
+            reason: Reason::RepeatedCallFailure {
+                attempts: 3,
+                class: FailureClass::HttpStatus { code: 500 },
+            }
         }]
     );
     assert!(staged_texts(&db).is_empty());
@@ -442,7 +461,13 @@ fn budget_exhaustion_surfaces_as_exhausted() {
     let err = extractor
         .propose(&episode("ep-1", "A is true."))
         .expect_err("exhausted after 3 attempts");
-    assert!(matches!(err, ExtractionFailure::Exhausted { attempts: 3 }));
+    assert!(matches!(
+        err,
+        ExtractionFailure::Exhausted {
+            attempts: 3,
+            class: _
+        }
+    ));
 }
 
 // --- chunk assembly (CORR-001) -------------------------------------------------
@@ -851,6 +876,109 @@ fn spend_cap_stops_the_pass_with_later_episodes_pending() {
     );
 }
 
+// --- failure telemetry classes (bajan-gso) ---------------------------------------
+
+/// Budget exhaustion names the failure class — the last error's
+/// machine-readable code decides (gso: timeout vs HTTP vs schema vs
+/// transport, diagnosable without sqlite spelunking or curl).
+#[test]
+fn exhausted_failure_carries_class_from_transport_error() {
+    let script = Script::new(vec![Err("http 503: overloaded".into()); 2]);
+    let err = Extractor::propose(&llm_with(script, 2), &episode("ep-1", "A is true."))
+        .expect_err("all attempts fail");
+    assert!(matches!(
+        err,
+        bajan::extract::ExtractionFailure::Exhausted {
+            attempts: 2,
+            class: FailureClass::HttpStatus { code: 503 }
+        }
+    ));
+}
+
+/// Schema-decode failures (malformed provider output) classify as
+/// Schema — an endpoint failing to honor the contract, not a network
+/// problem.
+#[test]
+fn exhausted_after_schema_failures_classifies_schema() {
+    let script = Script::new(vec![Ok("this is not the provider schema".into()); 2]);
+    let err = Extractor::propose(&llm_with(script, 2), &episode("ep-1", "A is true."))
+        .expect_err("all attempts fail");
+    assert!(matches!(
+        err,
+        bajan::extract::ExtractionFailure::Exhausted {
+            attempts: 2,
+            class: FailureClass::Schema
+        }
+    ));
+}
+
+/// The machine-readable `timeout` prefix classifies as Timeout.
+#[test]
+fn exhausted_timeout_class_from_machine_readable_prefix() {
+    let script = Script::new(vec![Err("timeout: request exceeded 120s".into())]);
+    let err = Extractor::propose(&llm_with(script, 1), &episode("ep-1", "A is true."))
+        .expect_err("attempt fails");
+    assert!(matches!(
+        err,
+        bajan::extract::ExtractionFailure::Exhausted {
+            attempts: 1,
+            class: FailureClass::Timeout
+        }
+    ));
+}
+
+/// The REAL transport emits machine-readable codes: an HTTP 500 maps to
+/// `http 500` so the class survives the String boundary.
+#[test]
+fn real_http_500_classifies_http_status() {
+    let base_url = spawn_fake_openai(vec![(500, "{\"error\":\"overloaded\"}".to_string()); 3]);
+    let extractor = LlmExtractor::new("test-model", &base_url, "TEST_API_KEY", 1024, 3)
+        .with_sleep(Box::new(|_| {}))
+        .with_key_lookup(Box::new(|_| Some("sk-test".into())));
+    let err = Extractor::propose(&extractor, &episode("ep-1", "A is true."))
+        .expect_err("all attempts 500");
+    assert!(matches!(
+        err,
+        bajan::extract::ExtractionFailure::Exhausted {
+            attempts: 3,
+            class: FailureClass::HttpStatus { code: 500 }
+        }
+    ));
+}
+
+/// A server that accepts and never answers hits the global timeout; the
+/// real transport maps that to the machine-readable `timeout` code
+/// (burn-in F3: timeout vs HTTP error was invisible).
+#[test]
+fn real_timeout_classifies_timeout() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            drop(stream);
+        }
+    });
+    let extractor = LlmExtractor::new(
+        "test-model",
+        format!("http://127.0.0.1:{port}/v1"),
+        "TEST_API_KEY",
+        1024,
+        1,
+    )
+    .with_timeout_secs(1)
+    .with_sleep(Box::new(|_| {}))
+    .with_key_lookup(Box::new(|_| Some("sk-test".into())));
+    let err =
+        Extractor::propose(&extractor, &episode("ep-1", "A is true.")).expect_err("times out");
+    assert!(matches!(
+        err,
+        bajan::extract::ExtractionFailure::Exhausted {
+            attempts: 1,
+            class: FailureClass::Timeout
+        }
+    ));
+}
 // --- per-call cost logging (bajan-3w4) -------------------------------------------
 //
 // The response `usage.cost` carries the exact per-call spend; the
