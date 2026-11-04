@@ -630,3 +630,209 @@ fn eval_never_touches_store() {
     assert!(!db.exists(), "eval must never open a store (ev_readonly)");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------- corpus/run cross-check (bajan-t6z) ----------
+
+// A candidate naming an episode id absent from the corpus scores
+// `spurious` silently. The published record must COUNT those candidates
+// (`unknown_episode_ids`) so a wrong-corpus pairing is visible in the
+// outcome instead of hiding behind plausible-looking low numbers.
+#[test]
+fn unknown_episode_ids_are_counted_partial() {
+    let corpus = eval::load_corpus(&corpus_fixture_text()).expect("corpus");
+    let run = eval::load_run(&run_json(
+        "det-0.1.0",
+        json!([
+            candidate("ep-1", "Costs are real.", "Costs are real."),
+            candidate("ep-unknown", "Invented text.", "Invented text.")
+        ]),
+    ))
+    .expect("run");
+    let outcome = eval::score(&corpus, &run);
+    assert_eq!(
+        outcome.unknown_episode_ids, 1,
+        "one unknown-episode candidate"
+    );
+    // Known candidate still scores normally — the count is additive
+    // observability, not a refusal.
+    assert_eq!(outcome.counts.matched, 1);
+    assert_eq!(outcome.counts.spurious, 1);
+}
+
+#[test]
+fn unknown_episode_ids_are_counted_when_all_unknown() {
+    let corpus = eval::load_corpus(&corpus_fixture_text()).expect("corpus");
+    let run = eval::load_run(&run_json(
+        "det-0.1.0",
+        json!([
+            candidate("ep-x", "One.", "One."),
+            candidate("ep-y", "Two.", "Two.")
+        ]),
+    ))
+    .expect("run");
+    let outcome = eval::score(&corpus, &run);
+    assert_eq!(outcome.unknown_episode_ids, 2, "every candidate unknown");
+    assert_eq!(outcome.counts.emitted, 2);
+    assert_eq!(outcome.counts.spurious, 2);
+}
+
+#[test]
+fn unknown_episode_ids_zero_and_serialized_when_all_known() {
+    let corpus = eval::load_corpus(&corpus_fixture_text()).expect("corpus");
+    let run = eval::load_run(&run_json(
+        "det-0.1.0",
+        json!([candidate("ep-1", "Costs are real.", "Costs are real.")]),
+    ))
+    .expect("run");
+    let outcome = eval::score(&corpus, &run);
+    assert_eq!(outcome.unknown_episode_ids, 0);
+    // The field is part of the published record schema — present in the
+    // serialized outcome, never absent.
+    let v = serde_json::to_value(&outcome).expect("outcome serializes");
+    assert_eq!(v["unknown_episode_ids"].as_u64(), Some(0));
+}
+
+// bajan-t6z tier 2: scoring a run where EVERY candidate references an
+// unknown episode id is the wrong-corpus failure mode — the CLI must
+// hard-refuse (ok:false, non-zero exit) instead of publishing a
+// plausible-looking results record.
+#[test]
+fn eval_claims_refuses_when_every_candidate_episode_is_unknown() {
+    let dir = std::env::temp_dir().join(format!("bajan-eval-refuse-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let corpus = write_temp(&dir, "gold.json", &corpus_fixture_text());
+    let run = write_temp(
+        &dir,
+        "run.json",
+        &run_json(
+            "det-0.1.0",
+            json!([
+                candidate("ep-other", "One.", "One."),
+                candidate("ep-missing", "Two.", "Two.")
+            ]),
+        ),
+    );
+    let mut args = flags(&["eval", "claims", "--json", "--corpus"]);
+    args.push(corpus);
+    args.push(std::path::PathBuf::from("--run"));
+    args.push(run);
+    let (code, stdout) = bajan(&args);
+    assert_ne!(code, 0, "all-unknown run must exit non-zero");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("envelope on stdout");
+    assert_eq!(v["ok"].as_bool(), Some(false));
+    assert_eq!(v["data"]["code"].as_str(), Some("eval_error"));
+    let message = v["data"]["message"].as_str().expect("message");
+    assert!(
+        message.contains("unknown"),
+        "refusal must name the unknown-episode failure mode, got: {message}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// bajan-t6z: the store→manifest export — a real store seeded with an
+// episode + a staged candidate exports a run manifest that `load_run`
+// accepts (the documented eval workflow can finally consume a real run
+// instead of hand-authored JSON).
+#[test]
+fn eval_manifest_export_produces_loadable_run() {
+    use bajan::ingest::{EpisodeRecord, Locator, SourceMeta};
+    use bajan::store::{ClaimNode, Evidence, Lineage};
+
+    let dir = std::env::temp_dir().join(format!("bajan-eval-manifest-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let db_path = dir.join("store.db");
+    let db = bajan::store::sqlite::SqliteStore::open(db_path.to_str().expect("utf8 path"))
+        .expect("store opens");
+    let episode_text = "The parser resolves spans deterministically.";
+    db.insert_episode(&EpisodeRecord {
+        id: "ep-1".into(),
+        text: episode_text.into(),
+        locator: Locator::Span("heading:Notes".into()),
+        source: SourceMeta {
+            source_type: "episode".into(),
+            data_cutoff: Some("2026-01-01".into()),
+            authority_tier: 2,
+            tags: vec![],
+        },
+    })
+    .expect("episode persisted");
+    db.insert_claim(
+        &ClaimNode {
+            text: episode_text.into(),
+            valid_at: None,
+            invalid_at: None,
+            data_cutoff: Some("2026-01-01".into()),
+            status: bajan::store::ClaimStatus::Staged,
+            scope: "workspace:dev".into(),
+            source_type: "episode".into(),
+            evidence: Evidence::Span {
+                text: episode_text.into(),
+                locator: "heading:Notes".into(),
+            },
+        },
+        &[Lineage {
+            episode_id: "ep-1".into(),
+            extractor_version: "det-0.1.0".into(),
+        }],
+        episode_text,
+    )
+    .expect("claim seeded");
+    db.mark_extracted("ep-1", "det-0.1.0")
+        .expect("cache marker");
+    drop(db);
+
+    let manifest_path = dir.join("run.json");
+    let mut args = flags(&[
+        "--db",
+        db_path.to_str().expect("utf8 path"),
+        "eval",
+        "manifest",
+        "--json",
+        "--out",
+    ]);
+    args.push(manifest_path.clone());
+    let (code, stdout) = bajan(&args);
+    assert_eq!(code, 0, "manifest export succeeds");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("envelope");
+    assert_eq!(v["ok"].as_bool(), Some(true));
+    assert_eq!(v["data"]["claim_count"].as_u64(), Some(1));
+    assert_eq!(v["data"]["skipped_unknown_evidence"].as_u64(), Some(0));
+
+    // The written file loads as a real run manifest — the whole point
+    // of the producer.
+    let run_json_text = std::fs::read_to_string(&manifest_path).expect("manifest written");
+    let run = eval::load_run(&run_json_text).expect("exported manifest loads via load_run");
+    assert_eq!(run.claims.len(), 1);
+    assert_eq!(run.claims[0].episode_id, "ep-1");
+    assert_eq!(run.claims[0].text, episode_text);
+    assert_eq!(run.claims[0].evidence_span, episode_text);
+    assert_eq!(run.extractor_version, "det-0.1.0");
+
+    // The exported manifest scores against a corpus for the same
+    // episodes — the full documented workflow, store to results record.
+    let corpus = write_temp(
+        &dir,
+        "gold.json",
+        &json!({
+            "id": "gold", "version": "1",
+            "episodes": [{
+                "id": "ep-1", "text": episode_text,
+                "golden_claims": [{
+                    "text": episode_text, "source_count": 1,
+                    "evidence_span": episode_text
+                }]
+            }]
+        })
+        .to_string(),
+    );
+    let mut score_args = flags(&["eval", "claims", "--json", "--corpus"]);
+    score_args.push(corpus);
+    score_args.push(std::path::PathBuf::from("--run"));
+    score_args.push(manifest_path);
+    let (code, stdout) = bajan(&score_args);
+    assert_eq!(code, 0, "exported manifest scores cleanly");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("envelope");
+    assert_eq!(v["data"]["precision"].as_f64(), Some(1.0));
+    assert_eq!(v["data"]["recall"].as_f64(), Some(1.0));
+    let _ = std::fs::remove_dir_all(&dir);
+}

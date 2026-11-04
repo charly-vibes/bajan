@@ -315,6 +315,24 @@ pub struct DumpedClaim {
     pub lineage: Vec<Lineage>,
 }
 
+/// The eval run-manifest read result (bajan-t6z, `eval_manifest`): the
+/// extraction-cache versions present in the store, the live candidate
+/// pairs for the selected version, and the selection itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalManifest {
+    /// Distinct extractor versions in the extraction cache, sorted.
+    pub versions: Vec<String>,
+    /// (claim node, lineage) pairs — staged + active claims whose lineage
+    /// names the selected extractor version, in (claim_key, lineage rowid)
+    /// order. One pair per matching lineage row (a merged claim may
+    /// derive from several episodes).
+    pub pairs: Vec<(ClaimNode, Lineage)>,
+    /// The selected version: the explicit pin, or the store's single
+    /// version; `None` when several versions exist (ambiguous — the
+    /// caller refuses) or the store holds no extraction output.
+    pub selected: Option<String>,
+}
+
 /// The extraction-output half of the rebuildable pair: claims + lineage
 /// plus the (episode, version) extraction-cache markers — and the typed
 /// relation edges plus staged invalidation proposals, so a dump-recreate
@@ -818,6 +836,46 @@ impl SqliteStore {
             ));
         }
         Ok(out)
+    }
+
+    /// The eval run-manifest read surface (bajan-t6z): live candidates
+    /// (staged + active claims) with their lineage, for building the
+    /// `bajan eval claims` run manifest. `version` pins the extractor
+    /// version; `None` selects the store's single extraction-run version
+    /// when exactly one exists and reports all versions otherwise (the
+    /// caller refuses on ambiguity — this method stays mechanical).
+    /// Read-only (`qt_readonly`); order is (claim_key, lineage rowid).
+    pub fn eval_manifest(&self, version: Option<&str>) -> Result<EvalManifest, StoreError> {
+        let mut versions: Vec<String> = self
+            .extracted_pairs()?
+            .into_iter()
+            .map(|(_, v)| v)
+            .collect();
+        versions.sort();
+        versions.dedup();
+        let selected = match version {
+            Some(v) => Some(v.to_string()),
+            None if versions.len() == 1 => versions.pop(),
+            None => None,
+        };
+        let mut pairs: Vec<(ClaimNode, Lineage)> = Vec::new();
+        if let Some(selected) = &selected {
+            for (_claim_key, node, lineages) in self.claims_with_lineage()? {
+                if !matches!(node.status, ClaimStatus::Staged | ClaimStatus::Active) {
+                    continue;
+                }
+                for lineage in lineages {
+                    if &lineage.extractor_version == selected {
+                        pairs.push((node.clone(), lineage));
+                    }
+                }
+            }
+        }
+        Ok(EvalManifest {
+            versions,
+            pairs,
+            selected,
+        })
     }
 
     /// Rebuild store content from a dump (`p_embedded_store`): claims with

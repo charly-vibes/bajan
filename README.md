@@ -132,13 +132,27 @@ uncertain` (anything else is rejected):
 ```
 
 The run manifest is the extraction output to score — candidates with their
-evidence spans, stamped with the run and extractor identities. (bajan does
-not yet export run manifests from a store — the extract envelope carries
-counts, not claims — so today a manifest is hand-authored for the corpus
-you are scoring; a store→manifest export is tracked separately.) Candidate
-`episode_id`s must match corpus episode ids — an id that matches nothing
-silently scores `spurious`, so scoring a run against the wrong corpus
-yields low numbers instead of an error:
+evidence spans, stamped with the run and extractor identities. Export a real
+manifest from a store with `bajan eval manifest` (bajan-t6z): it carries the
+store's live candidates (staged and active claims) for the extractor version
+you name, skipping unknown-evidence candidates and reporting the skip count.
+With one extraction run in the store the version is picked automatically;
+with several, `--extractor-version` selects one (the export refuses to mix
+runs into one manifest). Text mode prints the bare manifest JSON so the
+round trip is two commands, and `--out <file>` writes it directly:
+
+```console
+$ bajan eval manifest --db book.db --out run.json
+$ bajan eval claims --corpus gold.json --run run.json
+```
+
+(The extract envelope itself still carries counts, not claims — the store is
+the run record.) Candidate `episode_id`s must match corpus episode ids: the
+published record counts candidates naming unknown episodes in
+`unknown_episode_ids`, and scoring hard-refuses (`ok:false`, non-zero exit)
+when **every** candidate references an unknown episode — a run scored
+against the wrong corpus fails loudly instead of yielding plausible-looking
+low numbers:
 
 ```json
 {

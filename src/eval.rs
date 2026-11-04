@@ -153,6 +153,14 @@ pub struct EvalOutcome {
     pub hedge_preservation: Option<f64>,
     pub unknown_metrics: Vec<String>,
     pub counts: EvalCounts,
+    /// Candidates whose `episode_id` matches no corpus episode (bajan-t6z
+    /// cross-check): each one silently scores `spurious`, so a run scored
+    /// against the wrong corpus yields plausible low numbers — the count
+    /// makes the mismatch visible in the published record. The CLI
+    /// additionally hard-refuses when this equals `counts.emitted` (and
+    /// emitted > 0): a run referencing nothing known is the wrong-corpus
+    /// failure mode outright.
+    pub unknown_episode_ids: usize,
 }
 
 // ---------- loading + validation (`ev_golden_corpus`) ----------
@@ -294,6 +302,7 @@ pub fn score(corpus: &GoldenCorpus, run: &EvalRun) -> EvalOutcome {
         .count();
 
     let mut judgments = Vec::with_capacity(run.claims.len());
+    let mut unknown_episode_ids = 0usize;
     // consumed[episode][i] = whether that golden claim was matched — only
     // a MATCHED candidate consumes its golden claim.
     let mut consumed: Vec<Vec<bool>> = corpus
@@ -308,6 +317,9 @@ pub fn score(corpus: &GoldenCorpus, run: &EvalRun) -> EvalOutcome {
             .episodes
             .iter()
             .position(|e| e.id == candidate.episode_id);
+        if ep_pos.is_none() {
+            unknown_episode_ids += 1;
+        }
         let (contained, target) = match ep_pos {
             None => (false, None),
             Some(pos) => {
@@ -393,6 +405,7 @@ pub fn score(corpus: &GoldenCorpus, run: &EvalRun) -> EvalOutcome {
         hedge_preservation,
         unknown_metrics,
         counts,
+        unknown_episode_ids,
     }
 }
 

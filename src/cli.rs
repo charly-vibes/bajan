@@ -236,6 +236,20 @@ pub enum EvalAction {
         #[arg(long)]
         run: std::path::PathBuf,
     },
+    /// Export the store's live extraction candidates as a run manifest
+    /// (bajan-t6z): staged + active claims with their evidence spans for
+    /// the selected extractor version — the producer half of the eval
+    /// workflow (`bajan eval claims --run <file>` consumes the file).
+    Manifest {
+        /// Extractor version to export; defaults to the store's single
+        /// extraction-run version and refuses when several exist.
+        #[arg(long)]
+        extractor_version: Option<String>,
+        /// Also write the bare manifest JSON to this path (for
+        /// `bajan eval claims --run <path>`).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
 }
 
 /// Error type shared by all bajan pipeline modules.
@@ -334,6 +348,32 @@ fn eval_envelope(corpus_path: &std::path::Path, run_path: &std::path::Path) -> s
     })();
     match outcome {
         Ok(outcome) => {
+            // bajan-t6z tier 2: a run whose every candidate names an
+            // episode absent from the corpus is the wrong-corpus failure
+            // mode — refuse rather than publish a plausible-looking
+            // results record built entirely on unknown episodes.
+            if outcome.counts.emitted > 0 && outcome.unknown_episode_ids == outcome.counts.emitted {
+                return spec_error_envelope(
+                    "eval_error",
+                    &format!(
+                        "run '{}' references no known corpus episodes: all {} candidates name \
+                         unknown episode ids absent from corpus '{}'@v{} — this is the \
+                         wrong-corpus failure mode, not a low-scoring run",
+                        outcome.run_id,
+                        outcome.unknown_episode_ids,
+                        outcome.corpus_id,
+                        outcome.corpus_version
+                    ),
+                    Some("specs/eval-claims.md"),
+                    "eval",
+                    vec![RemediationEntry {
+                        command: "bajan eval manifest --db bajan.db --json".into(),
+                        description: "Export a real run manifest from the store, or score the \
+                                      run against the corpus its episodes belong to."
+                            .into(),
+                    }],
+                );
+            }
             let row = crate::eval::results_row(&outcome);
             serde_json::to_value(Envelope::success(
                 env!("CARGO_PKG_VERSION"),
@@ -349,6 +389,128 @@ fn eval_envelope(corpus_path: &std::path::Path, run_path: &std::path::Path) -> s
         }
         Err(err) => stub_envelope(&err),
     }
+}
+
+/// The eval run-manifest export envelope (bajan-t6z): the store's live
+/// candidates for the selected extractor version as an `EvalRun` — the
+/// producer half of the eval workflow. Read-only on the store.
+#[derive(Serialize)]
+struct EvalManifestReport<'a> {
+    run: &'a crate::eval::EvalRun,
+    extractor_version: &'a str,
+    claim_count: usize,
+    /// Candidates skipped because their evidence is the typed Unknown
+    /// marker (no span to score against) — reported, never silent.
+    skipped_unknown_evidence: usize,
+    /// Where the bare manifest JSON was written, when `--out` was given.
+    out: Option<String>,
+}
+
+fn eval_manifest_envelope(
+    db_path: &str,
+    version: Option<&str>,
+    out: Option<&std::path::Path>,
+) -> serde_json::Value {
+    let db = match command_store(db_path) {
+        Ok(db) => db,
+        Err(envelope) => return envelope,
+    };
+    let manifest = match db.eval_manifest(version) {
+        Ok(manifest) => manifest,
+        Err(err) => return stub_envelope(&BajanError::Store(err.to_string())),
+    };
+    let selected = match (&manifest.selected, manifest.versions.as_slice()) {
+        (Some(v), _) => v.clone(),
+        (None, []) => {
+            return spec_error_envelope(
+                "eval_manifest_empty",
+                "the store holds no extraction output — an unpinned export needs exactly one \
+                 extraction run in the store",
+                Some("specs/eval-claims.md"),
+                "eval",
+                vec![RemediationEntry {
+                    command: "bajan extract --db bajan.db".into(),
+                    description: "Produce extraction output to export, or pass \
+                                  --extractor-version to pin the version to export."
+                        .into(),
+                }],
+            );
+        }
+        (None, versions) => {
+            return spec_error_envelope(
+                "eval_manifest_ambiguous",
+                &format!(
+                    "the store holds multiple extractor versions ({}) — a run manifest scores \
+                     exactly one run, so pass --extractor-version to select one",
+                    versions.join(", ")
+                ),
+                Some("specs/eval-claims.md"),
+                "eval",
+                vec![RemediationEntry {
+                    command: "bajan eval manifest --extractor-version <version> --db bajan.db"
+                        .into(),
+                    description: "Pin one of the listed versions; the manifest then carries \
+                                  only that run's candidates."
+                        .into(),
+                }],
+            );
+        }
+    };
+    let mut skipped_unknown_evidence = 0usize;
+    let claims: Vec<crate::eval::RunCandidate> = manifest
+        .pairs
+        .iter()
+        .filter_map(|(node, lineage)| match &node.evidence {
+            crate::store::Evidence::Span { text, .. } => Some(crate::eval::RunCandidate {
+                episode_id: lineage.episode_id.clone(),
+                text: node.text.clone(),
+                evidence_span: text.clone(),
+            }),
+            crate::store::Evidence::Unknown => {
+                skipped_unknown_evidence += 1;
+                None
+            }
+        })
+        .collect();
+    let run = crate::eval::EvalRun {
+        run_id: format!("store-export-{selected}"),
+        extractor_version: selected.clone(),
+        claims,
+    };
+    if let Some(out_path) = out {
+        let write = std::fs::write(
+            out_path,
+            serde_json::to_string_pretty(&run).expect("run manifest serializes"),
+        );
+        if let Err(err) = write {
+            return spec_error_envelope(
+                "eval_manifest_write_failed",
+                &format!("cannot write the manifest to {}: {err}", out_path.display()),
+                Some("specs/eval-claims.md"),
+                "eval",
+                vec![RemediationEntry {
+                    command: "bajan eval manifest --json".into(),
+                    description: "Without --out the manifest is carried in the envelope \
+                                  (data.run); fix the output path and retry."
+                        .into(),
+                }],
+            );
+        }
+    }
+    serde_json::to_value(Envelope::success(
+        env!("CARGO_PKG_VERSION"),
+        EnvelopeKind::Ok,
+        EvalManifestReport {
+            run: &run,
+            extractor_version: &selected,
+            claim_count: run.claims.len(),
+            skipped_unknown_evidence,
+            out: out.map(|p| p.display().to_string()),
+        },
+        vec![],
+        vec![],
+    ))
+    .expect("envelope serialization cannot fail")
 }
 
 fn stub_envelope(err: &BajanError) -> serde_json::Value {
@@ -947,6 +1109,10 @@ pub fn run(command: Command, db_path: &str) -> String {
         },
         Command::Eval { action } => match action {
             EvalAction::Claims { corpus, run } => eval_envelope(corpus, run),
+            EvalAction::Manifest {
+                extractor_version,
+                out,
+            } => eval_manifest_envelope(db_path, extractor_version.as_deref(), out.as_deref()),
         },
     };
     serde_json::to_string(&value).expect("envelope serialization cannot fail")
@@ -1283,6 +1449,12 @@ pub fn render_text(json: &str) -> String {
                 out.push_str(&format!("  ! coverage: {note}\n"));
             }
             return out.trim_end().to_string();
+        }
+        if data["run"].is_object() {
+            // Eval manifest export: the machine-consumable form IS the
+            // JSON manifest, so text mode prints it bare — `bajan eval
+            // manifest > run.json` feeds `eval claims --run` directly.
+            return serde_json::to_string_pretty(&data["run"]).unwrap_or_else(|_| "{}".to_string());
         }
         if data["results_row"].is_string() {
             // Eval results: the metrics, the unknowns, and the row ready
@@ -1830,5 +2002,145 @@ mod tests {
         ));
         assert!(text.contains("error:"), "got: {text}");
         assert!(text.contains("specs/extraction-claims.md"), "got: {text}");
+    }
+
+    // ---- eval manifest export (bajan-t6z) ----
+
+    // The store→manifest producer: a real store's staged candidates for
+    // the (single) extraction-run version export as a run manifest
+    // `load_run` accepts — the documented eval workflow consumes a real
+    // run, not hand-authored JSON.
+    #[test]
+    fn eval_manifest_envelope_exports_staged_candidates() {
+        let path = std::env::temp_dir().join(format!("bajan-t6z-manifest-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let db =
+            crate::store::sqlite::SqliteStore::open(path.to_str().expect("utf8 path")).unwrap();
+        ingest_with(&db, &stream_json());
+        extract_with(&db);
+        drop(db);
+        let v = serde_json::from_str::<serde_json::Value>(&run(
+            Command::Eval {
+                action: EvalAction::Manifest {
+                    extractor_version: None,
+                    out: None,
+                },
+            },
+            path.to_str().expect("utf8 path"),
+        ))
+        .expect("envelope");
+        assert_eq!(v["ok"].as_bool(), Some(true), "got: {v}");
+        assert_eq!(v["data"]["claim_count"].as_u64(), Some(1));
+        assert_eq!(v["data"]["skipped_unknown_evidence"].as_u64(), Some(0));
+        let version = v["data"]["extractor_version"].as_str().expect("version");
+        assert!(!version.is_empty(), "extractor version stamped");
+        // The manifest itself validates through the published loader.
+        let run_json = serde_json::to_string(&v["data"]["run"]).expect("run serializes");
+        let manifest = crate::eval::load_run(&run_json).expect("exported manifest loads");
+        assert_eq!(manifest.claims.len(), 1);
+        assert_eq!(manifest.claims[0].episode_id, "ep-seed");
+        assert_eq!(
+            manifest.claims[0].text,
+            "The parser resolves spans deterministically."
+        );
+        assert_eq!(manifest.claims[0].evidence_span, manifest.claims[0].text);
+        assert_eq!(manifest.extractor_version, version);
+        // Text mode prints the bare manifest JSON — `> run.json` feeds
+        // `eval claims --run` directly.
+        let text = render_text(&run(
+            Command::Eval {
+                action: EvalAction::Manifest {
+                    extractor_version: None,
+                    out: None,
+                },
+            },
+            path.to_str().expect("utf8 path"),
+        ));
+        let bare: serde_json::Value =
+            serde_json::from_str(&text).expect("text mode prints bare manifest JSON");
+        assert_eq!(
+            bare["run_id"].as_str(),
+            Some(format!("store-export-{version}").as_str())
+        );
+        assert_eq!(bare["claims"].as_array().map(Vec::len), Some(1));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // A store holding several extraction-run versions is honestly
+    // ambiguous — the export refuses and names the versions rather than
+    // silently mixing runs into one manifest.
+    #[test]
+    fn eval_manifest_refuses_ambiguous_extractor_version() {
+        let path = std::env::temp_dir().join(format!("bajan-t6z-ambiguous-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let db =
+            crate::store::sqlite::SqliteStore::open(path.to_str().expect("utf8 path")).unwrap();
+        ingest_with(&db, &stream_json());
+        extract_with(&db);
+        db.mark_extracted("ep-seed", "det-9.9.9").unwrap();
+        drop(db);
+        let v = serde_json::from_str::<serde_json::Value>(&run(
+            Command::Eval {
+                action: EvalAction::Manifest {
+                    extractor_version: None,
+                    out: None,
+                },
+            },
+            path.to_str().expect("utf8 path"),
+        ))
+        .expect("envelope");
+        assert_eq!(v["ok"].as_bool(), Some(false), "got: {v}");
+        let message = v["data"]["message"].as_str().expect("message");
+        assert!(
+            message.contains("det-9.9.9"),
+            "refusal lists the candidate versions, got: {message}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // An explicit --extractor-version disambiguates: it selects that
+    // run's candidates, honestly empty when the version has none.
+    #[test]
+    fn eval_manifest_explicit_version_selects_honestly_empty() {
+        let path = std::env::temp_dir().join(format!("bajan-t6z-explicit-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let db =
+            crate::store::sqlite::SqliteStore::open(path.to_str().expect("utf8 path")).unwrap();
+        ingest_with(&db, &stream_json());
+        extract_with(&db);
+        db.mark_extracted("ep-seed", "det-9.9.9").unwrap();
+        drop(db);
+        let v = serde_json::from_str::<serde_json::Value>(&run(
+            Command::Eval {
+                action: EvalAction::Manifest {
+                    extractor_version: Some("det-9.9.9".into()),
+                    out: None,
+                },
+            },
+            path.to_str().expect("utf8 path"),
+        ))
+        .expect("envelope");
+        assert_eq!(v["ok"].as_bool(), Some(true), "got: {v}");
+        assert_eq!(v["data"]["claim_count"].as_u64(), Some(0));
+        assert_eq!(v["data"]["extractor_version"].as_str(), Some("det-9.9.9"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // No extraction output at all: nothing to export — refuse with the
+    // remediation instead of an empty manifest `load_run` would reject.
+    #[test]
+    fn eval_manifest_refuses_store_without_extraction_output() {
+        let v = envelope_of(Command::Eval {
+            action: EvalAction::Manifest {
+                extractor_version: None,
+                out: None,
+            },
+        });
+        assert_eq!(v["ok"].as_bool(), Some(false));
+        let message = v["data"]["message"].as_str().expect("message");
+        assert!(
+            message.to_lowercase().contains("no extraction output"),
+            "got: {message}"
+        );
     }
 }
