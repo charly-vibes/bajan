@@ -87,7 +87,8 @@ bajan proposal list
 bajan proposal approve <from> <to> --actor you  # writes the contradicts edge
 
 # 8. Score an extraction run against a golden corpus (see
-#    "Evaluating extraction quality" below)
+#    "Evaluating extraction quality" below — once a corpus is
+#    adjudicated into evals/fixtures/)
 bajan eval claims --corpus evals/fixtures/gold.json --run run.json
 ```
 
@@ -111,9 +112,11 @@ clock — identical inputs reproduce byte-identical results, and an eval run
 can never touch a real graph.
 
 The golden corpus is a JSON file; every episode carries the claims the
-text **should** yield (`source_count` = how many sources state it,
-`hedges` = hedge markers present in the episode within the claim's
-coverage):
+text **should** yield. Constraints: the corpus `version` is required,
+episode ids and claim texts/spans must be non-empty and unique, `source_count`
+must be ≥ 1, and `hedges` may only use the anchored vocabulary `may, might,
+could, possibly, appears, seems, signals, estimates, reportedly, tentative,
+uncertain` (anything else is rejected):
 
 ```json
 {
@@ -129,7 +132,13 @@ coverage):
 ```
 
 The run manifest is the extraction output to score — candidates with their
-evidence spans, stamped with the run and extractor identities:
+evidence spans, stamped with the run and extractor identities. (bajan does
+not yet export run manifests from a store — the extract envelope carries
+counts, not claims — so today a manifest is hand-authored for the corpus
+you are scoring; a store→manifest export is tracked separately.) Candidate
+`episode_id`s must match corpus episode ids — an id that matches nothing
+silently scores `spurious`, so scoring a run against the wrong corpus
+yields low numbers instead of an error:
 
 ```json
 {
@@ -153,13 +162,21 @@ Scoring semantics, in order:
    for a later clean candidate.
 4. Otherwise → `matched`. Unmatched candidates score `spurious`.
 
-Denominators are always reported in `data.counts`; a metric with a zero
+The example pair above demonstrates the strictest rule: the candidate
+dropped the hedge its golden claim lists, so it scores `hedge-dropped` —
+precision 0, recall 0, hedge preservation 0, never a plain match.
+
+Denominators are always reported in `counts`; a metric with a zero
 denominator (no candidates, no golden claims, no hedge-bearing golden
-claims) is `null` **and** named in `data.unknown_metrics` — never invented.
-`data.results_row` is the ready-to-append `evals/results.md` table row
-(version-stamped, reproducible). Gold labels are human sign-off by design:
-no model-generated gold labels, and gold fixtures land in a reviewed
-commit before any metrics run.
+claims) is `null` **and** named in `unknown_metrics` — never invented.
+Run with `--json` for the machine envelope (`data.counts`,
+`data.unknown_metrics`); text mode renders the same content in human form.
+`data.results_row` is the ready-to-append row for the eval-claims table in
+`evals/results.md` — the date cell is a placeholder you fill at append
+time (scoring itself never reads the wall clock, so reruns reproduce the
+row byte-for-byte). Gold labels are human sign-off by design: no
+model-generated gold labels, and gold fixtures land in a reviewed commit
+before any metrics run.
 
 ## Design in one line
 

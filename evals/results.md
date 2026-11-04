@@ -8,6 +8,13 @@ gold labels are human sign-off and land in a reviewed commit before any
 metrics run. Raw counts and observed noise rates are the measured columns
 until then. **No fabricated numbers.**
 
+The pre-harness table below records burn-in observations. Scored runs
+append to the eval-claims table (columns match `data.results_row` from
+`bajan eval claims`; fill the date cell):
+
+| date | corpus | extractor | precision | recall | hedge preservation | raw counts |
+|------|--------|-----------|-----------|--------|--------------------|------------|
+
 | date | corpus | extractor | episodes | extracted | claims staged | junk claims (praise/testimonial/copyright/CTA) | notes |
 |------|--------|-----------|----------|-----------|---------------|------------------------------------------------|-------|
 | 2026-10-01 | Profit First (2017 EPUB, 50 episodes, v1 stream, untagged) | llm-deepseek/deepseek-v4-flash-0.1.0 (pre-filter) | 50 | 40 (2 passes) | 344 | 41 (11.9%) | burn-in run, docs/burnin-deepseek-v4-flash-profit-first.org; 10 parked stochastically |
