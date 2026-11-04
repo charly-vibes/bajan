@@ -109,6 +109,11 @@ CREATE TABLE IF NOT EXISTS reviews (
     actor TEXT,
     decision TEXT
 );
+CREATE TABLE IF NOT EXISTS er_aliases (
+    a TEXT NOT NULL,
+    b TEXT NOT NULL,
+    PRIMARY KEY(a, b)
+);
 CREATE TABLE IF NOT EXISTS review_audits (
     rowid_key INTEGER PRIMARY KEY AUTOINCREMENT,
     from_claim INTEGER NOT NULL,
@@ -362,6 +367,11 @@ pub struct ExtractionDump {
     /// Review-resolution audit records, row order preserved.
     #[serde(default)]
     pub review_audits: Vec<ReviewAuditRecord>,
+    /// Curated alias-table entries (`gm_deterministic_er`: normalization
+    /// plus curated alias lists), row order preserved: without these a
+    /// rebuild would lose the curated ER surface (gm_embedded_store).
+    #[serde(default)]
+    pub er_aliases: Vec<(String, String)>,
     /// Contradiction-proposal queue rows (`cr_queue_transparency`), row
     /// order preserved: without these a rebuild would lose the LLM
     /// proposal queue and its lifecycle states (gm_embedded_store).
@@ -801,6 +811,7 @@ impl SqliteStore {
         let review_audits = self.review_audits()?;
         let contradiction_proposals = self.contradiction_proposals()?;
         let contradiction_audits = self.contradiction_audits()?;
+        let er_aliases = self.er_aliases()?;
         Ok(ExtractionDump {
             claims,
             extracted,
@@ -817,6 +828,7 @@ impl SqliteStore {
             supersessions,
             reviews,
             review_audits,
+            er_aliases,
             contradiction_proposals,
             contradiction_audits,
         })
@@ -960,7 +972,72 @@ impl SqliteStore {
         for record in &dump.contradiction_audits {
             self.insert_contradiction_audit_row(record)?;
         }
+        // Curated alias entries restore RAW (INSERT OR IGNORE): the
+        // duplicate/self-pair guards are CURATION semantics (insert_er_alias),
+        // not rebuild semantics — a legacy dump's rows are restored verbatim
+        // (gm_embedded_store: rebuild reproduces the graph, never re-litigates
+        // it).
+        for (a, b) in &dump.er_aliases {
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO er_aliases (a, b) VALUES (?1, ?2)",
+                    params![a, b],
+                )
+                .map_err(|e| StoreError::Sqlite {
+                    message: e.to_string(),
+                    spec: SPEC,
+                })?;
+        }
         Ok(())
+    }
+
+    /// Curate one alias entry (`gm_deterministic_er`: normalization plus
+    /// curated alias lists, bajan-amp): both terms are stored normalized;
+    /// a normalize-equal pair or an empty term is refused
+    /// (`InvalidAliasPair`); a duplicate entry is an idempotent skip —
+    /// returns true when a row was inserted.
+    pub fn insert_er_alias(&self, a: &str, b: &str) -> Result<bool, StoreError> {
+        let (na, nb) = (crate::review::normalize(a), crate::review::normalize(b));
+        if na.is_empty() || nb.is_empty() || na == nb {
+            return Err(StoreError::InvalidAliasPair { spec: SPEC });
+        }
+        let inserted = self
+            .conn
+            .execute(
+                "INSERT OR IGNORE INTO er_aliases (a, b) VALUES (?1, ?2)",
+                params![na, nb],
+            )
+            .map_err(|e| StoreError::Sqlite {
+                message: e.to_string(),
+                spec: SPEC,
+            })?;
+        Ok(inserted > 0)
+    }
+
+    /// Every curated alias entry, sorted — the deterministic ER pass's
+    /// alias half (bajan-amp). Deterministic order: (a, b) ascending.
+    pub fn er_aliases(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT a, b FROM er_aliases ORDER BY a, b")
+            .map_err(|e| StoreError::Sqlite {
+                message: e.to_string(),
+                spec: SPEC,
+            })?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| StoreError::Sqlite {
+                message: e.to_string(),
+                spec: SPEC,
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StoreError::Sqlite {
+                message: e.to_string(),
+                spec: SPEC,
+            })?;
+        Ok(rows)
     }
 
     /// Persist a typed claim-relation edge (`gm_relation_typing`): the

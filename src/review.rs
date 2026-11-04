@@ -246,6 +246,93 @@ pub fn run_er_pass(db: &SqliteStore, budget: usize, now: u64) -> Result<ErReport
         }
     }
 
+    // --- alias candidates: curated alias-table entries (bajan-amp) ---
+    // gm_deterministic_er names "normalization plus curated alias
+    // lists"; this is the alias half. An alias entry (a, b) matches a
+    // hit pair when a is a whole token of one hit's normalized text and
+    // b is a whole token of the other's (either orientation) — a pair
+    // normalization alone cannot see. Deterministic discovery: aliases
+    // in stored (sorted) order, candidate lists in ranked order; the
+    // SAME enqueue guards route everything (an alias attempt on a pair
+    // normalization already proposed is refused as AlreadyProposed).
+    // The fingerprint carries the matched alias — er_repropose_guard
+    // treats a NEW alias-table entry as new evidence for a rejected
+    // pair, while a re-run on the same alias is honestly refused.
+    let aliases = db
+        .er_aliases()
+        .map_err(|e| BajanQueryError(e.to_string()))?;
+    let mut token_hits: std::collections::HashMap<&str, Vec<u32>> =
+        std::collections::HashMap::new();
+    for (idx, norm) in norms.iter().enumerate() {
+        for token in norm.split_whitespace() {
+            token_hits.entry(token).or_default().push(idx as u32);
+        }
+    }
+    // Collect matches per unordered claim-key pair FIRST, carrying the
+    // complete set of matching aliases: the fingerprint is evidence-
+    // stable per pair (a re-run on the same aliases is honestly refused)
+    // while any NEW matching alias entry grows the set and re-proposes
+    // exactly once — er_repropose_guard's "new alias-table entry" path.
+    /// Alias matches keyed by unordered claim-key pair: hit indices
+    /// (i < j) and the complete set of matching normalized aliases.
+    type AliasMatches =
+        std::collections::BTreeMap<(usize, usize), (usize, usize, Vec<(String, String)>)>;
+    let mut alias_pairs: AliasMatches = std::collections::BTreeMap::new();
+    for (a, b) in &aliases {
+        let Some(a_hits) = token_hits.get(a.as_str()) else {
+            continue;
+        };
+        let Some(b_hits) = token_hits.get(b.as_str()) else {
+            continue;
+        };
+        for &x in a_hits {
+            for &y in b_hits {
+                if x == y {
+                    continue;
+                }
+                let (xi, yi) = (x as usize, y as usize);
+                let (i, j) = if xi < yi { (xi, yi) } else { (yi, xi) };
+                let key = (hits[i].claim_key, hits[j].claim_key);
+                alias_pairs
+                    .entry(key)
+                    .or_insert((i, j, Vec::new()))
+                    .2
+                    .push((a.clone(), b.clone()));
+            }
+        }
+    }
+    for (_key, (i, j, mut matched)) in alias_pairs {
+        if examined >= budget {
+            exhausted = true;
+            break;
+        }
+        examined += 1;
+        matched.sort();
+        matched.dedup();
+        let (from, to) = if hits[i].claim_key <= hits[j].claim_key {
+            (hits[i].claim_key, hits[j].claim_key)
+        } else {
+            (hits[j].claim_key, hits[i].claim_key)
+        };
+        let mut episodes: Vec<String> = hits[i].episodes.clone();
+        episodes.extend(hits[j].episodes.clone());
+        episodes.sort();
+        episodes.dedup();
+        let fingerprint = serde_json::json!({
+            "texts": [hits[i].text, hits[j].text],
+            "episodes": episodes,
+            "aliases": matched,
+        })
+        .to_string();
+        match db
+            .enqueue_candidate(from, to, "alias-match", &fingerprint, now)
+            .map_err(|e| BajanQueryError(e.to_string()))?
+        {
+            crate::store::EnqueueOutcome::Queued => proposed.push((i, j)),
+            _ => refused += 1,
+        }
+    }
+
     // Honest exhaustion (qt_bounded_traversal discipline): the budget
     // bounds both the ranked-candidate walk inside `search` AND the pair
     // walk below — either exhausting means the pass did not see every

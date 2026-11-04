@@ -888,3 +888,248 @@ fn er_containment_found_when_shorter_text_embeds_mid_token() {
         "normalization-contains"
     );
 }
+
+// --- curated alias lists (bajan-amp) ----------------------------------------------
+//
+// gm_deterministic_er names "normalization plus curated alias lists";
+// only the normalization half existed. Alias entries are stored in the
+// embedded store, survive dump-recreate, and matches route through the
+// SAME enqueue_candidate guards with deterministic evidence 'alias-match'.
+
+/// Normalization alone cannot see "Bob" ≡ "Robert"; the curated alias
+/// pair can — the pass proposes with alias-match evidence.
+#[test]
+fn alias_match_proposes_pair_normalization_misses() {
+    let db = SqliteStore::open_in_memory().expect("open");
+    let ep1 = episode("ep1", "alpha body", 1, None);
+    let _a = seed(
+        &db,
+        &ep1,
+        "Bob invested early.",
+        &[Lineage {
+            episode_id: "ep1".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+    let ep2 = episode("ep2", "beta body", 1, None);
+    let _b = seed(
+        &db,
+        &ep2,
+        "Robert invested early.",
+        &[Lineage {
+            episode_id: "ep2".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+
+    // No alias yet: normalization alone finds nothing (not equal, neither
+    // contains the other).
+    let before = review::run_er_pass(&db, 256, 1_000_000).expect("pass");
+    assert_eq!(
+        before.proposed, 0,
+        "normalization alone must miss: {before:?}"
+    );
+
+    db.insert_er_alias("Bob", "Robert").expect("insert alias");
+    let after = review::run_er_pass(&db, 256, 2_000_000).expect("pass");
+    assert_eq!(after.proposed, 1, "alias match must propose: {after:?}");
+    let queue = db.review_queue().expect("queue");
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].evidence, "alias-match");
+}
+
+/// Alias matches route through the SAME guards: an alias attempt on a
+/// pair normalization already proposed is refused (open pair), and a
+/// rejected pair re-enters only on a NEW alias entry (fingerprint
+/// carries the matched alias) — er_repropose_guard.
+#[test]
+fn alias_matches_route_through_existing_guards() {
+    let db = SqliteStore::open_in_memory().expect("open");
+    let ep1 = episode("ep1", "alpha body", 1, None);
+    let _a = seed(
+        &db,
+        &ep1,
+        "Bob invested early.",
+        &[Lineage {
+            episode_id: "ep1".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+    let ep2 = episode("ep2", "beta body", 1, None);
+    let _b = seed(
+        &db,
+        &ep2,
+        "Robert funded early again.",
+        &[Lineage {
+            episode_id: "ep2".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+
+    db.insert_er_alias("bob", "robert").expect("insert");
+    db.insert_er_alias("invested", "funded").expect("insert 2");
+
+    // Both entries match the same pair; the second attempt is refused
+    // by the existing open-pair guard (AlreadyProposed) — one queue row.
+    let first = review::run_er_pass(&db, 256, 1_000_000).expect("pass");
+    assert_eq!(first.proposed, 1, "one queue row: {first:?}");
+    assert_eq!(
+        first.refused, 0,
+        "one attempt per pair — the alias set rides the fingerprint: {first:?}"
+    );
+    let queue = db.review_queue().expect("queue");
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].evidence, "alias-match");
+
+    // Human rejects the pair.
+    db.resolve_review(
+        queue[0].from_claim,
+        queue[0].to_claim,
+        bajan::store::ReviewDecision::Rejected,
+        "sasha",
+        1_100_000,
+    )
+    .expect("reject");
+
+    // Re-run with the SAME alias evidence: refused without new evidence.
+    let rerun = review::run_er_pass(&db, 256, 1_200_000).expect("pass");
+    assert_eq!(
+        rerun.proposed, 0,
+        "same alias must not re-queue a rejected pair: {rerun:?}"
+    );
+
+    // A NEW alias-table entry matching the same texts is new evidence
+    // (different matched alias -> different fingerprint).
+    db.insert_er_alias("bob", "funded").expect("insert 3");
+    let third = review::run_er_pass(&db, 256, 1_300_000).expect("pass");
+    assert_eq!(
+        third.proposed, 1,
+        "new alias entry re-proposes once: {third:?}"
+    );
+    let queue2 = db.review_queue().expect("queue");
+    assert_eq!(queue2.len(), 1, "re-proposed, not duplicated");
+    // Prior rejection record intact.
+    let audits = db.review_audits().expect("audits");
+    assert!(
+        audits
+            .iter()
+            .any(|r| r.decision == bajan::store::ReviewDecision::Rejected),
+        "rejection audit survives"
+    );
+}
+
+/// The alias table persists across dump-recreate (gm_embedded_store).
+#[test]
+fn alias_table_survives_dump_recreate() {
+    let db = SqliteStore::open_in_memory().expect("open");
+    db.insert_er_alias("Bob", "Robert").expect("insert");
+    db.insert_er_alias("bobby", "robert").expect("insert 2");
+
+    let dump = db.dump_extraction_output().expect("dump");
+    let fresh = SqliteStore::open_in_memory().expect("fresh");
+    fresh.restore_extraction_output(&dump).expect("restore");
+
+    let aliases = fresh.er_aliases().expect("aliases");
+    assert_eq!(aliases.len(), 2, "both alias entries survive: {aliases:?}");
+    assert!(
+        aliases.contains(&("bob".to_string(), "robert".to_string()))
+            && aliases.contains(&("bobby".to_string(), "robert".to_string())),
+        "stored normalized: {aliases:?}"
+    );
+
+    // And the rebuilt store's pass still matches through aliases.
+    let ep1 = episode("ep1", "alpha body", 1, None);
+    let _a = seed(
+        &fresh,
+        &ep1,
+        "Bob invested early.",
+        &[Lineage {
+            episode_id: "ep1".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+    let ep2 = episode("ep2", "beta body", 1, None);
+    let _b = seed(
+        &fresh,
+        &ep2,
+        "Robert invested early.",
+        &[Lineage {
+            episode_id: "ep2".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+    let report = review::run_er_pass(&fresh, 256, 1_000_000).expect("pass");
+    assert_eq!(report.proposed, 1, "rebuilt store matches through aliases");
+}
+
+/// Alias-entry write guards: a normalize-equal pair is refused, a
+/// duplicate entry is an idempotent skip (no second row).
+#[test]
+fn insert_er_alias_guards() {
+    let db = SqliteStore::open_in_memory().expect("open");
+    assert!(
+        db.insert_er_alias("Bob", "bob").is_err(),
+        "normalize-equal pair refused"
+    );
+    assert!(
+        db.insert_er_alias("", "robert").is_err(),
+        "empty term refused"
+    );
+    assert!(db.insert_er_alias("bob", "robert").expect("first insert"));
+    assert!(
+        !db.insert_er_alias("  BOB  ", "Robert")
+            .expect("duplicate is idempotent"),
+        "duplicate insert skips"
+    );
+    assert_eq!(db.er_aliases().expect("aliases").len(), 1, "no second row");
+}
+
+/// The alias stage shares the pass budget — honest exhaustion, no
+/// unbounded alias walk.
+#[test]
+fn alias_stage_respects_budget() {
+    let db = SqliteStore::open_in_memory().expect("open");
+    let ep1 = episode("ep1", "alpha body", 1, None);
+    let _a = seed(
+        &db,
+        &ep1,
+        "Bob invested early.",
+        &[Lineage {
+            episode_id: "ep1".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+    let ep2 = episode("ep2", "beta body", 1, None);
+    let _b = seed(
+        &db,
+        &ep2,
+        "Robert invested early.",
+        &[Lineage {
+            episode_id: "ep2".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+    let ep3 = episode("ep3", "gamma body", 1, None);
+    let _c = seed(
+        &db,
+        &ep3,
+        "Bobby invested early.",
+        &[Lineage {
+            episode_id: "ep3".into(),
+            extractor_version: "0.1.0".into(),
+        }],
+    );
+    db.insert_er_alias("bob", "robert").expect("insert");
+    db.insert_er_alias("bob", "bobby").expect("insert 2");
+
+    // Budget 1: at most one candidate pair examined; exhaustion honest.
+    let report = review::run_er_pass(&db, 1, 1_000_000).expect("pass");
+    assert!(
+        matches!(report.status, query::BudgetStatus::BudgetExhausted),
+        "budget-exhausted must be honest: {report:?}"
+    );
+    assert!(
+        report.proposed <= 1,
+        "budget bounds the alias stage: {report:?}"
+    );
+}

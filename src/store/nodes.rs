@@ -431,6 +431,12 @@ pub enum StoreError {
     InvalidReviewPair { spec: &'static str },
 
     #[error(
+        "an alias entry must be two distinct non-empty terms after \
+         normalization (see {spec}, gm_deterministic_er)"
+    )]
+    InvalidAliasPair { spec: &'static str },
+
+    #[error(
         "review resolution requires actor identity — resolutions without \
          an actor are refused (see {spec}, er_human_resolution)"
     )]
