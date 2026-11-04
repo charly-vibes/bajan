@@ -1,0 +1,598 @@
+{
+  "id": "gold-fi4e",
+  "version": "1",
+  "episodes": [
+    {
+      "id": "fi4e-gold-ep00",
+      "text": "1 What Is Financial Intelligence? Since we teach finance for a living, we’ll begin this book in the manner of teachers everywhere: by asking questions. Do you know whether you will have enough cash to make payroll next month? How about the month after that? If you’re running a start-up, do you know your burn rate—that is, how fast you are going through your cash? Do you know how profitable your company’s products or services really are? Do you know that you can be running a profitable business and still run out of cash? If you’re thinking about buying a new piece of equipment—a truck, a computer system, a machine—do you know how to figure the likely return on your investment? Many entrepreneurs can’t answer yes to questions like these. The reason is that they haven’t yet acquired the necessary financial intelligence. Note that word: acquired. Financial intelligence, as we use the term, isn’t some innate ability that you either have or don’t have. Granted, some people are better at numbers than others, and a few legendary folks seem to have an intuitive grasp of finance that eludes everybody else. But that’s not what we’re talking about here. For most businesspeople—ourselves included—financial intelligence is simply a set of skills that can be learned.",
+      "golden_claims": [
+        {
+          "text": "Since we teach finance for a living, we’ll begin this book in the manner of teachers everywhere: by asking questions.",
+          "source_count": 1,
+          "evidence_span": "Since we teach finance for a living, we’ll begin this book in the manner of teachers everywhere: by asking questions.",
+          "hedges": []
+        },
+        {
+          "text": "Many entrepreneurs can’t answer yes to questions like these.",
+          "source_count": 1,
+          "evidence_span": "Many entrepreneurs can’t answer yes to questions like these.",
+          "hedges": []
+        },
+        {
+          "text": "The reason is that they haven’t yet acquired the necessary financial intelligence.",
+          "source_count": 1,
+          "evidence_span": "The reason is that they haven’t yet acquired the necessary financial intelligence.",
+          "hedges": []
+        },
+        {
+          "text": "Financial intelligence, as we use the term, isn’t some innate ability that you either have or don’t have.",
+          "source_count": 1,
+          "evidence_span": "Financial intelligence, as we use the term, isn’t some innate ability that you either have or don’t have.",
+          "hedges": []
+        },
+        {
+          "text": "Granted, some people are better at numbers than others, and a few legendary folks seem to have an intuitive grasp of finance that eludes everybody else.",
+          "source_count": 1,
+          "evidence_span": "Granted, some people are better at numbers than others, and a few legendary folks seem to have an intuitive grasp of finance that eludes everybody else.",
+          "hedges": []
+        },
+        {
+          "text": "For most businesspeople—ourselves included—financial intelligence is simply a set of skills that can be learned.",
+          "source_count": 1,
+          "evidence_span": "For most businesspeople—ourselves included—financial intelligence is simply a set of skills that can be learned.",
+          "hedges": []
+        },
+        {
+          "text": "your burn rate—that is, how fast you are going through your cash",
+          "source_count": 1,
+          "evidence_span": "your burn rate—that is, how fast you are going through your cash",
+          "hedges": []
+        },
+        {
+          "text": "you can be running a profitable business and still run out of cash",
+          "source_count": 1,
+          "evidence_span": "you can be running a profitable business and still run out of cash",
+          "hedges": []
+        }
+      ]
+    },
+    {
+      "id": "fi4e-gold-ep01",
+      "text": "People who work in finance pick up these skills early on and for the rest of their careers are able to talk with one another in a specialized language that can sound like Greek to the uninitiated. Most senior executives of large companies (not all) either come out of finance or learn the skills during their rise to the top, just because it’s tough to run a big business unless you know what the financial folks are saying. But how about you? Nobody gave you an exam in finance when you decided to start a business. You probably didn’t launch your company just so that you could work with numbers. You may have had an accounting class in high school or college, but that isn’t enough to prepare you to manage a business. So you may never have had the chance to pick up financial skills. But now is the time. You may be a great salesperson or an inspired engineer. You may be terrific with customers and employees. Your concept for a company is probably fantastic. But if you don’t know finance, you’re operating at a disadvantage in the world of business. Fundamentally, financial intelligence boils down to three distinct skill sets. When you finish the book, you should be competent in all of them. Let’s look at each one in turn.",
+      "golden_claims": [
+        {
+          "text": "People who work in finance pick up these skills early on and for the rest of their careers are able to talk with one another in a specialized language that can sound like Greek to the uninitiated.",
+          "source_count": 1,
+          "evidence_span": "People who work in finance pick up these skills early on and for the rest of their careers are able to talk with one another in a specialized language that can sound like Greek to the uninitiated.",
+          "hedges": []
+        },
+        {
+          "text": "Most senior executives of large companies (not all) either come out of finance or learn the skills during their rise to the top, just because it’s tough to run a big business unless you know what the financial folks are saying.",
+          "source_count": 1,
+          "evidence_span": "Most senior executives of large companies (not all) either come out of finance or learn the skills during their rise to the top, just because it’s tough to run a big business unless you know what the financial folks are saying.",
+          "hedges": []
+        },
+        {
+          "text": "You probably didn’t launch your company just so that you could work with numbers.",
+          "source_count": 1,
+          "evidence_span": "You probably didn’t launch your company just so that you could work with numbers.",
+          "hedges": [
+            "could"
+          ]
+        },
+        {
+          "text": "You may have had an accounting class in high school or college, but that isn’t enough to prepare you to manage a business.",
+          "source_count": 1,
+          "evidence_span": "You may have had an accounting class in high school or college, but that isn’t enough to prepare you to manage a business.",
+          "hedges": [
+            "may"
+          ]
+        },
+        {
+          "text": "So you may never have had the chance to pick up financial skills.",
+          "source_count": 1,
+          "evidence_span": "So you may never have had the chance to pick up financial skills.",
+          "hedges": [
+            "may"
+          ]
+        },
+        {
+          "text": "You may be a great salesperson or an inspired engineer.",
+          "source_count": 1,
+          "evidence_span": "You may be a great salesperson or an inspired engineer.",
+          "hedges": [
+            "may"
+          ]
+        },
+        {
+          "text": "You may be terrific with customers and employees.",
+          "source_count": 1,
+          "evidence_span": "You may be terrific with customers and employees.",
+          "hedges": [
+            "may"
+          ]
+        },
+        {
+          "text": "Your concept for a company is probably fantastic.",
+          "source_count": 1,
+          "evidence_span": "Your concept for a company is probably fantastic.",
+          "hedges": []
+        },
+        {
+          "text": "But if you don’t know finance, you’re operating at a disadvantage in the world of business.",
+          "source_count": 1,
+          "evidence_span": "But if you don’t know finance, you’re operating at a disadvantage in the world of business.",
+          "hedges": []
+        },
+        {
+          "text": "Fundamentally, financial intelligence boils down to three distinct skill sets.",
+          "source_count": 1,
+          "evidence_span": "Fundamentally, financial intelligence boils down to three distinct skill sets.",
+          "hedges": []
+        },
+        {
+          "text": "When you finish the book, you should be competent in all of them.",
+          "source_count": 1,
+          "evidence_span": "When you finish the book, you should be competent in all of them.",
+          "hedges": []
+        },
+        {
+          "text": "Nobody gave you an exam in finance when you decided to start a business.",
+          "source_count": 1,
+          "evidence_span": "Nobody gave you an exam in finance when you decided to start a business.",
+          "hedges": []
+        }
+      ]
+    },
+    {
+      "id": "fi4e-gold-ep02",
+      "text": "UNDERSTANDING THE FOUNDATION Not long ago, two acquaintances of ours were running their own business. They loved what they were doing. Their company seemed very successful—in fact, it was doubling its sales every year. The financial reports showed that the company was making money. At one point the entrepreneurs enthusiastically showed these reports to another friend, an experienced businessman, who perused them carefully. Box Definitions We want to make finance as easy as possible. Most finance books make us flip back and forth between the page we’re on and the glossary to learn the definition of a word we don’t know. By the time we find it and get back to our page, we’ve lost our train of thought. So here we are going to give you the definitions right where you need them, near the first time we use the word. “I’m very afraid,” he said, “that you will run out of cash in about eighteen months unless you take action now.” Frankly, the entrepreneurs didn’t believe him. They wrote him off as a doomsayer. They knew their business was profitable, and they were certain that their hard work could overcome any obstacle. You can probably see where we’re going with this cautionary tale. Sure enough: in just about eighteen months, they called their friend to admit that they were maxed out on their credit cards and on the home-equity loans they had taken out on their houses.",
+      "golden_claims": [
+        {
+          "text": "They loved what they were doing.",
+          "source_count": 1,
+          "evidence_span": "They loved what they were doing.",
+          "hedges": []
+        },
+        {
+          "text": "Their company seemed very successful—in fact, it was doubling its sales every year.",
+          "source_count": 1,
+          "evidence_span": "Their company seemed very successful—in fact, it was doubling its sales every year.",
+          "hedges": []
+        },
+        {
+          "text": "The financial reports showed that the company was making money.",
+          "source_count": 1,
+          "evidence_span": "The financial reports showed that the company was making money.",
+          "hedges": []
+        },
+        {
+          "text": "At one point the entrepreneurs enthusiastically showed these reports to another friend, an experienced businessman, who perused them carefully.",
+          "source_count": 1,
+          "evidence_span": "At one point the entrepreneurs enthusiastically showed these reports to another friend, an experienced businessman, who perused them carefully.",
+          "hedges": []
+        },
+        {
+          "text": "Most finance books make us flip back and forth between the page we’re on and the glossary to learn the definition of a word we don’t know.",
+          "source_count": 1,
+          "evidence_span": "Most finance books make us flip back and forth between the page we’re on and the glossary to learn the definition of a word we don’t know.",
+          "hedges": []
+        },
+        {
+          "text": "By the time we find it and get back to our page, we’ve lost our train of thought.",
+          "source_count": 1,
+          "evidence_span": "By the time we find it and get back to our page, we’ve lost our train of thought.",
+          "hedges": []
+        },
+        {
+          "text": "So here we are going to give you the definitions right where you need them, near the first time we use the word.",
+          "source_count": 1,
+          "evidence_span": "So here we are going to give you the definitions right where you need them, near the first time we use the word.",
+          "hedges": []
+        },
+        {
+          "text": "“I’m very afraid,” he said, “that you will run out of cash in about eighteen months unless you take action now.”",
+          "source_count": 1,
+          "evidence_span": "“I’m very afraid,” he said, “that you will run out of cash in about eighteen months unless you take action now.”",
+          "hedges": []
+        },
+        {
+          "text": "Frankly, the entrepreneurs didn’t believe him.",
+          "source_count": 1,
+          "evidence_span": "Frankly, the entrepreneurs didn’t believe him.",
+          "hedges": []
+        },
+        {
+          "text": "They wrote him off as a doomsayer.",
+          "source_count": 1,
+          "evidence_span": "They wrote him off as a doomsayer.",
+          "hedges": []
+        },
+        {
+          "text": "They knew their business was profitable, and they were certain that their hard work could overcome any obstacle.",
+          "source_count": 1,
+          "evidence_span": "They knew their business was profitable, and they were certain that their hard work could overcome any obstacle.",
+          "hedges": [
+            "could"
+          ]
+        },
+        {
+          "text": "Sure enough: in just about eighteen months, they called their friend to admit that they were maxed out on their credit cards and on the home-equity loans they had taken out on their houses.",
+          "source_count": 1,
+          "evidence_span": "Sure enough: in just about eighteen months, they called their friend to admit that they were maxed out on their credit cards and on the home-equity loans they had taken out on their houses.",
+          "hedges": []
+        },
+        {
+          "text": "Not long ago, two acquaintances of ours were running their own business.",
+          "source_count": 1,
+          "evidence_span": "Not long ago, two acquaintances of ours were running their own business.",
+          "hedges": []
+        },
+        {
+          "text": "We want to make finance as easy as possible.",
+          "source_count": 1,
+          "evidence_span": "We want to make finance as easy as possible.",
+          "hedges": []
+        }
+      ]
+    },
+    {
+      "id": "fi4e-gold-ep03",
+      "text": "They had no more cash and no ability to borrow any more. The business was still booming. But if it was to survive, they would have to sell part of it to outside investors and themselves become minority shareholders. Yet their friend had been able to see the problem coming eighteen months ahead of time, just because he was able to read the financial reports—the foundation of financial intelligence. Some entrepreneurs think they don’t need to bother with formal financial reports. They run the business out of their checkbook. Or maybe they get a bookkeeper to pay the bills and keep the records they need for taxes, but they don’t really study the reports she prepares. That may be fine for one-person shops. But the minute your company begins to grow, as the owners of that ill-fated business discovered, you can no longer tell how it’s doing financially just by looking at the checkbook. You need to see—and to understand—the information contained in the income statement, the balance sheet, and the cash flow statement. If you ever want a loan, moreover, or if you want to attract outside investors, your prospective lenders and shareholders will expect to see all these reports. And they will expect you to answer detailed questions about the data the reports contain.",
+      "golden_claims": [
+        {
+          "text": "They had no more cash and no ability to borrow any more.",
+          "source_count": 1,
+          "evidence_span": "They had no more cash and no ability to borrow any more.",
+          "hedges": []
+        },
+        {
+          "text": "The business was still booming.",
+          "source_count": 1,
+          "evidence_span": "The business was still booming.",
+          "hedges": []
+        },
+        {
+          "text": "But if it was to survive, they would have to sell part of it to outside investors and themselves become minority shareholders.",
+          "source_count": 1,
+          "evidence_span": "But if it was to survive, they would have to sell part of it to outside investors and themselves become minority shareholders.",
+          "hedges": []
+        },
+        {
+          "text": "Yet their friend had been able to see the problem coming eighteen months ahead of time, just because he was able to read the financial reports—the foundation of financial intelligence.",
+          "source_count": 1,
+          "evidence_span": "Yet their friend had been able to see the problem coming eighteen months ahead of time, just because he was able to read the financial reports—the foundation of financial intelligence.",
+          "hedges": []
+        },
+        {
+          "text": "Some entrepreneurs think they don’t need to bother with formal financial reports.",
+          "source_count": 1,
+          "evidence_span": "Some entrepreneurs think they don’t need to bother with formal financial reports.",
+          "hedges": []
+        },
+        {
+          "text": "They run the business out of their checkbook.",
+          "source_count": 1,
+          "evidence_span": "They run the business out of their checkbook.",
+          "hedges": []
+        },
+        {
+          "text": "Or maybe they get a bookkeeper to pay the bills and keep the records they need for taxes, but they don’t really study the reports she prepares.",
+          "source_count": 1,
+          "evidence_span": "Or maybe they get a bookkeeper to pay the bills and keep the records they need for taxes, but they don’t really study the reports she prepares.",
+          "hedges": []
+        },
+        {
+          "text": "That may be fine for one-person shops.",
+          "source_count": 1,
+          "evidence_span": "That may be fine for one-person shops.",
+          "hedges": [
+            "may"
+          ]
+        },
+        {
+          "text": "But the minute your company begins to grow, as the owners of that ill-fated business discovered, you can no longer tell how it’s doing financially just by looking at the checkbook.",
+          "source_count": 1,
+          "evidence_span": "But the minute your company begins to grow, as the owners of that ill-fated business discovered, you can no longer tell how it’s doing financially just by looking at the checkbook.",
+          "hedges": []
+        },
+        {
+          "text": "You need to see—and to understand—the information contained in the income statement, the balance sheet, and the cash flow statement.",
+          "source_count": 1,
+          "evidence_span": "You need to see—and to understand—the information contained in the income statement, the balance sheet, and the cash flow statement.",
+          "hedges": []
+        },
+        {
+          "text": "If you ever want a loan, moreover, or if you want to attract outside investors, your prospective lenders and shareholders will expect to see all these reports.",
+          "source_count": 1,
+          "evidence_span": "If you ever want a loan, moreover, or if you want to attract outside investors, your prospective lenders and shareholders will expect to see all these reports.",
+          "hedges": []
+        },
+        {
+          "text": "And they will expect you to answer detailed questions about the data the reports contain.",
+          "source_count": 1,
+          "evidence_span": "And they will expect you to answer detailed questions about the data the reports contain.",
+          "hedges": []
+        }
+      ]
+    },
+    {
+      "id": "fi4e-gold-ep04",
+      "text": "Entrepreneurs who are financially intelligent understand these basics. They can read an income statement, a balance sheet, and a cash flow statement. They know the difference between profitability and a healthy cash flow. (As our story suggests, understanding cash is particularly important to entrepreneurs.) They understand why the balance sheet balances. The numbers neither scare nor mystify them. We’ll consider the three main financial reports in parts 2, 3, and 4 of the book—and we’ll answer questions such as why profit isn’t the same as cash. Income Statement The income statement shows revenues, expenses, and profit for a period of time, such as a month, quarter, or year. It’s also called a profit and loss statement, P&L, statement of earnings, or statement of operations. Big companies sometimes throw the word consolidated in front of those phrases, but it’s still just an income statement. The bottom line of the income statement is net profit, also known as net income or net earnings. We explain the income statement in part 2. UNDERSTANDING THE ART OF FINANCE A second aspect of financial intelligence is understanding what might be called the art of finance. In the preface we referred to it as the finance profession’s little secret, but it isn’t really a secret; it’s a widely acknowledged truth that everyone who has studied finance knows.",
+      "golden_claims": [
+        {
+          "text": "Entrepreneurs who are financially intelligent understand these basics.",
+          "source_count": 1,
+          "evidence_span": "Entrepreneurs who are financially intelligent understand these basics.",
+          "hedges": []
+        },
+        {
+          "text": "They can read an income statement, a balance sheet, and a cash flow statement.",
+          "source_count": 1,
+          "evidence_span": "They can read an income statement, a balance sheet, and a cash flow statement.",
+          "hedges": []
+        },
+        {
+          "text": "They know the difference between profitability and a healthy cash flow.",
+          "source_count": 1,
+          "evidence_span": "They know the difference between profitability and a healthy cash flow.",
+          "hedges": []
+        },
+        {
+          "text": "(As our story suggests, understanding cash is particularly important to entrepreneurs.)",
+          "source_count": 1,
+          "evidence_span": "(As our story suggests, understanding cash is particularly important to entrepreneurs.)",
+          "hedges": []
+        },
+        {
+          "text": "They understand why the balance sheet balances.",
+          "source_count": 1,
+          "evidence_span": "They understand why the balance sheet balances.",
+          "hedges": []
+        },
+        {
+          "text": "The numbers neither scare nor mystify them.",
+          "source_count": 1,
+          "evidence_span": "The numbers neither scare nor mystify them.",
+          "hedges": []
+        },
+        {
+          "text": "It’s also called a profit and loss statement, P&L, statement of earnings, or statement of operations.",
+          "source_count": 1,
+          "evidence_span": "It’s also called a profit and loss statement, P&L, statement of earnings, or statement of operations.",
+          "hedges": []
+        },
+        {
+          "text": "Big companies sometimes throw the word consolidated in front of those phrases, but it’s still just an income statement.",
+          "source_count": 1,
+          "evidence_span": "Big companies sometimes throw the word consolidated in front of those phrases, but it’s still just an income statement.",
+          "hedges": []
+        },
+        {
+          "text": "The bottom line of the income statement is net profit, also known as net income or net earnings.",
+          "source_count": 1,
+          "evidence_span": "The bottom line of the income statement is net profit, also known as net income or net earnings.",
+          "hedges": []
+        },
+        {
+          "text": "In the preface we referred to it as the finance profession’s little secret, but it isn’t really a secret; it’s a widely acknowledged truth that everyone who has studied finance knows.",
+          "source_count": 1,
+          "evidence_span": "In the preface we referred to it as the finance profession’s little secret, but it isn’t really a secret; it’s a widely acknowledged truth that everyone who has studied finance knows.",
+          "hedges": []
+        },
+        {
+          "text": "profit isn’t the same as cash",
+          "source_count": 1,
+          "evidence_span": "profit isn’t the same as cash",
+          "hedges": []
+        },
+        {
+          "text": "The income statement shows revenues, expenses, and profit for a period of time, such as a month, quarter, or year.",
+          "source_count": 1,
+          "evidence_span": "The income statement shows revenues, expenses, and profit for a period of time, such as a month, quarter, or year.",
+          "hedges": []
+        },
+        {
+          "text": "A second aspect of financial intelligence is understanding what might be called the art of finance.",
+          "source_count": 1,
+          "evidence_span": "A second aspect of financial intelligence is understanding what might be called the art of finance.",
+          "hedges": [
+            "might"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fi4e-gold-ep05",
+      "text": "Trouble is, the rest of us tend to forget it. We think that if a number shows up on a financial statement or on your accountants’ reports, it must accurately represent reality. Of course, that can’t always be true, if only because bookkeepers and accountants can’t know everything. They can’t know exactly what everyone in the company does every day, so they don’t know exactly how to allocate costs. They can’t know exactly how long a piece of equipment will last, so they don’t know how much of its original cost to record in any given year. The art of accounting and finance is the art of using limited data to come as close as possible to an accurate description of how well a company is performing. Accounting and finance are not reality; they are a reflection of reality, and the accuracy of that reflection depends on the ability of bookkeepers, accountants, and finance professionals to make reasonable assumptions and to calculate reasonable estimates. It’s a tough job. Sometimes the accountants and finance folks have to quantify what can’t easily be quantified. Sometimes they have to make difficult judgments about how to categorize a given item. None of these complications necessarily arises because they are trying to cook the books or because they are incompetent.",
+      "golden_claims": [
+        {
+          "text": "Trouble is, the rest of us tend to forget it.",
+          "source_count": 1,
+          "evidence_span": "Trouble is, the rest of us tend to forget it.",
+          "hedges": []
+        },
+        {
+          "text": "We think that if a number shows up on a financial statement or on your accountants’ reports, it must accurately represent reality.",
+          "source_count": 1,
+          "evidence_span": "We think that if a number shows up on a financial statement or on your accountants’ reports, it must accurately represent reality.",
+          "hedges": []
+        },
+        {
+          "text": "Of course, that can’t always be true, if only because bookkeepers and accountants can’t know everything.",
+          "source_count": 1,
+          "evidence_span": "Of course, that can’t always be true, if only because bookkeepers and accountants can’t know everything.",
+          "hedges": []
+        },
+        {
+          "text": "They can’t know exactly what everyone in the company does every day, so they don’t know exactly how to allocate costs.",
+          "source_count": 1,
+          "evidence_span": "They can’t know exactly what everyone in the company does every day, so they don’t know exactly how to allocate costs.",
+          "hedges": []
+        },
+        {
+          "text": "They can’t know exactly how long a piece of equipment will last, so they don’t know how much of its original cost to record in any given year.",
+          "source_count": 1,
+          "evidence_span": "They can’t know exactly how long a piece of equipment will last, so they don’t know how much of its original cost to record in any given year.",
+          "hedges": []
+        },
+        {
+          "text": "The art of accounting and finance is the art of using limited data to come as close as possible to an accurate description of how well a company is performing.",
+          "source_count": 1,
+          "evidence_span": "The art of accounting and finance is the art of using limited data to come as close as possible to an accurate description of how well a company is performing.",
+          "hedges": []
+        },
+        {
+          "text": "Accounting and finance are not reality; they are a reflection of reality, and the accuracy of that reflection depends on the ability of bookkeepers, accountants, and finance professionals to make reasonable assumptions and to calculate reasonable estimates.",
+          "source_count": 1,
+          "evidence_span": "Accounting and finance are not reality; they are a reflection of reality, and the accuracy of that reflection depends on the ability of bookkeepers, accountants, and finance professionals to make reasonable assumptions and to calculate reasonable estimates.",
+          "hedges": [
+            "estimates"
+          ]
+        },
+        {
+          "text": "It’s a tough job. Sometimes the accountants and finance folks have to quantify what can’t easily be quantified.",
+          "source_count": 1,
+          "evidence_span": "It’s a tough job. Sometimes the accountants and finance folks have to quantify what can’t easily be quantified.",
+          "hedges": []
+        },
+        {
+          "text": "Sometimes they have to make difficult judgments about how to categorize a given item.",
+          "source_count": 1,
+          "evidence_span": "Sometimes they have to make difficult judgments about how to categorize a given item.",
+          "hedges": []
+        },
+        {
+          "text": "None of these complications necessarily arises because they are trying to cook the books or because they are incompetent.",
+          "source_count": 1,
+          "evidence_span": "None of these complications necessarily arises because they are trying to cook the books or because they are incompetent.",
+          "hedges": []
+        }
+      ]
+    },
+    {
+      "id": "fi4e-gold-ep06",
+      "text": "The complications arise because they must make educated guesses relating to the numbers side of the business all day long. Balance Sheet The balance sheet reflects the assets, liabilities, and owners’ equity at a point in time. In other words, it shows, on a specific day, what the company owned, what it owed, and how much it was worth. The balance sheet is called such because it balances—assets always must equal liabilities plus owners’ equity. A financially savvy entrepreneur knows that all the financial statements ultimately flow to the balance sheet. Part 3 takes up the balance sheet. The result of these assumptions and estimates is, typically, a bias in the numbers. Please don’t get the idea that by using the word bias we are impugning anybody’s integrity. (Some of our best friends are accountants—no, really—and one of us, Joe, actually carries the title CFO on his business card.) Where financial results are concerned, bias means only that the numbers might be skewed in one direction or another. It means only that bookkeepers, accountants, and finance professionals have used certain assumptions and estimates rather than others when they put their reports together. Enabling you to understand this bias, to correct for it where necessary, and even to use it to your company’s advantage is one objective of this book.",
+      "golden_claims": [
+        {
+          "text": "The complications arise because they must make educated guesses relating to the numbers side of the business all day long.",
+          "source_count": 1,
+          "evidence_span": "The complications arise because they must make educated guesses relating to the numbers side of the business all day long.",
+          "hedges": []
+        },
+        {
+          "text": "In other words, it shows, on a specific day, what the company owned, what it owed, and how much it was worth.",
+          "source_count": 1,
+          "evidence_span": "In other words, it shows, on a specific day, what the company owned, what it owed, and how much it was worth.",
+          "hedges": []
+        },
+        {
+          "text": "The balance sheet is called such because it balances—assets always must equal liabilities plus owners’ equity.",
+          "source_count": 1,
+          "evidence_span": "The balance sheet is called such because it balances—assets always must equal liabilities plus owners’ equity.",
+          "hedges": []
+        },
+        {
+          "text": "A financially savvy entrepreneur knows that all the financial statements ultimately flow to the balance sheet.",
+          "source_count": 1,
+          "evidence_span": "A financially savvy entrepreneur knows that all the financial statements ultimately flow to the balance sheet.",
+          "hedges": []
+        },
+        {
+          "text": "The result of these assumptions and estimates is, typically, a bias in the numbers.",
+          "source_count": 1,
+          "evidence_span": "The result of these assumptions and estimates is, typically, a bias in the numbers.",
+          "hedges": [
+            "estimates"
+          ]
+        },
+        {
+          "text": "(Some of our best friends are accountants—no, really—and one of us, Joe, actually carries the title CFO on his business card.)",
+          "source_count": 1,
+          "evidence_span": "(Some of our best friends are accountants—no, really—and one of us, Joe, actually carries the title CFO on his business card.)",
+          "hedges": []
+        },
+        {
+          "text": "Where financial results are concerned, bias means only that the numbers might be skewed in one direction or another.",
+          "source_count": 1,
+          "evidence_span": "Where financial results are concerned, bias means only that the numbers might be skewed in one direction or another.",
+          "hedges": [
+            "might"
+          ]
+        },
+        {
+          "text": "It means only that bookkeepers, accountants, and finance professionals have used certain assumptions and estimates rather than others when they put their reports together.",
+          "source_count": 1,
+          "evidence_span": "It means only that bookkeepers, accountants, and finance professionals have used certain assumptions and estimates rather than others when they put their reports together.",
+          "hedges": [
+            "estimates"
+          ]
+        },
+        {
+          "text": "Enabling you to understand this bias, to correct for it where necessary, and even to use it to your company’s advantage is one objective of this book.",
+          "source_count": 1,
+          "evidence_span": "Enabling you to understand this bias, to correct for it where necessary, and even to use it to your company’s advantage is one objective of this book.",
+          "hedges": []
+        },
+        {
+          "text": "The balance sheet reflects the assets, liabilities, and owners’ equity at a point in time.",
+          "source_count": 1,
+          "evidence_span": "The balance sheet reflects the assets, liabilities, and owners’ equity at a point in time.",
+          "hedges": []
+        }
+      ]
+    },
+    {
+      "id": "fi4e-gold-ep07",
+      "text": "So financially intelligent entrepreneurs are able to identify where the artful aspects of finance have been applied to the numbers, and they know how applying them differently might lead to different conclusions. They are prepared, when appropriate, to question and challenge the numbers they get from their accountants or finance folks. In the following chapter we’ll show you some specific examples of the art of finance, but it’s a lesson you’ll want to bear in mind throughout the book. UNDERSTANDING FINANCIAL ANALYSIS Once you can read the financials, and once you have an appreciation of the art of finance, you can use the information to analyze the numbers in greater depth and to make decisions based on what you learn. For example, did you know the following? A couple of simple ratios derived from the balance sheet will tell you at a glance whether you’re going to be able to pay your bills during the coming year. If you can’t pay your bills, you may decide to apply for a loan. These are the same ratios bankers will use to make an initial judgment about whether they should consider your company creditworthy. Profitability ratios—derived from the income statement—help you understand how much money your company is making.",
+      "golden_claims": [
+        {
+          "text": "So financially intelligent entrepreneurs are able to identify where the artful aspects of finance have been applied to the numbers, and they know how applying them differently might lead to different conclusions.",
+          "source_count": 1,
+          "evidence_span": "So financially intelligent entrepreneurs are able to identify where the artful aspects of finance have been applied to the numbers, and they know how applying them differently might lead to different conclusions.",
+          "hedges": [
+            "might"
+          ]
+        },
+        {
+          "text": "They are prepared, when appropriate, to question and challenge the numbers they get from their accountants or finance folks.",
+          "source_count": 1,
+          "evidence_span": "They are prepared, when appropriate, to question and challenge the numbers they get from their accountants or finance folks.",
+          "hedges": []
+        },
+        {
+          "text": "A couple of simple ratios derived from the balance sheet will tell you at a glance whether you’re going to be able to pay your bills during the coming year.",
+          "source_count": 1,
+          "evidence_span": "A couple of simple ratios derived from the balance sheet will tell you at a glance whether you’re going to be able to pay your bills during the coming year.",
+          "hedges": []
+        },
+        {
+          "text": "If you can’t pay your bills, you may decide to apply for a loan.",
+          "source_count": 1,
+          "evidence_span": "If you can’t pay your bills, you may decide to apply for a loan.",
+          "hedges": [
+            "may"
+          ]
+        },
+        {
+          "text": "These are the same ratios bankers will use to make an initial judgment about whether they should consider your company creditworthy.",
+          "source_count": 1,
+          "evidence_span": "These are the same ratios bankers will use to make an initial judgment about whether they should consider your company creditworthy.",
+          "hedges": []
+        },
+        {
+          "text": "Profitability ratios—derived from the income statement—help you understand how much money your company is making.",
+          "source_count": 1,
+          "evidence_span": "Profitability ratios—derived from the income statement—help you understand how much money your company is making.",
+          "hedges": []
+        },
+        {
+          "text": "Once you can read the financials, and once you have an appreciation of the art of finance, you can use the information to analyze the numbers in greater depth and to make decisions based on what you learn.",
+          "source_count": 1,
+          "evidence_span": "Once you can read the financials, and once you have an appreciation of the art of finance, you can use the information to analyze the numbers in greater depth and to make decisions based on what you learn.",
+          "hedges": []
+        }
+      ]
+    }
+  ]
+}
