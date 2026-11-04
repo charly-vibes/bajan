@@ -85,6 +85,10 @@ bajan scan                                     # deterministic contradicts pass
 bajan propose            # LLM-assisted: stages proposals, never writes edges
 bajan proposal list
 bajan proposal approve <from> <to> --actor you  # writes the contradicts edge
+
+# 8. Score an extraction run against a golden corpus (see
+#    "Evaluating extraction quality" below)
+bajan eval claims --corpus evals/fixtures/gold.json --run run.json
 ```
 
 Concepts:
@@ -95,6 +99,67 @@ Concepts:
   lineage edges make provenance part of the graph structure.
 - **Envelope** — every command answers `{ok, envelope_version, envelope_kind,
   data}`; exit status mirrors `ok`.
+
+## Evaluating extraction quality
+
+`bajan eval claims` scores an extraction run against a **golden corpus** —
+a versioned fixture of episodes whose true claim sets a human adjudicated
+(`specs/eval-claims.md`). It publishes precision, recall, and hedge
+preservation with raw counts, one per-case judgment per candidate. Scoring
+is deterministic: no embeddings, no LLM judgment, no store access, no wall
+clock — identical inputs reproduce byte-identical results, and an eval run
+can never touch a real graph.
+
+The golden corpus is a JSON file; every episode carries the claims the
+text **should** yield (`source_count` = how many sources state it,
+`hedges` = hedge markers present in the episode within the claim's
+coverage):
+
+```json
+{
+  "id": "gold-fi4e", "version": "1",
+  "episodes": [{
+    "id": "ep-1", "text": "Profits may vary by run.",
+    "golden_claims": [{
+      "text": "Profits may vary by run.", "source_count": 1,
+      "evidence_span": "Profits may vary by run.", "hedges": ["may"]
+    }]
+  }]
+}
+```
+
+The run manifest is the extraction output to score — candidates with their
+evidence spans, stamped with the run and extractor identities:
+
+```json
+{
+  "run_id": "pf2-2026-10-01", "extractor_version": "llm-deepseek/deepseek-v4-flash-0.1.0",
+  "claims": [{"episode_id": "ep-1", "text": "Profits vary by run.",
+              "evidence_span": "Profits may vary by run."}]
+}
+```
+
+Scoring semantics, in order:
+
+1. **Content match** — candidate text equals a golden claim's text after
+   whitespace-collapse + lowercase with hedge-marker words ignored on both
+   sides (a candidate that adds or drops a hedge still locates its target).
+2. **Span check** — the candidate's `evidence_span` must locate inside the
+   episode text (whitespace-collapsed containment, same predicate as
+   extraction's evidence gate). Fails → `content-miss`, never a match.
+3. **Hedge fidelity** — every hedge marker the golden claim lists must
+   appear in the candidate text. Missing → `hedge-dropped`: a precision
+   failure distinct from a content miss, and the golden claim stays open
+   for a later clean candidate.
+4. Otherwise → `matched`. Unmatched candidates score `spurious`.
+
+Denominators are always reported in `data.counts`; a metric with a zero
+denominator (no candidates, no golden claims, no hedge-bearing golden
+claims) is `null` **and** named in `data.unknown_metrics` — never invented.
+`data.results_row` is the ready-to-append `evals/results.md` table row
+(version-stamped, reproducible). Gold labels are human sign-off by design:
+no model-generated gold labels, and gold fixtures land in a reviewed
+commit before any metrics run.
 
 ## Design in one line
 
@@ -111,8 +176,10 @@ humans approve. Specifications under `specs/` are linted by
 - **No built-in spend cap.** The LLM extractor has no cost ceiling; the
   burn-in run used an externally enforced $0.50 cap. Bound spend at the
   provider until a cap surface exists.
-- **The eval harness is not built.** Extraction precision/recall numbers are
-  not yet published (bajan-2k4, deferred); adopt with judgment.
+- **Extraction precision/recall numbers are not published yet.** The eval
+  harness is built (`bajan eval claims`, bajan-2k4) but no golden corpus
+  has been adjudicated yet — gold labels are human sign-off; until a
+  corpus lands and a run is scored, adopt with judgment.
 - **Cost/usage reporting is thin.** Per-call usage cost is not logged from
   provider responses yet (bajan-3w4); burn-in measured ~$0.02 for a
   50-episode book with a $0.50 cap.

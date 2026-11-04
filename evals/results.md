@@ -1,10 +1,12 @@
 # Eval results
 
 Per `ev_results_checked_in` (specs/eval-claims.md): checked-in decision
-artifact. One row per (corpus, extractor) run. Precision/recall and
-hedge-preservation rates are pending the eval harness (specs/eval-claims.md
-is specced, not implemented) — raw counts and observed noise rates are the
-measured columns until then. **No fabricated numbers.**
+artifact. One row per (corpus, extractor) run. The eval harness is
+implemented (bajan-2k4: `bajan eval claims`); precision/recall and
+hedge-preservation rows still await a human-adjudicated golden corpus —
+gold labels are human sign-off and land in a reviewed commit before any
+metrics run. Raw counts and observed noise rates are the measured columns
+until then. **No fabricated numbers.**
 
 | date | corpus | extractor | episodes | extracted | claims staged | junk claims (praise/testimonial/copyright/CTA) | notes |
 |------|--------|-----------|----------|-----------|---------------|------------------------------------------------|-------|
