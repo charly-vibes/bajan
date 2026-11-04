@@ -92,3 +92,13 @@
   Constraints/decisions: ah sync upstream-broken in ah 0.12.0 (per-dir total_refs lint; gently affected too — candidates for ah feedback bug); contract ids must be dashed slugs; property→test mapping table lives in gen_contracts.py ( Mapping M); crib tombstone patterns: sqlite.rs restage(≈1362)/enqueue_candidate, RejectReason ingest.rs:105, CLI Adopt arm cli.rs.
   Validation: cargo test 312 ok; clippy/fmt clean; ah check 2 findings (expected); openspec validate 7/7.
   Unknowns: none blocking; /tmp/bajan-16o/ is ephemeral — contracts already on disk make it disposable.
+- 2026-11-04T22:45:55Z [id:77f4c7f9511ab27b358790ab937f3784f1bf5952f22c654d575465b45c0fc60a] (#snap) ### 2026-11-04T22:45:55Z — snap (bajan-16o + bajan-aod closed, pushed)
+  
+  Format: 1
+  Repo: bajan (~/para/areas/dev/gh/charly/bajan), branch main @ 0eea7bb — tree clean, pushed.
+  Session: 01a1a8a4-f39b-7260-9ba7-e104c9fcefeb
+  Task: bajan-16o (specs unification) CLOSED with bajan-aod (tombstone feature) in atomic switch commit 0eea7bb.
+  State: 68 contracts wired, all filters normalized to real cargo test paths (binary-name prefixes never matched — repo-wide latent defect, found via ah check --run-tests 156 no-tests-ran, fixed via -- --list inventory remap); tombstone feature: episode_tombstones table, delete/revive store ops (delete refuses while lineage supports — gm_lineage_survives), RejectReason::DeletedId gates persist BEFORE insert, dump/restore carries tombstones raw, CLI delete/revive envelopes; tests/episode_tombstones.rs 2 proptests + 3 unit tests.
+  Gates: ah check 0, ah check --run-tests 185 passed, just test-full 322 passed, clippy 0, fmt clean, spk lint clean, spec-drift-gate wired in lefthook pre-commit.
+  Next: bd ready — remaining board per prior snaps (bajan-6sw/15i/42y class work consumed earlier; check bd ready for fresh heads). No pending handoff — clean exit.
+  Unknowns: none.
