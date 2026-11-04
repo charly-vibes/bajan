@@ -299,6 +299,11 @@ pub struct LlmExtractor {
     unaccounted_calls: Cell<u32>,
     sleep: Box<dyn Fn(Duration) + Send + Sync>,
     transport: Box<dyn LlmTransport>,
+    /// Global timeout for the built-in ureq transport (bajan-noj).
+    /// Default 120s (the burn-in-verified default); overridden via
+    /// BAJAN_EXTRACTOR_TIMEOUT_SECS at selection. A custom transport
+    /// (with_transport) owns its own timeout policy.
+    transport_timeout: Duration,
     key_lookup: KeyLookup,
 }
 
@@ -328,6 +333,7 @@ impl LlmExtractor {
         max_attempts: u32,
     ) -> Self {
         let model_id = model_id.into();
+        let transport_timeout = Duration::from_secs(120);
         Self {
             version: llm_version(&model_id),
             model_id,
@@ -339,9 +345,26 @@ impl LlmExtractor {
             spent_micros: Cell::new(0),
             unaccounted_calls: Cell::new(0),
             sleep: Box::new(std::thread::sleep),
-            transport: Box::new(UreqTransport::default()),
+            transport: Box::new(UreqTransport::with_timeout(transport_timeout)),
+            transport_timeout,
             key_lookup: Box::new(|key| std::env::var(key).ok()),
         }
+    }
+
+    /// Set the built-in transport's global HTTP timeout in seconds
+    /// (bajan-noj): carries BAJAN_EXTRACTOR_TIMEOUT_SECS from
+    /// `ExtractorConfig::select`. Rebuilds the built-in ureq transport;
+    /// a custom transport installed via with_transport owns its own
+    /// timeout policy and should not be combined with this builder.
+    pub fn with_timeout_secs(mut self, secs: u64) -> Self {
+        self.transport_timeout = Duration::from_secs(secs);
+        self.transport = Box::new(UreqTransport::with_timeout(self.transport_timeout));
+        self
+    }
+
+    /// The transport timeout actually in force (bajan-noj).
+    pub fn transport_timeout(&self) -> Duration {
+        self.transport_timeout
     }
 
     /// Replace the transport (scripted fake in tests, custom endpoint
@@ -445,6 +468,10 @@ impl Extractor for LlmExtractor {
 
     fn model_id(&self) -> Option<&str> {
         Some(&self.model_id)
+    }
+
+    fn transport_timeout(&self) -> Option<std::time::Duration> {
+        Some(self.transport_timeout)
     }
 
     fn propose(&self, episode: &EpisodeRecord) -> Result<Vec<CandidateClaim>, ExtractionFailure> {

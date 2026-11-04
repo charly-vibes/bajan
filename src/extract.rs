@@ -200,6 +200,14 @@ pub trait Extractor: std::fmt::Debug {
     /// batch refuses the whole episode's candidates (no partial
     /// staging, per-episode gate outcome).
     fn propose(&self, episode: &EpisodeRecord) -> Result<Vec<CandidateClaim>, ExtractionFailure>;
+
+    /// The network timeout actually in force for this extractor's
+    /// transport (bajan-noj); `None` for extractors with no transport.
+    /// Selection-testable: BAJAN_EXTRACTOR_TIMEOUT_SECS must yield a
+    /// transport carrying exactly that timeout.
+    fn transport_timeout(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
 
 /// The vertical-slice extractor report: one deterministic single-call
@@ -504,6 +512,12 @@ pub struct ExtractorConfig {
     /// never runs without a cost ceiling. Parsed + validated at
     /// selection.
     pub max_spend_usd: Option<String>,
+    /// Raw BAJAN_EXTRACTOR_TIMEOUT_SECS value when set (bajan-noj):
+    /// the transport's global HTTP timeout in seconds. Burn-in F4 —
+    /// reasoning models under load exceed the 120s default (chapter
+    /// p50 ~50-90s). Parsed + validated at selection (positive
+    /// integer seconds); unset keeps the 120s default.
+    pub timeout_secs: Option<String>,
 }
 
 /// Machine-readable extractor-selection errors — envelope surface,
@@ -520,6 +534,10 @@ pub enum ExtractorConfigError {
     /// amount (bajan-8cc).
     #[error("invalid {var} value '{value}': must be a positive finite USD amount")]
     BadSpendCap { var: &'static str, value: String },
+    /// BAJAN_EXTRACTOR_TIMEOUT_SECS is set but is not a positive
+    /// integer number of seconds (bajan-noj).
+    #[error("invalid {var} value '{value}': must be a positive integer number of seconds")]
+    BadTimeout { var: &'static str, value: String },
 }
 
 impl ExtractorConfig {
@@ -534,6 +552,7 @@ impl ExtractorConfig {
             context_tokens: None,
             max_attempts: None,
             max_spend_usd: lookup("BAJAN_MAX_SPEND_USD"),
+            timeout_secs: lookup("BAJAN_EXTRACTOR_TIMEOUT_SECS"),
         }
     }
 
@@ -591,6 +610,21 @@ impl ExtractorConfig {
                     });
                 }
                 let cap_micros = crate::llm::usd_to_micros(cap_usd).max(1);
+                // Transport timeout (bajan-noj): BAJAN_EXTRACTOR_TIMEOUT_SECS
+                // overrides the 120s default; validated here (positive
+                // integer seconds) so misconfiguration fails at selection.
+                let timeout_secs = match self.timeout_secs.as_deref() {
+                    Some(raw) => match raw.trim().parse::<u64>() {
+                        Ok(secs) if secs > 0 => secs,
+                        _ => {
+                            return Err(ExtractorConfigError::BadTimeout {
+                                var: "BAJAN_EXTRACTOR_TIMEOUT_SECS",
+                                value: raw.to_string(),
+                            });
+                        }
+                    },
+                    None => 120,
+                };
                 Ok(Box::new(
                     crate::llm::LlmExtractor::new(
                         model_id,
@@ -601,7 +635,8 @@ impl ExtractorConfig {
                         self.max_attempts
                             .unwrap_or(crate::llm::LLM_DEFAULT_MAX_ATTEMPTS),
                     )
-                    .with_spend_cap_micros(cap_micros),
+                    .with_spend_cap_micros(cap_micros)
+                    .with_timeout_secs(timeout_secs),
                 ))
             }
             other => Err(ExtractorConfigError::UnknownKind {

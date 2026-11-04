@@ -276,3 +276,96 @@ fn cli_llm_without_cap_envelope_and_exit_code() {
         "message must name the cap variable, got: {message}"
     );
 }
+
+// ------------------------------------------------------------------
+// bajan-noj: BAJAN_EXTRACTOR_TIMEOUT_SECS — the transport timeout is
+// configurable via env; the 120s default survives when unset.
+
+fn llm_env(extra: &[(&str, &str)]) -> bajan::extract::ExtractorConfig {
+    let mut pairs = vec![
+        ("BAJAN_EXTRACTOR", "llm"),
+        ("BAJAN_EXTRACTOR_MODEL", "test-model"),
+        ("BAJAN_EXTRACTOR_BASE_URL", "https://api.example.com/v1"),
+        ("BAJAN_EXTRACTOR_API_KEY_ENV", "MY_API_KEY"),
+        ("BAJAN_MAX_SPEND_USD", "0.50"),
+    ];
+    pairs.extend_from_slice(extra);
+    bajan::extract::ExtractorConfig::from_env_with(&lookup_from(&pairs))
+}
+
+/// The ticket's test shape: select with the env var set yields a
+/// transport carrying exactly that timeout.
+#[test]
+fn timeout_env_yields_transport_with_that_timeout() {
+    let config = llm_env(&[("BAJAN_EXTRACTOR_TIMEOUT_SECS", "300")]);
+    let extractor = config.select().expect("llm selects");
+    assert_eq!(
+        extractor.transport_timeout(),
+        Some(std::time::Duration::from_secs(300)),
+        "env-set timeout must reach the transport"
+    );
+}
+
+/// Unset: the burn-in-verified 120s default is preserved byte-for-byte
+/// behavior (missing file/env = current behavior).
+#[test]
+fn timeout_default_is_120s_when_unset() {
+    let extractor = llm_env(&[]).select().expect("llm selects");
+    assert_eq!(
+        extractor.transport_timeout(),
+        Some(std::time::Duration::from_secs(120)),
+    );
+}
+
+/// Zero is refused at selection — a transport that can never complete
+/// a call is misconfiguration, not tuning.
+#[test]
+fn timeout_zero_refused_at_selection() {
+    let err = llm_env(&[("BAJAN_EXTRACTOR_TIMEOUT_SECS", "0")])
+        .select()
+        .expect_err("zero timeout refused");
+    assert!(matches!(err, ExtractorConfigError::BadTimeout { .. }));
+    assert!(err.to_string().contains("BAJAN_EXTRACTOR_TIMEOUT_SECS"));
+}
+
+/// Non-numeric and negative values are refused at selection with the
+/// variable named.
+#[test]
+fn timeout_non_numeric_refused_at_selection() {
+    for value in ["abc", "-5", "12.5", ""] {
+        let err = llm_env(&[("BAJAN_EXTRACTOR_TIMEOUT_SECS", value)])
+            .select()
+            .expect_err("non-integer timeout refused");
+        assert!(
+            matches!(err, ExtractorConfigError::BadTimeout { .. }),
+            "value {value:?} must be BadTimeout"
+        );
+        assert!(err.to_string().contains(value), "must echo the bad value");
+    }
+}
+
+/// Reasoning-model headroom: large-but-sane timeouts select fine
+/// (burn-in saw chapter p50 ~50-90s under load; the ceiling is the
+/// operator's call, not bajan's).
+#[test]
+fn timeout_large_but_valid_selects() {
+    let extractor = llm_env(&[("BAJAN_EXTRACTOR_TIMEOUT_SECS", "3600")])
+        .select()
+        .expect("3600s is a valid operator choice");
+    assert_eq!(
+        extractor.transport_timeout(),
+        Some(std::time::Duration::from_secs(3600)),
+    );
+}
+
+/// The deterministic extractors have no transport — they report None
+/// (the provided-trait default) regardless of the env var.
+#[test]
+fn timeout_env_ignored_by_atomic() {
+    let config = bajan::extract::ExtractorConfig::from_env_with(&lookup_from(&[
+        ("BAJAN_EXTRACTOR", "atomic"),
+        ("BAJAN_EXTRACTOR_TIMEOUT_SECS", "300"),
+    ]));
+    let extractor = config.select().expect("atomic selects");
+    assert_eq!(extractor.transport_timeout(), None);
+}

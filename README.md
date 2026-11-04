@@ -60,11 +60,15 @@ bajan extract
 # BAJAN_MAX_SPEND_USD is REQUIRED — without it the extractor refuses to
 # run; when a call would push known spend past the cap, the pass stops
 # (later episodes stay pending; rerun with a raised cap to resume).
+# BAJAN_EXTRACTOR_TIMEOUT_SECS raises the per-call HTTP timeout from the
+# 120s default — reasoning models under load exceed it (must be a
+# positive integer; misconfiguration refuses at selection).
 BAJAN_EXTRACTOR=llm \
 BAJAN_EXTRACTOR_MODEL=deepseek/deepseek-v4-flash \
 BAJAN_EXTRACTOR_BASE_URL=https://openrouter.ai/api/v1 \
 BAJAN_EXTRACTOR_API_KEY_ENV=OPENROUTER_API_KEY \
 BAJAN_MAX_SPEND_USD=0.50 \
+BAJAN_EXTRACTOR_TIMEOUT_SECS=600 \
 bajan extract
 
 # 4. Human-in-the-loop adoption of staged claims
