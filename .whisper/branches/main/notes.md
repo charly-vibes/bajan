@@ -36,3 +36,7 @@
   - Gotchas: (1) serde_json &Map indexing PANICS on missing keys — only Value indexing yields Null; index through the Value when keys may be absent; (2) supersession tombstone rows persist after restage — any tombstone-based predicate must join claims.status='rejected'; (3) proptest note-content asserts must track the combined count (want = unextracted + orphaned), not the raw dimension.
   - Gates: cargo test 255 (21 suites), clippy -D warnings 0, fmt clean, spk lint 0, ah check --run-tests 17; binary smoke /tmp/bajan-913 new note text.
   - **Next:** board — bajan-t6z (P2 run-manifest export), bajan-8cc (P2 spend cap), bajan-16o (P2 specs deploy), bajan-gso (P3 failure telemetry, now complementary to the read-side predicate), bajan-sbs user gate (unblocks bajan-4hv Jev); claim per bd ready; /renew picks up from turu recall
+- 2026-11-04T17:01:36Z [id:5e704011ff1f671bbe33516ea68c84e5bb634b3fadbaab054e8e6dd2f176b3ae] (#snap) ### 2026-11-04 14:01 — snap (quick stash, delta only)
+  - Delta since the bajan-uah fixes snap: regression seed committed (c5d30a4 — p_coverage_note orphaned-shape minimal case), all work pushed, main in sync with origin (c5d30a4), tree clean.
+  - Session wrapped: RO5U review of bajan-913 -> all findings fixed under bajan-uah (closed); CORR-001 REVIEW_REQUIRED flag discharged by permanent probe-scenario tests.
+  - **Next:** /renew, then claim per bd ready — bajan-t6z (P2 run-manifest export), bajan-8cc (P2 spend cap), bajan-16o (P2 specs deploy), or bajan-sbs user gate (unblocks bajan-4hv Jev); turu recall has full context.
