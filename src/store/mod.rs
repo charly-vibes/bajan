@@ -19,7 +19,7 @@ pub use nodes::{
     EnqueueOutcome, Evidence, HEDGE_MARKERS, InvalidationProposal, Lineage, MigrationReport,
     ProposalDecision, ProposalStatus, ProposeOutcome, RestageRecord, ReviewAuditRecord,
     ReviewDecision, ReviewRecord, ReviewStatus, StoreError, SupersessionRecord, V1ClaimNode,
-    collapse, dropped_hedge_markers, migrate_v1_to_v2,
+    collapse, dropped_hedge_markers, hedge_markers_in, migrate_v1_to_v2,
 };
 
 pub const SPEC: &str = "specs/graph-model.md";

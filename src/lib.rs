@@ -6,6 +6,7 @@
 
 pub mod cli;
 pub mod contradict;
+pub mod eval;
 pub mod extract;
 pub mod ingest;
 pub mod llm;

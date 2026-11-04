@@ -197,14 +197,20 @@ pub fn migrate_v1_to_v2(nodes: Vec<V1ClaimNode>) -> MigrationReport {
 }
 
 /// Hedge markers present in `text` (case-insensitive, word-boundary match).
-fn hedge_markers_in(text: &str) -> Vec<String> {
+/// Text boundaries count as word boundaries — a marker at the very start
+/// or end of the text is present (empty neighbor = boundary, not miss).
+/// Shared by the eval harness (`ev_hedge_scoring` — text-level hedge
+/// fidelity) and the store gate.
+pub fn hedge_markers_in(text: &str) -> Vec<String> {
     let lower = text.to_lowercase();
     let mut found = Vec::new();
     for marker in HEDGE_MARKERS {
         let is_present = lower.match_indices(marker).any(|(i, _)| {
-            let before = lower[..i].ends_with(|c: char| !c.is_alphanumeric());
-            let after = lower[i + marker.len()..].starts_with(|c: char| !c.is_alphanumeric());
-            before && after
+            let before_ok =
+                lower[..i].is_empty() || lower[..i].ends_with(|c: char| !c.is_alphanumeric());
+            let after_ok = lower[i + marker.len()..].is_empty()
+                || lower[i + marker.len()..].starts_with(|c: char| !c.is_alphanumeric());
+            before_ok && after_ok
         });
         if is_present {
             found.push((*marker).to_string());

@@ -144,6 +144,16 @@ pub enum Command {
         #[command(subcommand)]
         action: ProposalAction,
     },
+    /// Score a model extraction run against a golden corpus
+    /// (eval.claims, bajan-2k4): deterministic precision/recall with raw
+    /// counts, per-case judgments in the closed reason vocabulary,
+    /// hedge-fidelity as a first-class number, and missing metrics
+    /// reported as explicit unknowns — never invented. Read-only: the
+    /// harness never opens a store (ev_readonly).
+    Eval {
+        #[command(subcommand)]
+        action: EvalAction,
+    },
 }
 
 /// Review actions (`er_human_resolution`): list is a read; approve and
@@ -210,6 +220,24 @@ pub enum ProposalAction {
     },
 }
 
+/// Eval actions (eval.claims): scoring a run against a corpus fixture —
+/// both are plain files, no store involvement anywhere.
+#[derive(Debug, Subcommand)]
+pub enum EvalAction {
+    /// Score an extraction run manifest against a golden corpus fixture
+    /// and publish the results record (precision, recall, hedge
+    /// preservation, per-case judgments, raw counts, unknown metrics).
+    Claims {
+        /// Path to the versioned golden corpus fixture (ev_golden_corpus).
+        #[arg(long)]
+        corpus: std::path::PathBuf,
+        /// Path to the extraction run manifest (run id + extractor
+        /// version + candidate claims).
+        #[arg(long)]
+        run: std::path::PathBuf,
+    },
+}
+
 /// Error type shared by all bajan pipeline modules.
 ///
 /// Every variant carries the governing spec so the CLI can stamp `spec_ref`
@@ -219,6 +247,8 @@ pub enum ProposalAction {
 pub enum BajanError {
     #[error("{0}")]
     Store(String),
+    #[error("{0}")]
+    Eval(String),
 }
 
 /// Store errors surface as envelope-carried store failures (bajan-2sj):
@@ -281,6 +311,46 @@ fn spec_error_envelope(
 /// Convert a pipeline error into its error envelope (bajan-cdi: no
 /// unreachable arm — every module returns real data, errors are the
 /// only thing this sees).
+/// The eval results envelope (`eval.claims`): the scored outcome plus the
+/// ready-to-append `evals/results.md` row. Read-only — the harness never
+/// opens a store (ev_readonly).
+#[derive(Serialize)]
+struct EvalReport<'a> {
+    #[serde(flatten)]
+    outcome: &'a crate::eval::EvalOutcome,
+    results_row: String,
+}
+
+fn eval_envelope(corpus_path: &std::path::Path, run_path: &std::path::Path) -> serde_json::Value {
+    let outcome = (|| -> Result<crate::eval::EvalOutcome, BajanError> {
+        let corpus_json = std::fs::read_to_string(corpus_path)
+            .map_err(|e| BajanError::Eval(format!("cannot read corpus fixture: {e}")))?;
+        let run_json = std::fs::read_to_string(run_path)
+            .map_err(|e| BajanError::Eval(format!("cannot read run manifest: {e}")))?;
+        let corpus =
+            crate::eval::load_corpus(&corpus_json).map_err(|e| BajanError::Eval(e.to_string()))?;
+        let run = crate::eval::load_run(&run_json).map_err(|e| BajanError::Eval(e.to_string()))?;
+        Ok(crate::eval::score(&corpus, &run))
+    })();
+    match outcome {
+        Ok(outcome) => {
+            let row = crate::eval::results_row(&outcome);
+            serde_json::to_value(Envelope::success(
+                env!("CARGO_PKG_VERSION"),
+                EnvelopeKind::Ok,
+                EvalReport {
+                    outcome: &outcome,
+                    results_row: row,
+                },
+                vec![],
+                vec![],
+            ))
+            .expect("envelope serialization cannot fail")
+        }
+        Err(err) => stub_envelope(&err),
+    }
+}
+
 fn stub_envelope(err: &BajanError) -> serde_json::Value {
     match err {
         BajanError::Store(message) => spec_error_envelope(
@@ -292,6 +362,19 @@ fn stub_envelope(err: &BajanError) -> serde_json::Value {
                 command: "bajan --help".into(),
                 description: "The embedded store failed; check the database path and \
                               permissions (gm_embedded_store)."
+                    .into(),
+            }],
+        ),
+        BajanError::Eval(message) => spec_error_envelope(
+            "eval_error",
+            message,
+            Some("specs/eval-claims.md"),
+            "eval",
+            vec![RemediationEntry {
+                command: "bajan eval claims --corpus <fixture.json> --run <run.json> --json".into(),
+                description: "The corpus or run fixture failed loading/validation; check \
+                              the schema (ev_golden_corpus: non-empty version and ids, \
+                              hedge markers within the gm_hedge_anchor vocabulary)."
                     .into(),
             }],
         ),
@@ -862,6 +945,9 @@ pub fn run(command: Command, db_path: &str) -> String {
                 proposal_resolve_envelope(db_path, *from, *to, false, actor.as_deref())
             }
         },
+        Command::Eval { action } => match action {
+            EvalAction::Claims { corpus, run } => eval_envelope(corpus, run),
+        },
     };
     serde_json::to_string(&value).expect("envelope serialization cannot fail")
 }
@@ -1178,6 +1264,40 @@ pub fn render_text(json: &str) -> String {
                 ));
             }
             return out.trim_end().to_string();
+        }
+        if data["results_row"].is_string() {
+            // Eval results: the metrics, the unknowns, and the row ready
+            // for evals/results.md.
+            let metric = |key: &str| -> String {
+                if data[key].is_null() {
+                    "unknown".into()
+                } else {
+                    data[key].to_string()
+                }
+            };
+            let unknowns = data["unknown_metrics"]
+                .as_array()
+                .map(|u| {
+                    u.iter()
+                        .map(|x| x.as_str().unwrap_or("?").to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "(none)".into());
+            return format!(
+                "eval {}@v{} run {} (extractor {})\n  precision={} recall={} hedge_preservation={}\n  per-case judgments: {}\n  unknown metrics: {}\n  results.md row: {}",
+                data["corpus_id"].as_str().unwrap_or("?"),
+                data["corpus_version"].as_str().unwrap_or("?"),
+                data["run_id"].as_str().unwrap_or("?"),
+                data["extractor_version"].as_str().unwrap_or("?"),
+                metric("precision"),
+                metric("recall"),
+                metric("hedge_preservation"),
+                data["judgments"].as_array().map(|j| j.len()).unwrap_or(0),
+                unknowns,
+                data["results_row"].as_str().unwrap_or(""),
+            );
         }
         format!(
             "{} v{} ({})",
