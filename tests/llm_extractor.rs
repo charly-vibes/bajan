@@ -797,3 +797,137 @@ fn spend_cap_stops_the_pass_with_later_episodes_pending() {
         "both made calls succeeded"
     );
 }
+
+// --- per-call cost logging (bajan-3w4) -------------------------------------------
+//
+// The response `usage.cost` carries the exact per-call spend; the
+// extractor logs one line per successful call so burn-ins measure spend
+// directly instead of bounding it analytically. Default sink is stderr;
+// tests inject a capturing logger.
+
+/// Captured log lines + the matching injected logger.
+type CapturedLog = (Arc<Mutex<Vec<String>>>, Box<dyn Fn(String) + Send + Sync>);
+
+fn capturing_log() -> CapturedLog {
+    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = lines.clone();
+    let logger: Box<dyn Fn(String) + Send + Sync> =
+        Box::new(move |line| sink.lock().expect("log lock").push(line));
+    (lines, logger)
+}
+
+/// One line per successful call: episode, attempt, cost, running spend
+/// against the cap (bajan-3w4).
+#[test]
+fn call_log_records_cost_per_call() {
+    let script = Script::new(vec![
+        Ok(openai_ok_with_cost(&one_claim("A is true."), 0.000_002)),
+        Ok(openai_ok_with_cost(&one_claim("B is true."), 0.000_002)),
+    ]);
+    let (lines, logger) = capturing_log();
+    let extractor = llm(script)
+        .with_spend_cap_micros(500_000)
+        .with_call_log(logger);
+    Extractor::propose(&extractor, &episode("ep-1", "A is true.")).expect("ep-1");
+    Extractor::propose(&extractor, &episode("ep-2", "B is true.")).expect("ep-2");
+    let got = lines.lock().expect("log lock").clone();
+    assert_eq!(got.len(), 2, "one line per successful call: {got:?}");
+    assert!(got[0].contains("[llm] ep-1"), "{got:?}");
+    assert!(got[0].contains("attempt 1"), "{got:?}");
+    assert!(got[0].contains("cost $0.000002"), "{got:?}");
+    assert!(got[0].contains("of $0.500000"), "{got:?}");
+    assert!(
+        got[1].contains("[llm] ep-2") && got[1].contains("spent $0.000004"),
+        "running spend must accumulate: {got:?}"
+    );
+}
+
+/// An unaccountable response (no usage.cost) is logged as such — and a
+/// capped instance names the fail-closed consequence (bajan-8cc twin).
+#[test]
+fn call_log_notes_unaccountable_cost() {
+    let script = Script::new(vec![Ok(openai_ok(&one_claim("A is true.")))]);
+    let (lines, logger) = capturing_log();
+    let extractor = llm(script)
+        .with_spend_cap_micros(1_000_000)
+        .with_call_log(logger);
+    Extractor::propose(&extractor, &episode("ep-1", "A is true.")).expect("ok");
+    let got = lines.lock().expect("log lock").clone();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].contains("cost unaccounted"), "{got:?}");
+    assert!(got[0].contains("fails closed"), "{got:?}");
+}
+
+/// Failed attempts carry no cost — only the successful attempt logs,
+/// with its real attempt number; an uncapped instance says so.
+#[test]
+fn call_log_counts_retry_attempts_and_names_uncapped() {
+    let script = Script::new(vec![
+        Err("503 overloaded".into()),
+        Ok(openai_ok_with_cost(&one_claim("A is true."), 0.000_003)),
+    ]);
+    let (lines, logger) = capturing_log();
+    let extractor = llm_with(script, 2).with_call_log(logger);
+    Extractor::propose(&extractor, &episode("ep-1", "A is true.")).expect("retry then ok");
+    let got = lines.lock().expect("log lock").clone();
+    assert_eq!(
+        got.len(),
+        1,
+        "failed attempts carry no cost — only the success logs: {got:?}"
+    );
+    assert!(got[0].contains("attempt 2"), "{got:?}");
+    assert!(got[0].contains("(no cap)"), "{got:?}");
+}
+
+/// The default sink is stderr: through the real binary + real HTTP fake
+/// server, the cost line appears on stderr while stdout stays a clean
+/// envelope.
+#[test]
+fn cli_llm_extract_logs_cost_to_stderr() {
+    let dir =
+        std::env::temp_dir().join(format!("bajan-3w4-cli-{}-{}", std::process::id(), line!()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let db_path = dir.join("t.db");
+    let db_path = db_path.to_str().expect("utf8").to_string();
+
+    let (code, out) = run_with_env_stdin(
+        &[],
+        &["--json", "--db", &db_path, "ingest"],
+        Some(
+            r#"[{"id":"e1","text":"A is true. B follows.","locator":{"kind":"span","value":"heading:H"},"source":{"source_type":"markdown","data_cutoff":null,"authority_tier":1,"tags":[]}}]"#,
+        ),
+    );
+    assert_eq!(code, 0, "{out}");
+
+    let base_url = spawn_fake_openai(vec![(
+        200,
+        openai_ok_with_cost(
+            &claims_content(serde_json::json!([
+                { "text": "A is true.", "evidence": "A is true." }
+            ])),
+            0.000_004,
+        ),
+    )]);
+    let exe = env!("CARGO_BIN_EXE_bajan");
+    let output = std::process::Command::new(exe)
+        .args(["--json", "--db", &db_path, "extract"])
+        .env("BAJAN_EXTRACTOR", "llm")
+        .env("BAJAN_EXTRACTOR_MODEL", "fake-model")
+        .env("BAJAN_EXTRACTOR_BASE_URL", &base_url)
+        .env("BAJAN_EXTRACTOR_API_KEY_ENV", "FAKE_KEY")
+        .env("BAJAN_MAX_SPEND_USD", "1.00")
+        .env("FAKE_KEY", "sk-nothing")
+        .output()
+        .expect("run bajan");
+    assert!(
+        output.status.success(),
+        "extract must succeed: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[llm] e1"), "stderr: {stderr}");
+    assert!(stderr.contains("cost $0.000004"), "stderr: {stderr}");
+    assert!(stderr.contains("of $1.000000"), "stderr: {stderr}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

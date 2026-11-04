@@ -220,9 +220,11 @@ humans approve. Specifications under `specs/` are linted by
   harness is built (`bajan eval claims`, bajan-2k4) but no golden corpus
   has been adjudicated yet — gold labels are human sign-off; until a
   corpus lands and a run is scored, adopt with judgment.
-- **Cost/usage logging is thin.** The spend cap reads `usage.cost` for
-  enforcement, but per-call cost lines are not logged yet (bajan-3w4);
-  burn-in measured ~$0.02 for a 50-episode book with a $0.50 cap.
+- **Per-call costs are logged, not reported.** The extractor logs one
+  stderr line per successful LLM call carrying the response's exact
+  `usage.cost` and the running spend against the cap (bajan-3w4);
+  aggregate spend surfaces on the extract report only when a cap stops
+  the pass (bajan-8cc).
 - Burn-in findings and failure profile:
   [`docs/burnin-deepseek-v4-flash-profit-first.org`](docs/burnin-deepseek-v4-flash-profit-first.org).
 

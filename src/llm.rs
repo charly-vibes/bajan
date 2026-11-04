@@ -65,6 +65,12 @@ pub(crate) fn micros_to_usd(micros: u64) -> f64 {
     micros as f64 / 1_000_000.0
 }
 
+/// Fixed 6-decimal USD display for cost-log lines (bajan-3w4): burn-in
+/// spends are micro-dollar scale — trimming would hide them.
+pub(crate) fn usd_line(micros: u64) -> String {
+    format!("${:.6}", micros_to_usd(micros))
+}
+
 /// Deterministic backoff schedule between attempts: 500ms · 2^(attempt−1),
 /// capped at 8s. Attempt 1 fails → sleep 500ms, attempt 2 fails → 1s, …
 pub fn llm_backoff(attempt: u32) -> Duration {
@@ -299,6 +305,10 @@ pub struct LlmExtractor {
     unaccounted_calls: Cell<u32>,
     sleep: Box<dyn Fn(Duration) + Send + Sync>,
     transport: Box<dyn LlmTransport>,
+    /// Per-call cost log (bajan-3w4): one line per successful call,
+    /// emitted as soon as the cost is known — a burn-in's direct spend
+    /// measurement. Default sink is stderr; injected in tests.
+    call_log: Box<dyn Fn(String) + Send + Sync>,
     /// Global timeout for the built-in ureq transport (bajan-noj).
     /// Default 120s (the burn-in-verified default); overridden via
     /// BAJAN_EXTRACTOR_TIMEOUT_SECS at selection. A custom transport
@@ -346,6 +356,7 @@ impl LlmExtractor {
             unaccounted_calls: Cell::new(0),
             sleep: Box::new(std::thread::sleep),
             transport: Box::new(UreqTransport::with_timeout(transport_timeout)),
+            call_log: Box::new(|line| eprintln!("{line}")),
             transport_timeout,
             key_lookup: Box::new(|key| std::env::var(key).ok()),
         }
@@ -384,6 +395,15 @@ impl LlmExtractor {
         self
     }
 
+    /// Replace the per-call cost log (captured in tests; default is
+    /// stderr): one line per successful call carrying episode id,
+    /// attempt number, the response's exact `usage.cost`, and the
+    /// running spend against the cap (bajan-3w4).
+    pub fn with_call_log(mut self, log: Box<dyn Fn(String) + Send + Sync>) -> Self {
+        self.call_log = log;
+        self
+    }
+
     /// Replace the inter-attempt sleep (no-op in tests).
     pub fn with_sleep(mut self, sleep: Box<dyn Fn(Duration) + Send + Sync>) -> Self {
         self.sleep = sleep;
@@ -404,7 +424,7 @@ impl LlmExtractor {
     /// error detail is deliberately not carried: extraction records hold
     /// machine-readable reasons only (`ex_run_record`), and the budget
     /// outcome — not the endpoint's wording — is the durable fact.
-    fn retrying_call(&self, body: &str) -> Result<LlmOutput, ExtractionFailure> {
+    fn retrying_call(&self, body: &str, episode_id: &str) -> Result<LlmOutput, ExtractionFailure> {
         for attempt in 1..=self.max_attempts {
             let outcome = match (self.key_lookup)(&self.api_key_env) {
                 Some(api_key) => self
@@ -429,6 +449,36 @@ impl LlmExtractor {
                         self.unaccounted_calls.set(n + 1);
                     }
                 }
+                // Per-call cost log (bajan-3w4): the exact response
+                // spend, visible where burn-ins look.
+                let cap = self.spend_cap_micros;
+                let line = match cost_micros {
+                    Some(micros) => {
+                        let spent = usd_line(self.spent_micros.get());
+                        if cap > 0 {
+                            format!(
+                                "[llm] {episode_id}: attempt {attempt} cost {} — spent {spent} of {}",
+                                usd_line(micros),
+                                usd_line(cap)
+                            )
+                        } else {
+                            format!(
+                                "[llm] {episode_id}: attempt {attempt} cost {} — spent {spent} (no cap)",
+                                usd_line(micros)
+                            )
+                        }
+                    }
+                    None => {
+                        if cap > 0 {
+                            format!(
+                                "[llm] {episode_id}: attempt {attempt} cost unaccounted — a capped next call fails closed"
+                            )
+                        } else {
+                            format!("[llm] {episode_id}: attempt {attempt} cost unaccounted")
+                        }
+                    }
+                };
+                (self.call_log)(line);
                 return Ok(output);
             }
             if attempt < self.max_attempts {
@@ -498,7 +548,7 @@ impl Extractor for LlmExtractor {
         })
         .to_string();
 
-        let output = self.retrying_call(&body)?;
+        let output = self.retrying_call(&body, &episode.id)?;
         Ok(output
             .claims
             .into_iter()
