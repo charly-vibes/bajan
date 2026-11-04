@@ -1237,7 +1237,7 @@ pub fn render_text(json: &str) -> String {
             let status = data["status"].as_str().unwrap_or("ok");
             let mut out = format!("query {} — {} hit(s)\n", status, hits.len());
             if hits.is_empty() {
-                out.push_str("  (no matching claims)");
+                out.push_str("  (no matching claims)\n");
             }
             for h in hits {
                 let text = h["text"].as_str().unwrap_or("");
@@ -1261,6 +1261,17 @@ pub fn render_text(json: &str) -> String {
                     "  ! stale best hit #{} (cutoff {})\n",
                     warning["claim_key"].as_u64().unwrap_or(0),
                     warning["data_cutoff"].as_str().unwrap_or("?"),
+                ));
+            }
+            // Coverage surfacing (bajan-913): a partially extracted
+            // corpus names its limitation in text mode too — the note
+            // carries the parked/pending vs total counts verbatim.
+            if let Some(coverage) = data["coverage"].as_object() {
+                out.push_str(&format!(
+                    "  ! coverage: {}\n",
+                    coverage["note"]
+                        .as_str()
+                        .unwrap_or("corpus partially extracted"),
                 ));
             }
             return out.trim_end().to_string();
@@ -1448,6 +1459,36 @@ mod tests {
         let v = query_with(&db, "parser", 1, &[]);
         assert_eq!(v["data"]["status"], "budget-exhausted");
         assert_eq!(v["data"]["hits"].as_array().map(Vec::len), Some(1));
+    }
+
+    // Coverage surfacing at the CLI layer (bajan-913, doc §4 B6): the
+    // --json envelope carries the parked/pending vs total episode counts,
+    // and the zero-claims EARS shape still identifies the limitation.
+    #[test]
+    fn query_json_envelope_carries_coverage_counts() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        ingest_with(&db, &stream_json());
+        extract_with(&db);
+        // The parked/pending shape: persisted, never extracted — what a
+        // mid-run kill or retry-budget park leaves behind.
+        db.insert_episode(&EpisodeRecord {
+            id: "ep-parked".into(),
+            ..seed_episode()
+        })
+        .unwrap();
+
+        let v = query_with(&db, "parser", 100, &[]);
+        let coverage = &v["data"]["coverage"];
+        assert_eq!(coverage["unextracted"], 1, "one episode never extracted");
+        assert_eq!(coverage["total"], 2, "both episodes persisted");
+        assert!(coverage["note"].is_string(), "note present: {coverage}");
+
+        // EARS verbatim: zero claims over the partial corpus still
+        // identifies its coverage limitation — silence is the bug.
+        let v = query_with(&db, "no-such-text", 100, &[]);
+        assert_eq!(v["data"]["hits"].as_array().map(Vec::len), Some(0));
+        assert_eq!(v["data"]["coverage"]["unextracted"], 1);
+        assert_eq!(v["data"]["coverage"]["total"], 2);
     }
 
     // qt_scope_filtering at the CLI layer: `--scope` filters hits by the
@@ -1725,6 +1766,32 @@ mod tests {
             text.contains("stale") || text.contains("fresh"),
             "staleness missing: {text}"
         );
+    }
+
+    // Coverage note (bajan-913): text mode names the limitation when the
+    // corpus is partially extracted and stays silent on a fully
+    // extracted corpus — never noise.
+    #[test]
+    fn text_render_emits_coverage_note_only_when_partial() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        ingest_with(&db, &stream_json());
+        extract_with(&db);
+        db.insert_episode(&EpisodeRecord {
+            id: "ep-parked".into(),
+            ..seed_episode()
+        })
+        .unwrap();
+
+        let json = query_with(&db, "parser", 100, &[]);
+        let text = render_text(&json.to_string());
+        assert!(text.contains("coverage"), "limitation named: {text}");
+        assert!(text.contains("1 of 2"), "both counts present: {text}");
+
+        let complete = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        ingest_with(&complete, &stream_json());
+        extract_with(&complete);
+        let text = render_text(&query_with(&complete, "parser", 100, &[]).to_string());
+        assert!(!text.contains("coverage"), "no note when complete: {text}");
     }
 
     #[test]

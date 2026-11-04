@@ -148,6 +148,31 @@ pub struct SearchResult {
     /// a fresh low-authority answer outranking it is the expected shape,
     /// so the warning marks the demoted-best, not the ordering.
     pub staleness_warning: Option<StalenessWarning>,
+    /// Corpus coverage limitation (bajan-913, doc §4 B6): present exactly
+    /// when the persisted corpus is partially extracted — at least one
+    /// episode has no extraction output cached at any extractor version
+    /// (pending or parked/failed; run rows are in-memory, so the read
+    /// side cannot distinguish and never adjudicates). A query that
+    /// returns zero claims over such a corpus identifies this limitation
+    /// instead of answering silently; a fully extracted corpus carries
+    /// no note. Corpus metadata, not walk state — reported regardless of
+    /// the budget outcome.
+    pub coverage: Option<CoverageNote>,
+}
+
+/// The corpus coverage limitation carried by a partially extracted
+/// corpus's answers (bajan-913, doc §4 B6): the parked/pending count is
+/// the honest read-side observable — episodes with no extraction-cache
+/// entry at ANY extractor version — against the persisted total.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CoverageNote {
+    /// Persisted episodes with no extraction output cached at any
+    /// extractor version (pending or parked/failed).
+    pub unextracted: usize,
+    /// All persisted episodes.
+    pub total: usize,
+    /// The limitation statement, rendered verbatim by text mode.
+    pub note: String,
 }
 
 /// The per-claim ranking key derived from lineage-reachable episode
@@ -317,11 +342,29 @@ fn search_inner(
     } else {
         BudgetStatus::Complete
     };
+    // Coverage surfacing (bajan-913, doc §4 B6): counts straight from
+    // the extraction cache — corpus metadata, independent of the walk.
+    // A note is present exactly when the corpus is partially extracted;
+    // a fully extracted corpus honestly reports no limitation.
+    let coverage = db
+        .extraction_coverage()
+        .map_err(|e| BajanQueryError(e.to_string()))?;
+    let coverage = match coverage {
+        (0, _) | (_, 0) => None,
+        (unextracted, total) => Some(CoverageNote {
+            unextracted,
+            total,
+            note: format!(
+                "corpus partially extracted: {unextracted} of {total} persisted episodes have no extraction output (pending or parked)",
+            ),
+        }),
+    };
     Ok(SearchResult {
         status,
         scope: scope.unwrap_or(&[]).to_vec(),
         hits,
         staleness_warning,
+        coverage,
     })
 }
 

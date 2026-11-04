@@ -727,6 +727,29 @@ impl SqliteStore {
         Ok(out)
     }
 
+    /// Corpus coverage counts (bajan-913, doc §4 B6): `(unextracted,
+    /// total)` — episodes persisted with NO extraction-cache entry at ANY
+    /// extractor version, and all persisted episodes. Run rows are
+    /// in-memory, so cache absence is the only honest read-side
+    /// observable for the parked/pending shape; the method never
+    /// adjudicates which. Read-only (`qt_readonly`).
+    pub fn extraction_coverage(&self) -> Result<(usize, usize), StoreError> {
+        let total: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM episodes", [], |row| row.get(0))
+            .map_err(sql_err)?;
+        let unextracted: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM episodes e
+                 WHERE NOT EXISTS (SELECT 1 FROM extracted x WHERE x.episode_id = e.id)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_err)?;
+        Ok((unextracted as usize, total as usize))
+    }
+
     /// Dump extraction output (`gm_embedded_store`): every claim with its
     /// lineage plus the extraction-cache markers.
     pub fn dump_extraction_output(&self) -> Result<ExtractionDump, StoreError> {
