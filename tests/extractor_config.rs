@@ -52,9 +52,8 @@ fn unknown_kind_refused_at_selection() {
     assert!(err.to_string().contains("unknown extractor kind"));
 }
 
-/// kind = llm with a complete parameter surface selects the real LLM
-/// extractor (bajan-vg6 implemented it; the honest NotImplemented gate
-/// is gone).
+/// kind = llm with a complete parameter surface (now including the
+/// mandatory spend cap, bajan-8cc) selects the real LLM extractor.
 #[test]
 fn llm_with_full_config_selects_extractor() {
     let config = bajan::extract::ExtractorConfig::from_env_with(&lookup_from(&[
@@ -62,6 +61,7 @@ fn llm_with_full_config_selects_extractor() {
         ("BAJAN_EXTRACTOR_MODEL", "gpt-4o-mini"),
         ("BAJAN_EXTRACTOR_BASE_URL", "https://api.example.com/v1"),
         ("BAJAN_EXTRACTOR_API_KEY_ENV", "MY_API_KEY"),
+        ("BAJAN_MAX_SPEND_USD", "0.50"),
     ]));
     let extractor = config.select().expect("llm selects the real extractor");
     assert_eq!(extractor.model_id(), Some("gpt-4o-mini"));
@@ -207,4 +207,72 @@ fn run_with_env_stdin(envs: &[(&str, &str)], args: &[&str], stdin: Option<&str>)
         status.code().unwrap_or(-1),
         String::from_utf8_lossy(&stdout).to_string(),
     )
+}
+
+// --- spend cap surface (bajan-8cc) -------------------------------------------
+
+// The spend cap is REQUIRED for the llm extractor — running a real
+// money-spending extractor with no cost ceiling is the invented-estimate
+// failure mode with a wallet attached. Without BAJAN_MAX_SPEND_USD the
+// selection refuses, naming the variable.
+#[test]
+fn llm_without_spend_cap_is_refused() {
+    let config = bajan::extract::ExtractorConfig::from_env_with(&lookup_from(&[
+        ("BAJAN_EXTRACTOR", "llm"),
+        ("BAJAN_EXTRACTOR_MODEL", "test-model"),
+        ("BAJAN_EXTRACTOR_BASE_URL", "http://localhost/v1"),
+        ("BAJAN_EXTRACTOR_API_KEY_ENV", "TEST_API_KEY"),
+    ]));
+    let err = config.select().expect_err("cap is required for llm");
+    assert!(
+        matches!(err, ExtractorConfigError::MissingParam { param } if param == "BAJAN_MAX_SPEND_USD"),
+        "got: {err}"
+    );
+    assert!(err.to_string().contains("BAJAN_MAX_SPEND_USD"));
+}
+
+// The cap value must parse as a positive finite USD amount — junk,
+// negatives, zero, and infinities are config errors, not silent no-ops.
+#[test]
+fn spend_cap_must_be_positive_finite_number() {
+    for value in ["abc", "-1", "0", "inf", "nan"] {
+        let config = bajan::extract::ExtractorConfig::from_env_with(&lookup_from(&[
+            ("BAJAN_EXTRACTOR", "llm"),
+            ("BAJAN_EXTRACTOR_MODEL", "test-model"),
+            ("BAJAN_EXTRACTOR_BASE_URL", "http://localhost/v1"),
+            ("BAJAN_EXTRACTOR_API_KEY_ENV", "TEST_API_KEY"),
+            ("BAJAN_MAX_SPEND_USD", value),
+        ]));
+        let err = config
+            .select()
+            .expect_err(&format!("cap '{value}' must be refused"));
+        assert!(
+            matches!(err, ExtractorConfigError::BadSpendCap { .. }),
+            "value '{value}': got {err}"
+        );
+    }
+}
+
+// CLI: selecting llm without the cap produces the extractor_config error
+// envelope (exit 1), naming the missing variable.
+#[test]
+fn cli_llm_without_cap_envelope_and_exit_code() {
+    let (code, out) = run_with_env(
+        &[
+            ("BAJAN_EXTRACTOR", "llm"),
+            ("BAJAN_EXTRACTOR_MODEL", "test-model"),
+            ("BAJAN_EXTRACTOR_BASE_URL", "http://localhost:1/v1"),
+            ("BAJAN_EXTRACTOR_API_KEY_ENV", "BAJAN_NO_SUCH_KEY"),
+        ],
+        &["--json", "extract"],
+    );
+    assert_ne!(code, 0, "missing cap must exit non-zero");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("envelope on stdout");
+    assert_eq!(v["ok"].as_bool(), Some(false));
+    assert_eq!(v["data"]["code"].as_str(), Some("extractor_config"));
+    let message = v["data"]["message"].as_str().expect("message");
+    assert!(
+        message.contains("BAJAN_MAX_SPEND_USD"),
+        "message must name the cap variable, got: {message}"
+    );
 }

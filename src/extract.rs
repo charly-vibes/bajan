@@ -147,7 +147,7 @@ pub struct CandidateClaim {
 /// Infrastructure failures (network, auth, malformed provider response)
 /// are NOT gate rejections — they fail the run honestly (`ex_run_record`
 /// class separation, bajan-r1h discipline).
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ExtractionFailure {
     /// The extractor could not complete its call. Propagates — the run
     /// fails; the episode stays pending and retryable.
@@ -160,6 +160,20 @@ pub enum ExtractionFailure {
     /// (`ex_park_requeue`).
     #[error("extraction retry budget exhausted after {attempts} attempts")]
     Exhausted { attempts: u32 },
+    /// The configured spend cap refused further calls (bajan-8cc): the
+    /// pre-call gate found accumulated spend at/over the cap, or a prior
+    /// call went unaccounted (response without `usage.cost` — a cap
+    /// that cannot see spend must not keep spending). The pass STOPS:
+    /// the episode stays pending (never parked), and the report carries
+    /// the stop (`spend_cap`).
+    #[error(
+        "spend cap reached: spent ${spent_usd:.6} of ${cap_usd:.6} cap, {unaccounted_calls} unaccounted call(s)"
+    )]
+    SpendCapExceeded {
+        spent_usd: f64,
+        cap_usd: f64,
+        unaccounted_calls: u32,
+    },
 }
 
 /// The extractor seam (bajan-9av): the boundary between persisted
@@ -206,7 +220,7 @@ pub trait Extractor: std::fmt::Debug {
 /// output that CONFLICTS with it stages an invalidation proposal citing
 /// the causing episode (`ex_mutation_proposal`), counted in
 /// `proposals_staged`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExtractReport {
     pub episodes_processed: usize,
     pub candidates_proposed: usize,
@@ -221,6 +235,24 @@ pub struct ExtractReport {
     /// (`ex_single_call` abort; `ex_park_requeue`: no cache entry — the
     /// next pass re-attempts with a fresh budget).
     pub parked: Vec<ParkedEpisode>,
+    /// The spend-cap stop (bajan-8cc): Some when the pass ended early
+    /// because the configured cost cap refused further calls. The
+    /// stopped episode and everything after it stay PENDING (never
+    /// parked) — a raised cap re-attempts them with the cache intact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spend_cap: Option<SpendCapStop>,
+}
+
+/// The machine-readable spend-cap stop (bajan-8cc): known spend at the
+/// stop, the cap, calls whose cost could not be accounted (responses
+/// without `usage.cost` — enforcement failed closed), and how many
+/// episodes were never attempted because of the stop.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SpendCapStop {
+    pub spent_usd: f64,
+    pub cap_usd: f64,
+    pub unaccounted_calls: u32,
+    pub episodes_left_pending: usize,
 }
 
 /// Classify a store refusal at the wired gate (bajan-r1h): a gate-level
@@ -467,6 +499,11 @@ pub struct ExtractorConfig {
     /// Retry budget (total attempts per episode per pass) when
     /// kind = llm. Defaults to `llm::LLM_DEFAULT_MAX_ATTEMPTS` when None.
     pub max_attempts: Option<u32>,
+    /// Raw BAJAN_MAX_SPEND_USD value when set (bajan-8cc): the spend
+    /// cap in USD. REQUIRED for kind = llm — a real-money extractor
+    /// never runs without a cost ceiling. Parsed + validated at
+    /// selection.
+    pub max_spend_usd: Option<String>,
 }
 
 /// Machine-readable extractor-selection errors — envelope surface,
@@ -479,6 +516,10 @@ pub enum ExtractorConfigError {
     /// kind = llm selected but its required parameter is missing.
     #[error("extractor llm requires {param}")]
     MissingParam { param: &'static str },
+    /// BAJAN_MAX_SPEND_USD is set but is not a positive finite USD
+    /// amount (bajan-8cc).
+    #[error("invalid {var} value '{value}': must be a positive finite USD amount")]
+    BadSpendCap { var: &'static str, value: String },
 }
 
 impl ExtractorConfig {
@@ -492,6 +533,7 @@ impl ExtractorConfig {
             api_key_env: lookup("BAJAN_EXTRACTOR_API_KEY_ENV"),
             context_tokens: None,
             max_attempts: None,
+            max_spend_usd: lookup("BAJAN_MAX_SPEND_USD"),
         }
     }
 
@@ -525,15 +567,42 @@ impl ExtractorConfig {
                         param: "BAJAN_EXTRACTOR_API_KEY_ENV",
                     });
                 };
-                Ok(Box::new(crate::llm::LlmExtractor::new(
-                    model_id,
-                    base_url,
-                    api_key_env,
-                    self.context_tokens
-                        .unwrap_or(crate::llm::LLM_DEFAULT_CONTEXT_TOKENS),
-                    self.max_attempts
-                        .unwrap_or(crate::llm::LLM_DEFAULT_MAX_ATTEMPTS),
-                )))
+                // Spend cap (bajan-8cc) — REQUIRED: a real-money
+                // extractor never runs without a cost ceiling. Parsed
+                // and validated here so misconfiguration fails at
+                // selection, never mid-run.
+                let Some(raw_cap) = self.max_spend_usd.as_deref() else {
+                    return Err(ExtractorConfigError::MissingParam {
+                        param: "BAJAN_MAX_SPEND_USD",
+                    });
+                };
+                let cap_usd: f64 =
+                    raw_cap
+                        .trim()
+                        .parse()
+                        .map_err(|_| ExtractorConfigError::BadSpendCap {
+                            var: "BAJAN_MAX_SPEND_USD",
+                            value: raw_cap.to_string(),
+                        })?;
+                if !cap_usd.is_finite() || cap_usd <= 0.0 {
+                    return Err(ExtractorConfigError::BadSpendCap {
+                        var: "BAJAN_MAX_SPEND_USD",
+                        value: raw_cap.to_string(),
+                    });
+                }
+                let cap_micros = crate::llm::usd_to_micros(cap_usd).max(1);
+                Ok(Box::new(
+                    crate::llm::LlmExtractor::new(
+                        model_id,
+                        base_url,
+                        api_key_env,
+                        self.context_tokens
+                            .unwrap_or(crate::llm::LLM_DEFAULT_CONTEXT_TOKENS),
+                        self.max_attempts
+                            .unwrap_or(crate::llm::LLM_DEFAULT_MAX_ATTEMPTS),
+                    )
+                    .with_spend_cap_micros(cap_micros),
+                ))
             }
             other => Err(ExtractorConfigError::UnknownKind {
                 kind: other.to_string(),
@@ -627,8 +696,9 @@ pub fn run_extract_with(
         proposals_staged: 0,
         gate_rejections: Vec::new(),
         parked: Vec::new(),
+        spend_cap: None,
     };
-    for episode in &pending {
+    for (episode_index, episode) in pending.iter().enumerate() {
         let started_at = epoch_millis();
         // Supersede first (`ex_supersession`): re-extracting this episode
         // at a new version tombstones its prior-version `staged` claims
@@ -667,6 +737,24 @@ pub fn run_extract_with(
             }
             Err(ExtractionFailure::Infrastructure(message)) => {
                 return Err(BajanError::Store(message));
+            }
+            // Spend cap (bajan-8cc): the pass stops honestly — nothing is
+            // parked, the refused episode and everything after it stay
+            // pending (a raised cap re-attempts them with the cache
+            // intact), and the report carries the machine-readable stop.
+            Err(ExtractionFailure::SpendCapExceeded {
+                spent_usd,
+                cap_usd,
+                unaccounted_calls,
+            }) => {
+                report.episodes_processed = episode_index;
+                report.spend_cap = Some(SpendCapStop {
+                    spent_usd,
+                    cap_usd,
+                    unaccounted_calls,
+                    episodes_left_pending: pending.len() - episode_index,
+                });
+                break;
             }
         };
         let lineage = Lineage {

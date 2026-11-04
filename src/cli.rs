@@ -1450,6 +1450,35 @@ pub fn render_text(json: &str) -> String {
             }
             return out.trim_end().to_string();
         }
+        if data["episodes_processed"].is_u64() {
+            // Extract report: honest counts plus every machine-readable
+            // failure surface, one line each.
+            let mut out = format!(
+                "extract: processed {} episode(s), proposed {} claim(s), superseded {}",
+                data["episodes_processed"].as_u64().unwrap_or(0),
+                data["candidates_proposed"].as_u64().unwrap_or(0),
+                data["superseded"].as_u64().unwrap_or(0),
+            );
+            let gated = data["gate_rejections"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0);
+            let parked = data["parked"].as_array().map(Vec::len).unwrap_or(0);
+            if gated > 0 || parked > 0 {
+                out.push_str(&format!("\n  gate-rejected {gated}, parked {parked}"));
+            }
+            if let Some(cap) = data["spend_cap"].as_object() {
+                out.push_str(&format!(
+                    "\n  ! spend cap reached: spent ${:.6} of ${:.6} cap ({} unaccounted call(s)); \
+                     {} episode(s) left pending — raise BAJAN_MAX_SPEND_USD and rerun",
+                    cap["spent_usd"].as_f64().unwrap_or(0.0),
+                    cap["cap_usd"].as_f64().unwrap_or(0.0),
+                    cap["unaccounted_calls"].as_u64().unwrap_or(0),
+                    cap["episodes_left_pending"].as_u64().unwrap_or(0),
+                ));
+            }
+            return out;
+        }
         if data["run"].is_object() {
             // Eval manifest export: the machine-consumable form IS the
             // JSON manifest, so text mode prints it bare — `bajan eval
@@ -1980,6 +2009,24 @@ mod tests {
     // CLAR-002 (RO5U): the renderer never drops the counts — when the
     // note string is missing from the coverage object (schema drift),
     // the line is formatted from the unextracted/total fields instead.
+    // Spend-cap stop in text mode (bajan-8cc): the human surface names
+    // the failure, the money, and the resume path.
+    #[test]
+    fn render_text_extract_reports_spend_cap_stop() {
+        let json = r#"{"ok":true,"data":{"episodes_processed":2,"candidates_proposed":2,
+            "superseded":0,"proposals_staged":0,"gate_rejections":[],"parked":[],
+            "spend_cap":{"spent_usd":0.000006,"cap_usd":0.000005,"unaccounted_calls":0,
+            "episodes_left_pending":1}}}"#;
+        let text = render_text(json);
+        assert!(text.contains("spend cap reached"), "got: {text}");
+        assert!(text.contains("0.000006"), "spent amount: {text}");
+        assert!(text.contains("left pending"), "resume path: {text}");
+        assert!(
+            text.contains("BAJAN_MAX_SPEND_USD"),
+            "env var named: {text}"
+        );
+    }
+
     #[test]
     fn render_text_coverage_fallback_formats_counts() {
         let json = r#"{"ok":true,"data":{"status":"complete","hits":[],"scope":[],"staleness_warning":null,"coverage":{"unextracted":3,"total":9}}}"#;

@@ -21,6 +21,7 @@ use crate::extract::{CandidateClaim, ExtractionFailure, Extractor};
 use crate::ingest::{EpisodeRecord, Locator};
 use crate::store::Evidence;
 use serde::Deserialize;
+use std::cell::Cell;
 use std::time::Duration;
 use text_splitter::{ChunkConfig, TextSplitter};
 use tiktoken_rs::cl100k_base;
@@ -51,6 +52,17 @@ const LLM_BACKOFF_CAP_MS: u64 = 8_000;
 /// another model's output.
 pub fn llm_version(model_id: &str) -> String {
     format!("llm-{model_id}-{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// USD → micro-USD (integer accounting: cap comparisons are exact
+/// integer math, never float drift).
+pub(crate) fn usd_to_micros(usd: f64) -> u64 {
+    (usd * 1_000_000.0).round() as u64
+}
+
+/// micro-USD → USD for the machine-readable report surface.
+pub(crate) fn micros_to_usd(micros: u64) -> f64 {
+    micros as f64 / 1_000_000.0
 }
 
 /// Deterministic backoff schedule between attempts: 500ms · 2^(attempt−1),
@@ -226,7 +238,7 @@ impl LlmTransport for UreqTransport {
 /// against the published schema. Any deviation is a retryable
 /// infrastructure failure — malformed output is the endpoint failing,
 /// not a claim-level rejection.
-fn parse_response(body: &str) -> Result<LlmOutput, String> {
+fn parse_response(body: &str) -> Result<(LlmOutput, Option<u64>), String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|e| format!("provider response is not JSON: {e}"))?;
     let content = value
@@ -237,9 +249,24 @@ fn parse_response(body: &str) -> Result<LlmOutput, String> {
         .and_then(|c| c.as_str())
         .ok_or_else(|| "provider response missing choices[0].message.content".to_string())?;
     let content = strip_json_fence(content);
-    serde_json::from_str::<LlmOutput>(content).map_err(|e| {
+    let output = serde_json::from_str::<LlmOutput>(content).map_err(|e| {
         format!("model output does not match the published claim schema ({SPEC}): {e}")
-    })
+    })?;
+    // Per-call cost (bajan-8cc): the OpenAI-compatible `usage.cost` field
+    // (USD). Absent → None — the caller accounts the call as unaccountable.
+    let cost_usd = value
+        .get("usage")
+        .and_then(|u| u.get("cost"))
+        .and_then(|c| c.as_f64());
+    let cost_micros = cost_usd.map(|usd| {
+        let micros = usd_to_micros(usd);
+        if micros == 0 && usd > 0.0 {
+            1 // sub-micro-USD costs still count — a cap is never invisible
+        } else {
+            micros
+        }
+    });
+    Ok((output, cost_micros))
 }
 
 /// Type of the injected API-key lookup: receives the configured env-var
@@ -260,6 +287,16 @@ pub struct LlmExtractor {
     api_key_env: String,
     context_tokens: usize,
     max_attempts: u32,
+    /// Spend cap in micro-USD (bajan-8cc). 0 = unbounded — only the
+    /// direct constructor path (tests, custom plumbing); the config
+    /// selection REQUIRES a cap for llm.
+    spend_cap_micros: u64,
+    /// Accumulated KNOWN spend this extractor instance (one pass),
+    /// micro-USD. Calls whose response lacks `usage.cost` are counted in
+    /// `unaccounted_calls` instead and fail the next call closed.
+    spent_micros: Cell<u64>,
+    /// Calls this instance made whose cost could not be accounted.
+    unaccounted_calls: Cell<u32>,
     sleep: Box<dyn Fn(Duration) + Send + Sync>,
     transport: Box<dyn LlmTransport>,
     key_lookup: KeyLookup,
@@ -298,6 +335,9 @@ impl LlmExtractor {
             api_key_env: api_key_env.into(),
             context_tokens,
             max_attempts,
+            spend_cap_micros: 0,
+            spent_micros: Cell::new(0),
+            unaccounted_calls: Cell::new(0),
             sleep: Box::new(std::thread::sleep),
             transport: Box::new(UreqTransport::default()),
             key_lookup: Box::new(|key| std::env::var(key).ok()),
@@ -308,6 +348,16 @@ impl LlmExtractor {
     /// plumbing elsewhere).
     pub fn with_transport(mut self, transport: impl LlmTransport + 'static) -> Self {
         self.transport = Box::new(transport);
+        self
+    }
+
+    /// Set the spend cap in micro-USD (bajan-8cc): the pre-call gate
+    /// refuses further calls once accumulated known spend has reached it,
+    /// and any unaccounted call (response without `usage.cost`) fails the
+    /// next call closed — a cap that cannot see spend must not keep
+    /// spending.
+    pub fn with_spend_cap_micros(mut self, micros: u64) -> Self {
+        self.spend_cap_micros = micros;
         self
     }
 
@@ -343,7 +393,19 @@ impl LlmExtractor {
                     self.api_key_env
                 )),
             };
-            if let Ok(output) = outcome {
+            if let Ok((output, cost_micros)) = outcome {
+                // Account the call's spend (bajan-8cc): known cost
+                // accumulates; an unaccountable response (no usage.cost)
+                // marks the instance — the next pre-call gate fails
+                // closed. Success returns regardless: the money is
+                // already spent.
+                match cost_micros {
+                    Some(micros) => self.spent_micros.set(self.spent_micros.get() + micros),
+                    None => {
+                        let n = self.unaccounted_calls.get();
+                        self.unaccounted_calls.set(n + 1);
+                    }
+                }
                 return Ok(output);
             }
             if attempt < self.max_attempts {
@@ -353,6 +415,26 @@ impl LlmExtractor {
         Err(ExtractionFailure::Exhausted {
             attempts: self.max_attempts,
         })
+    }
+
+    /// The pre-call spend gate (bajan-8cc): once accumulated KNOWN spend
+    /// has reached the cap, or a prior call went unaccounted, refuse with
+    /// zero new calls. The crossing call is allowed — its cost only
+    /// becomes known after the response.
+    fn spend_cap_refusal(&self) -> Option<ExtractionFailure> {
+        if self.spend_cap_micros == 0 {
+            return None;
+        }
+        let unaccounted = self.unaccounted_calls.get();
+        let spent = self.spent_micros.get();
+        if spent >= self.spend_cap_micros || unaccounted > 0 {
+            return Some(ExtractionFailure::SpendCapExceeded {
+                spent_usd: micros_to_usd(spent),
+                cap_usd: micros_to_usd(self.spend_cap_micros),
+                unaccounted_calls: unaccounted,
+            });
+        }
+        None
     }
 }
 
@@ -368,6 +450,11 @@ impl Extractor for LlmExtractor {
     fn propose(&self, episode: &EpisodeRecord) -> Result<Vec<CandidateClaim>, ExtractionFailure> {
         if episode.text.trim().is_empty() {
             return Ok(Vec::new());
+        }
+        // Spend gate (bajan-8cc) BEFORE any work: a capped instance that
+        // reached its limit makes zero new calls.
+        if let Some(refusal) = self.spend_cap_refusal() {
+            return Err(refusal);
         }
         // Chunk assembly for exactly ONE call (CORR-001): the chunks are
         // concatenated into a single prompt; the output is cached under
@@ -418,8 +505,20 @@ mod tests {
             ]
         })
         .to_string();
-        let output = parse_response(&body).expect("parses");
+        let (output, cost) = parse_response(&body).expect("parses");
         assert!(output.claims.is_empty());
+        assert_eq!(cost, None, "no usage field: the call is unaccountable");
+    }
+
+    #[test]
+    fn parse_response_reads_usage_cost() {
+        let body = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "{\"claims\":[]}"}}],
+            "usage": { "cost": 0.000_012 }
+        })
+        .to_string();
+        let (_, cost) = parse_response(&body).expect("parses");
+        assert_eq!(cost, Some(12), "usage.cost 0.000012 USD = 12 micro-USD");
     }
 
     #[test]

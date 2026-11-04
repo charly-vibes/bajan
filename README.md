@@ -57,12 +57,14 @@ bajan ingest < episodes.json
 bajan extract
 
 # or the LLM extractor (OpenAI-compatible endpoint):
-# NOTE: bajan has NO built-in spend cap — bound cost at the provider side
-# (budget keys, rate limits) before your first real run.
+# BAJAN_MAX_SPEND_USD is REQUIRED — without it the extractor refuses to
+# run; when a call would push known spend past the cap, the pass stops
+# (later episodes stay pending; rerun with a raised cap to resume).
 BAJAN_EXTRACTOR=llm \
 BAJAN_EXTRACTOR_MODEL=deepseek/deepseek-v4-flash \
 BAJAN_EXTRACTOR_BASE_URL=https://openrouter.ai/api/v1 \
 BAJAN_EXTRACTOR_API_KEY_ENV=OPENROUTER_API_KEY \
+BAJAN_MAX_SPEND_USD=0.50 \
 bajan extract
 
 # 4. Human-in-the-loop adoption of staged claims
@@ -204,16 +206,19 @@ humans approve. Specifications under `specs/` are linted by
 - **Parked episodes are silent.** When the LLM extractor hits transient
   provider overload it parks 10–24% of episodes per pass; reruns recover
   some, but there is no per-episode failure telemetry yet (bajan-gso).
-- **No built-in spend cap.** The LLM extractor has no cost ceiling; the
-  burn-in run used an externally enforced $0.50 cap. Bound spend at the
-  provider until a cap surface exists.
+- **Spend cap needs `usage.cost`.** The LLM extractor requires
+  `BAJAN_MAX_SPEND_USD` and stops the pass when known spend reaches the
+  cap (bajan-8cc) — but providers that do not report per-call cost in
+  `usage.cost` (e.g. plain OpenAI) cannot be accounted: one
+  unaccountable call fails the next call closed (never silently
+  unbounded). Bound spend at the provider as well.
 - **Extraction precision/recall numbers are not published yet.** The eval
   harness is built (`bajan eval claims`, bajan-2k4) but no golden corpus
   has been adjudicated yet — gold labels are human sign-off; until a
   corpus lands and a run is scored, adopt with judgment.
-- **Cost/usage reporting is thin.** Per-call usage cost is not logged from
-  provider responses yet (bajan-3w4); burn-in measured ~$0.02 for a
-  50-episode book with a $0.50 cap.
+- **Cost/usage logging is thin.** The spend cap reads `usage.cost` for
+  enforcement, but per-call cost lines are not logged yet (bajan-3w4);
+  burn-in measured ~$0.02 for a 50-episode book with a $0.50 cap.
 - Burn-in findings and failure profile:
   [`docs/burnin-deepseek-v4-flash-profit-first.org`](docs/burnin-deepseek-v4-flash-profit-first.org).
 

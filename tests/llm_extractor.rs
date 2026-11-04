@@ -495,8 +495,9 @@ fn backoff_is_exponential_and_capped() {
 
 // --- config surface --------------------------------------------------------------
 
-/// kind = llm with a complete parameter surface now selects the real LLM
-/// extractor (bajan-vg6 replaced the honest NotImplemented gate).
+/// kind = llm with a complete parameter surface (including the
+/// mandatory spend cap, bajan-8cc) now selects the real LLM extractor
+/// (bajan-vg6 replaced the honest NotImplemented gate).
 #[test]
 fn llm_full_config_selects_extractor() {
     let config = ExtractorConfig {
@@ -504,6 +505,7 @@ fn llm_full_config_selects_extractor() {
         model_id: Some("gpt-4o-mini".into()),
         base_url: Some("https://api.example.com/v1".into()),
         api_key_env: Some("MY_API_KEY".into()),
+        max_spend_usd: Some("0.50".into()),
         ..Default::default()
     };
     let extractor = config.select().expect("llm selects");
@@ -613,6 +615,7 @@ fn cli_llm_extract_end_to_end_through_real_http() {
             ("BAJAN_EXTRACTOR_MODEL", "fake-model"),
             ("BAJAN_EXTRACTOR_BASE_URL", &base_url),
             ("BAJAN_EXTRACTOR_API_KEY_ENV", "FAKE_KEY"),
+            ("BAJAN_MAX_SPEND_USD", "1.00"),
             ("FAKE_KEY", "sk-nothing"),
         ],
         &["--json", "--db", &db_path, "extract"],
@@ -670,4 +673,127 @@ fn run_with_env_stdin(envs: &[(&str, &str)], args: &[&str], stdin: Option<&str>)
         status.code().unwrap_or(-1),
         String::from_utf8_lossy(&stdout).to_string(),
     )
+}
+
+// --- spend cap (bajan-8cc) ---------------------------------------------------
+
+/// An OpenAI-compatible success body with the given content AND a
+/// `usage.cost` (the field OpenAI-compatible providers report when they
+/// bill per call — the only spend signal bajan can account).
+fn openai_ok_with_cost(content: &str, cost_usd: f64) -> String {
+    serde_json::json!({
+        "choices": [{ "message": { "role": "assistant", "content": content } }],
+        "usage": { "cost": cost_usd }
+    })
+    .to_string()
+}
+
+fn one_claim(text: &str) -> String {
+    claims_content(serde_json::json!([
+        { "text": text, "evidence": text }
+    ]))
+}
+
+// The cap gates BEFORE the call: once accumulated known spend has reached
+// the cap, the next propose refuses with zero new calls. The crossing
+// call itself is allowed — its cost only becomes known after the response.
+#[test]
+fn spend_cap_gates_the_next_call() {
+    let script = Script::new(vec![
+        Ok(openai_ok_with_cost(&one_claim("A is true."), 0.000_002)),
+        Ok(openai_ok_with_cost(&one_claim("B is true."), 0.000_002)),
+    ]);
+    let extractor = llm(script.clone()).with_spend_cap_micros(1);
+    // Episode 1: pre-call spend 0 < 1 micro — the call runs, its known
+    // cost (2 micros) crosses the cap; output returns normally.
+    let out = Extractor::propose(&extractor, &episode("ep-1", "A is true."))
+        .expect("first call under cap succeeds");
+    assert_eq!(out.len(), 1);
+    // Episode 2: pre-call spend 2 >= 1 micro — refused, zero new calls.
+    let err = Extractor::propose(&extractor, &episode("ep-2", "B is true."))
+        .expect_err("cap gates the next call");
+    match &err {
+        ExtractionFailure::SpendCapExceeded {
+            spent_usd,
+            cap_usd,
+            unaccounted_calls,
+        } => {
+            assert_eq!(*spent_usd, 0.000_002);
+            assert_eq!(*cap_usd, 0.000_001);
+            assert_eq!(*unaccounted_calls, 0);
+        }
+        other => panic!("spend-cap refusal expected, got {other:?}"),
+    }
+    assert_eq!(script.calls(), 1, "a cap hit makes zero new calls");
+}
+
+// A response without usage.cost cannot be accounted — the NEXT call is
+// refused (fail-closed): a cap that cannot see spend must not silently
+// keep spending (bajan-8cc; documented known limitation for providers
+// that do not report per-call cost).
+#[test]
+fn unaccounted_cost_fails_closed() {
+    let script = Script::new(vec![
+        Ok(openai_ok(&one_claim("A is true."))),
+        Ok(openai_ok(&one_claim("B is true."))),
+    ]);
+    let extractor = llm(script.clone()).with_spend_cap_micros(1_000_000);
+    let out = Extractor::propose(&extractor, &episode("ep-1", "A is true."))
+        .expect("call without usage succeeds");
+    assert_eq!(out.len(), 1);
+    let err = Extractor::propose(&extractor, &episode("ep-2", "B is true."))
+        .expect_err("unaccounted spend fails closed");
+    match &err {
+        ExtractionFailure::SpendCapExceeded {
+            spent_usd,
+            unaccounted_calls,
+            ..
+        } => {
+            assert_eq!(*spent_usd, 0.0);
+            assert_eq!(*unaccounted_calls, 1);
+        }
+        other => panic!("spend-cap refusal expected, got {other:?}"),
+    }
+    assert_eq!(script.calls(), 1, "no further calls once unaccountable");
+}
+
+// Loop level: a cap hit stops the pass honestly — the crossing call's
+// output IS staged (the money was spent), later episodes stay PENDING
+// (never parked: a raised cap re-attempts them with the cache intact),
+// and the report carries the machine-readable stop.
+#[test]
+fn spend_cap_stops_the_pass_with_later_episodes_pending() {
+    let db = SqliteStore::open(":memory:").expect("store");
+    for id in ["ep-1", "ep-2", "ep-3"] {
+        ingest::persist(&db, &episode(id, "A is true.")).expect("persist");
+    }
+    let ok = openai_ok_with_cost(&one_claim("A is true."), 0.000_003);
+    let script = Script::new(vec![Ok(ok.clone()), Ok(ok.clone()), Ok(ok)]);
+    let extractor = llm(script.clone()).with_spend_cap_micros(5);
+    let mut runs = bajan::extract::ExtractionRunStore::default();
+    let report =
+        run_extract_with(&db, &extractor, &mut runs).expect("cap stop is not a run failure");
+    // ep-1 (spend 0<5) and ep-2 (spend 3<5) called; ep-3's pre-call gate
+    // refused with zero new calls.
+    assert_eq!(
+        script.calls(),
+        2,
+        "crossing call allowed, gated call never made"
+    );
+    let staged = staged_texts(&db);
+    assert_eq!(staged.len(), 2, "crossing call's output is staged");
+    assert!(report.spend_cap.is_some(), "report carries the stop");
+    let stop = report.spend_cap.expect("checked");
+    assert_eq!(stop.spent_usd, 0.000_006);
+    assert_eq!(stop.cap_usd, 0.000_005);
+    assert_eq!(stop.unaccounted_calls, 0);
+    assert_eq!(stop.episodes_left_pending, 1);
+    assert_eq!(report.episodes_processed, 2, "honest processed count");
+    assert!(report.parked.is_empty(), "a cap stop parks nothing");
+    let finishes = finish_of(&runs);
+    assert_eq!(finishes.len(), 2, "one run row per made call");
+    assert!(
+        finishes.iter().all(|f| matches!(f, Finish::Succeeded)),
+        "both made calls succeeded"
+    );
 }
