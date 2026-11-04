@@ -208,6 +208,7 @@ fn coverage_note(db: &SqliteStore) -> Result<Option<CoverageNote>, BajanQueryErr
 fn ranking_metadata(
     supported_episodes: &[&crate::ingest::EpisodeRecord],
     now_days: i64,
+    staleness_window_days: i64,
 ) -> (u8, Option<i64>, bool) {
     let authority_tier = supported_episodes
         .iter()
@@ -218,7 +219,7 @@ fn ranking_metadata(
         .iter()
         .filter_map(|ep| ep.source.data_cutoff.as_deref().and_then(days_from_iso))
         .max();
-    let stale = cutoff_days.is_some_and(|d| d < now_days - STALENESS_WINDOW_DAYS);
+    let stale = cutoff_days.is_some_and(|d| d < now_days - staleness_window_days);
     (authority_tier, cutoff_days, stale)
 }
 
@@ -232,7 +233,22 @@ pub fn search(
     pattern: &str,
     budget: usize,
 ) -> Result<SearchResult, BajanQueryError> {
-    search_inner(db, pattern, budget, None)
+    search_inner(db, pattern, budget, None, STALENESS_WINDOW_DAYS)
+}
+
+/// Window-configured search (bajan-bku): the staleness demotion window
+/// comes from bajan.toml (`staleness_window_days`) instead of the
+/// built-in default. `scope` follows qt_scope_filtering (`None` =
+/// unfiltered). Everything else — budget walk, honest stopping,
+/// ranking order — is identical to [`search`].
+pub fn search_with_window(
+    db: &SqliteStore,
+    pattern: &str,
+    budget: usize,
+    staleness_window_days: i64,
+    scope: Option<&[String]>,
+) -> Result<SearchResult, BajanQueryError> {
+    search_inner(db, pattern, budget, scope, staleness_window_days)
 }
 
 /// Scoped search (`qt_scope_filtering`, WR-SCOPE.1): restrict the answer
@@ -254,7 +270,7 @@ pub fn search_scoped(
     budget: usize,
     scope: &[String],
 ) -> Result<SearchResult, BajanQueryError> {
-    search_inner(db, pattern, budget, Some(scope))
+    search_inner(db, pattern, budget, Some(scope), STALENESS_WINDOW_DAYS)
 }
 
 /// The shared traversal behind both entry points: `None` scope is the
@@ -264,6 +280,7 @@ fn search_inner(
     pattern: &str,
     budget: usize,
     scope: Option<&[String]>,
+    staleness_window_days: i64,
 ) -> Result<SearchResult, BajanQueryError> {
     let episodes: Vec<crate::ingest::EpisodeRecord> =
         db.episodes().map_err(|e| BajanQueryError(e.to_string()))?;
@@ -311,7 +328,8 @@ fn search_inner(
             if !in_scope {
                 continue;
             }
-            let (authority_tier, cutoff_days, stale) = ranking_metadata(&supported, now_days);
+            let (authority_tier, cutoff_days, stale) =
+                ranking_metadata(&supported, now_days, staleness_window_days);
             // Surface the freshest well-formed cutoff verbatim; a
             // well-formed-but-absent set stays absent.
             let data_cutoff = cutoff_days.map(iso_from_days).or_else(|| {

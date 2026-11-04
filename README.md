@@ -40,6 +40,25 @@ the global `--db` flag: `bajan --db corpus.db extract`. Claims are referenced
 by numeric **claim keys**, which appear in extract/query output — text mode
 shows them as `#N` in the hit list.
 
+## Workspace config (`bajan.toml`)
+
+An optional strict settings file in the current directory tunes a workspace
+without touching code. Flat `key = <integer>` lines and `#` comments only —
+unknown keys, table headers, quotes, and non-integers are refused at startup
+with a `config_parse` envelope and exit 1. Resolution order is **CLI flag >
+file > built-in default**; no file is byte-identical default behavior.
+
+```toml
+# bajan.toml — workspace tuning (bajan-bku)
+staleness_window_days = 90   # qt_ranking demotion window (default 365)
+default_budget = 64          # bounded-traversal budget when --budget is absent (default 256)
+max_attempts = 5             # LLM retry budget per episode per pass (default 3)
+```
+
+API keys never go in this file — the strict key set refuses anything but
+these three keys; keys stay env-var-NAME based (`BAJAN_EXTRACTOR_*`). Config
+is not store state: dump-recreate is unaffected.
+
 ## Quickstart
 
 Every command writes a JSON suite envelope to stdout; add `--json` after the

@@ -66,9 +66,10 @@ pub enum Command {
     Query {
         /// Text to search for (case-insensitive substring match).
         pattern: String,
-        /// Bounded-traversal budget: maximum walked claim nodes.
-        #[arg(long, default_value_t = 256)]
-        budget: usize,
+        /// Bounded-traversal budget: maximum walked claim nodes
+        /// (falls back to bajan.toml default_budget, then 256).
+        #[arg(long)]
+        budget: Option<usize>,
         /// Restrict the answer to claims whose resolved tag projection
         /// (union of supporting episodes' tags via lineage,
         /// qt_scope_filtering) intersects the given tags — repeat the
@@ -83,9 +84,10 @@ pub enum Command {
         /// one — a no-op read must not report success).
         #[arg(num_args = 1.., required = true)]
         claims: Vec<usize>,
-        /// Bounded-traversal budget: maximum walked edges.
-        #[arg(long, default_value_t = 256)]
-        budget: usize,
+        /// Bounded-traversal budget: maximum walked edges
+        /// (falls back to bajan.toml default_budget, then 256).
+        #[arg(long)]
+        budget: Option<usize>,
     },
     /// Human accept action: move staged claims to active (one audit record
     /// per claim).
@@ -104,8 +106,8 @@ pub enum Command {
     /// no embedding. The queue drains, it never grows by human invention.
     Er {
         /// Bounded-candidate budget: maximum pair comparisons examined.
-        #[arg(long, default_value_t = 256)]
-        budget: usize,
+        #[arg(long)]
+        budget: Option<usize>,
     },
     /// Deterministic contradiction-scan pass (gm_contradicts_provenance):
     /// the only in-pipeline producer of `contradicts` edges — closed edit
@@ -115,8 +117,8 @@ pub enum Command {
     /// provenance; re-runs refuse duplicate edges honestly.
     Scan {
         /// Bounded-candidate budget: maximum pair comparisons examined.
-        #[arg(long, default_value_t = 256)]
-        budget: usize,
+        #[arg(long)]
+        budget: Option<usize>,
     },
     /// The human-in-the-loop review surface (er_human_resolution): the
     /// only HITL commands in an otherwise AFK pipeline — inspect the open
@@ -133,8 +135,8 @@ pub enum Command {
     /// (BAJAN_EXTRACTOR_MODEL/_BASE_URL/_API_KEY_ENV).
     Propose {
         /// Bounded-candidate budget: maximum ranked claims walked.
-        #[arg(long, default_value_t = 256)]
-        budget: usize,
+        #[arg(long)]
+        budget: Option<usize>,
     },
     /// The contradiction-proposal HITL surface (cr_human_resolution):
     /// inspect the open LLM-proposal queue, or resolve one proposal with
@@ -263,6 +265,10 @@ pub enum BajanError {
     Store(String),
     #[error("{0}")]
     Eval(String),
+    /// Workspace config (bajan-bku): bajan.toml is strict — misconfig
+    /// fails at startup with the machine-readable message verbatim.
+    #[error("{0}")]
+    Config(String),
 }
 
 /// Store errors surface as envelope-carried store failures (bajan-2sj):
@@ -537,6 +543,19 @@ fn stub_envelope(err: &BajanError) -> serde_json::Value {
                 description: "The corpus or run fixture failed loading/validation; check \
                               the schema (ev_golden_corpus: non-empty version and ids, \
                               hedge markers within the gm_hedge_anchor vocabulary)."
+                    .into(),
+            }],
+        ),
+        BajanError::Config(message) => spec_error_envelope(
+            "config_parse",
+            message,
+            None,
+            "run",
+            vec![RemediationEntry {
+                command: "bajan query x".into(),
+                description: "Fix or remove bajan.toml; allowed keys are \
+                              staleness_window_days, default_budget, max_attempts — \
+                              flat 'key = <integer>' lines only."
                     .into(),
             }],
         ),
@@ -1063,6 +1082,21 @@ fn proposal_store_error_envelope(err: &StoreError, module: &str) -> serde_json::
 /// This is the single serialization point: every command's output passes
 /// through here, so the envelope contract cannot be bypassed.
 pub fn run(command: Command, db_path: &str) -> String {
+    // Workspace config (bajan-bku): strict bajan.toml in the working
+    // directory; a missing file is byte-identical defaults, a broken one
+    // fails at startup with a machine-readable envelope (exit 1).
+    let cfg = match crate::config::BajanConfig::load() {
+        Ok(Some(cfg)) => cfg,
+        Ok(None) => crate::config::BajanConfig::default(),
+        Err(err) => {
+            return serde_json::to_string(&stub_envelope(&BajanError::Config(err.to_string())))
+                .expect("envelope serialization cannot fail");
+        }
+    };
+    // Resolution order (bajan-bku): CLI flag > config file > built-in
+    // default (256).
+    let resolve_budget =
+        |flag: Option<usize>| -> usize { flag.or(cfg.default_budget).unwrap_or(256) };
     let value = match &command {
         Command::Version => {
             serde_json::to_value(version_envelope()).expect("envelope serialization cannot fail")
@@ -1075,7 +1109,7 @@ pub fn run(command: Command, db_path: &str) -> String {
             let _ = std::io::stdin().read_to_string(&mut input);
             ingest_stream_envelope(db_path, &input)
         }
-        Command::Extract => extract_envelope(db_path),
+        Command::Extract => extract_envelope(db_path, &cfg),
         Command::Resolve { restage, actor } => {
             resolve_envelope(db_path, *restage, actor.as_deref())
         }
@@ -1083,11 +1117,13 @@ pub fn run(command: Command, db_path: &str) -> String {
             pattern,
             budget,
             scope,
-        } => query_envelope(db_path, pattern, *budget, scope),
-        Command::Contradict { claims, budget } => contradict_envelope(db_path, claims, *budget),
+        } => query_envelope(db_path, pattern, resolve_budget(*budget), scope, &cfg),
+        Command::Contradict { claims, budget } => {
+            contradict_envelope(db_path, claims, resolve_budget(*budget))
+        }
         Command::Adopt { claims, actor } => adopt_envelope(db_path, claims, actor.as_deref()),
-        Command::Er { budget } => er_envelope(db_path, *budget),
-        Command::Scan { budget } => scan_envelope(db_path, *budget),
+        Command::Er { budget } => er_envelope(db_path, resolve_budget(*budget)),
+        Command::Scan { budget } => scan_envelope(db_path, resolve_budget(*budget)),
         Command::Review { action } => match action {
             ReviewAction::List => review_list_envelope(db_path),
             ReviewAction::Approve { from, to, actor } => {
@@ -1097,7 +1133,7 @@ pub fn run(command: Command, db_path: &str) -> String {
                 review_resolve_envelope(db_path, *from, *to, false, actor.as_deref())
             }
         },
-        Command::Propose { budget } => propose_envelope(db_path, *budget),
+        Command::Propose { budget } => propose_envelope(db_path, resolve_budget(*budget)),
         Command::Proposal { action } => match action {
             ProposalAction::List => proposal_list_envelope(db_path),
             ProposalAction::Approve { from, to, actor } => {
@@ -1201,20 +1237,25 @@ fn ingest_with(db: &crate::store::sqlite::SqliteStore, stream: &str) -> serde_js
 
 /// Run the deterministic extraction pass and emit its report. Thin wrapper
 /// opening the store from `--db`.
-fn extract_envelope(db_path: &str) -> serde_json::Value {
+/// The extraction envelope over an already-open store (testable).
+fn extract_envelope(db_path: &str, cfg: &crate::config::BajanConfig) -> serde_json::Value {
     let db = match command_store(db_path) {
         Ok(db) => db,
         Err(value) => return value,
     };
-    extract_with(&db)
+    extract_with(&db, cfg)
 }
 
-/// The extraction envelope over an already-open store (testable).
-fn extract_with(db: &crate::store::sqlite::SqliteStore) -> serde_json::Value {
+fn extract_with(
+    db: &crate::store::sqlite::SqliteStore,
+    cfg: &crate::config::BajanConfig,
+) -> serde_json::Value {
     // Extractor selection from the environment (bajan-9av): misconfig
     // fails at selection with a machine-readable spec error envelope —
-    // never mid-run.
-    let config = extract::ExtractorConfig::from_env();
+    // never mid-run. The retry budget comes from bajan.toml when set
+    // (bajan-bku); env vars stay the extractor's own surface.
+    let mut config = extract::ExtractorConfig::from_env();
+    config.max_attempts = cfg.max_attempts;
     let extractor = match config.select() {
         Ok(extractor) => extractor,
         Err(err) => {
@@ -1259,12 +1300,13 @@ fn query_envelope(
     pattern: &str,
     budget: usize,
     scope: &[String],
+    cfg: &crate::config::BajanConfig,
 ) -> serde_json::Value {
     let db = match command_store(db_path) {
         Ok(db) => db,
         Err(value) => return value,
     };
-    query_with(&db, pattern, budget, scope)
+    query_with(&db, pattern, budget, scope, cfg)
 }
 
 /// The query envelope over an already-open store (testable seeding point).
@@ -1273,12 +1315,18 @@ fn query_with(
     pattern: &str,
     budget: usize,
     scope: &[String],
+    cfg: &crate::config::BajanConfig,
 ) -> serde_json::Value {
-    let result = if scope.is_empty() {
-        query::search(db, pattern, budget)
-    } else {
-        query::search_scoped(db, pattern, budget, scope)
-    };
+    let window = cfg
+        .staleness_window_days
+        .unwrap_or(query::STALENESS_WINDOW_DAYS);
+    let result = query::search_with_window(
+        db,
+        pattern,
+        budget,
+        window,
+        if scope.is_empty() { None } else { Some(scope) },
+    );
     match result {
         Ok(result) => serde_json::to_value(Envelope::success(
             env!("CARGO_PKG_VERSION"),
@@ -1658,11 +1706,17 @@ mod tests {
             .unwrap();
         let _ = &v; // outcome records already checked in ingest tests
 
-        let report = extract_with(&db);
+        let report = extract_with(&db, &crate::config::BajanConfig::default());
         assert_eq!(report["ok"].as_bool(), Some(true));
         assert_eq!(report["data"]["episodes_processed"], 1);
 
-        let result = query_with(&db, "parser", 100, &[]);
+        let result = query_with(
+            &db,
+            "parser",
+            100,
+            &[],
+            &crate::config::BajanConfig::default(),
+        );
         assert_eq!(result["ok"].as_bool(), Some(true), "query emits ok");
         assert_eq!(result["data"]["status"], "complete");
         assert_eq!(result["data"]["hits"].as_array().map(Vec::len), Some(1));
@@ -1677,7 +1731,7 @@ mod tests {
     fn query_envelope_reports_budget_exhaustion_honestly() {
         let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
         ingest_with(&db, &stream_json());
-        extract_with(&db);
+        extract_with(&db, &crate::config::BajanConfig::default());
         // A second matching claim so the budget (1) stops the walk with
         // claims remaining — the precondition `budget-exhausted` exists to
         // report.
@@ -1689,7 +1743,13 @@ mod tests {
             ..seed_episode()
         })
         .unwrap();
-        let v = query_with(&db, "parser", 1, &[]);
+        let v = query_with(
+            &db,
+            "parser",
+            1,
+            &[],
+            &crate::config::BajanConfig::default(),
+        );
         assert_eq!(v["data"]["status"], "budget-exhausted");
         assert_eq!(v["data"]["hits"].as_array().map(Vec::len), Some(1));
     }
@@ -1701,7 +1761,7 @@ mod tests {
     fn query_json_envelope_carries_coverage_counts() {
         let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
         ingest_with(&db, &stream_json());
-        extract_with(&db);
+        extract_with(&db, &crate::config::BajanConfig::default());
         // The parked/pending shape: persisted, never extracted — what a
         // mid-run kill or retry-budget park leaves behind.
         db.insert_episode(&EpisodeRecord {
@@ -1710,7 +1770,13 @@ mod tests {
         })
         .unwrap();
 
-        let v = query_with(&db, "parser", 100, &[]);
+        let v = query_with(
+            &db,
+            "parser",
+            100,
+            &[],
+            &crate::config::BajanConfig::default(),
+        );
         let coverage = &v["data"]["coverage"];
         assert_eq!(coverage["unextracted"], 1, "one episode never extracted");
         assert_eq!(coverage["total"], 2, "both episodes persisted");
@@ -1718,7 +1784,13 @@ mod tests {
 
         // EARS verbatim: zero claims over the partial corpus still
         // identifies its coverage limitation — silence is the bug.
-        let v = query_with(&db, "no-such-text", 100, &[]);
+        let v = query_with(
+            &db,
+            "no-such-text",
+            100,
+            &[],
+            &crate::config::BajanConfig::default(),
+        );
         assert_eq!(v["data"]["hits"].as_array().map(Vec::len), Some(0));
         assert_eq!(v["data"]["coverage"]["unextracted"], 1);
         assert_eq!(v["data"]["coverage"]["total"], 2);
@@ -1732,7 +1804,7 @@ mod tests {
     fn query_scope_flag_filters_by_tag_projection_and_echoes_scope() {
         let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
         ingest_with(&db, &stream_json());
-        extract_with(&db);
+        extract_with(&db, &crate::config::BajanConfig::default());
         // A second matching claim backed by an ops-tagged episode.
         let (mut node, _) = staged_seed_node();
         node.text = "The parser resolves spans predictably.".into();
@@ -1758,18 +1830,36 @@ mod tests {
         .unwrap();
 
         // Unscoped: both hits.
-        let v = query_with(&db, "parser", 16, &[]);
+        let v = query_with(
+            &db,
+            "parser",
+            16,
+            &[],
+            &crate::config::BajanConfig::default(),
+        );
         assert_eq!(v["data"]["scope"].as_array().map(Vec::len), Some(0));
         assert_eq!(v["data"]["hits"].as_array().map(Vec::len), Some(2));
 
         // Scoped to topic:api (disjoint): honestly empty, never blended.
-        let v = query_with(&db, "parser", 16, &["topic:api".to_string()]);
+        let v = query_with(
+            &db,
+            "parser",
+            16,
+            &["topic:api".to_string()],
+            &crate::config::BajanConfig::default(),
+        );
         assert_eq!(v["data"]["scope"][0], "topic:api");
         assert_eq!(v["data"]["status"], "complete");
         assert_eq!(v["data"]["hits"].as_array().map(Vec::len), Some(0));
 
         // Scoped to topic:ops: only the ops-backed claim.
-        let v = query_with(&db, "parser", 16, &["topic:ops".to_string()]);
+        let v = query_with(
+            &db,
+            "parser",
+            16,
+            &["topic:ops".to_string()],
+            &crate::config::BajanConfig::default(),
+        );
         let hits = v["data"]["hits"].as_array().unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["episodes"][0], "ep-ops");
@@ -1798,7 +1888,7 @@ mod tests {
     fn contradict_subcommand_reports_pairs_and_proposals() {
         let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
         ingest_with(&db, &stream_json());
-        extract_with(&db);
+        extract_with(&db, &crate::config::BajanConfig::default());
         let (node, lineage) = staged_seed_node();
         db.insert_claim(
             &node,
@@ -1838,7 +1928,7 @@ mod tests {
             panic!("expected the contradict subcommand");
         };
         assert_eq!(claims, vec![0, 1]);
-        assert_eq!(budget, 8);
+        assert_eq!(budget, Some(8));
     }
 
     // ic_batch_duplicate: within one stream the first occurrence persists,
@@ -1986,8 +2076,14 @@ mod tests {
     fn text_render_renders_query_hits() {
         let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
         ingest_with(&db, &stream_json());
-        extract_with(&db);
-        let json = query_with(&db, "parser", 100, &[]);
+        extract_with(&db, &crate::config::BajanConfig::default());
+        let json = query_with(
+            &db,
+            "parser",
+            100,
+            &[],
+            &crate::config::BajanConfig::default(),
+        );
         let text = render_text(&json.to_string());
         assert!(
             text.contains("parser resolves spans deterministically"),
@@ -2008,22 +2104,37 @@ mod tests {
     fn text_render_emits_coverage_note_only_when_partial() {
         let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
         ingest_with(&db, &stream_json());
-        extract_with(&db);
+        extract_with(&db, &crate::config::BajanConfig::default());
         db.insert_episode(&EpisodeRecord {
             id: "ep-parked".into(),
             ..seed_episode()
         })
         .unwrap();
 
-        let json = query_with(&db, "parser", 100, &[]);
+        let json = query_with(
+            &db,
+            "parser",
+            100,
+            &[],
+            &crate::config::BajanConfig::default(),
+        );
         let text = render_text(&json.to_string());
         assert!(text.contains("! coverage:"), "limitation named: {text}");
         assert!(text.contains("1 of 2"), "both counts present: {text}");
 
         let complete = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
         ingest_with(&complete, &stream_json());
-        extract_with(&complete);
-        let text = render_text(&query_with(&complete, "parser", 100, &[]).to_string());
+        extract_with(&complete, &crate::config::BajanConfig::default());
+        let text = render_text(
+            &query_with(
+                &complete,
+                "parser",
+                100,
+                &[],
+                &crate::config::BajanConfig::default(),
+            )
+            .to_string(),
+        );
         assert!(
             !text.contains("! coverage:"),
             "no note when complete: {text}"
@@ -2106,7 +2217,7 @@ mod tests {
         let db =
             crate::store::sqlite::SqliteStore::open(path.to_str().expect("utf8 path")).unwrap();
         ingest_with(&db, &stream_json());
-        extract_with(&db);
+        extract_with(&db, &crate::config::BajanConfig::default());
         drop(db);
         let v = serde_json::from_str::<serde_json::Value>(&run(
             Command::Eval {
@@ -2165,7 +2276,7 @@ mod tests {
         let db =
             crate::store::sqlite::SqliteStore::open(path.to_str().expect("utf8 path")).unwrap();
         ingest_with(&db, &stream_json());
-        extract_with(&db);
+        extract_with(&db, &crate::config::BajanConfig::default());
         db.mark_extracted("ep-seed", "det-9.9.9").unwrap();
         drop(db);
         let v = serde_json::from_str::<serde_json::Value>(&run(
@@ -2196,7 +2307,7 @@ mod tests {
         let db =
             crate::store::sqlite::SqliteStore::open(path.to_str().expect("utf8 path")).unwrap();
         ingest_with(&db, &stream_json());
-        extract_with(&db);
+        extract_with(&db, &crate::config::BajanConfig::default());
         db.mark_extracted("ep-seed", "det-9.9.9").unwrap();
         drop(db);
         let v = serde_json::from_str::<serde_json::Value>(&run(
