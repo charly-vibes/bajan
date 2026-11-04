@@ -16,7 +16,9 @@ use bajan::extract::{
     ExtractionFailure, Extractor, ExtractorConfig, Finish, Reason, run_extract_with,
 };
 use bajan::ingest::{self, EpisodeRecord, Locator, SourceMeta};
-use bajan::llm::{LlmExtractor, LlmTransport, chunk_episode, jittered_backoff, llm_backoff, strip_json_fence};
+use bajan::llm::{
+    LlmExtractor, LlmTransport, chunk_episode, jittered_backoff, llm_backoff, strip_json_fence,
+};
 use bajan::store::sqlite::SqliteStore;
 use bajan::store::{ClaimStatus, Evidence};
 use proptest::prelude::*;
@@ -538,7 +540,10 @@ fn retrying_call_sleeps_within_backoff_bounds() {
     assert_eq!(got.len(), 2, "one sleep per failed attempt");
     let (first_ms, second_ms) = (got[0].as_millis(), got[1].as_millis());
     assert!((1_000..=2_000).contains(&first_ms), "sleep 1: {first_ms}ms");
-    assert!((2_000..=4_000).contains(&second_ms), "sleep 2: {second_ms}ms");
+    assert!(
+        (2_000..=4_000).contains(&second_ms),
+        "sleep 2: {second_ms}ms"
+    );
 }
 
 // --- config surface --------------------------------------------------------------
