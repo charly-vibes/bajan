@@ -148,31 +148,56 @@ pub struct SearchResult {
     /// a fresh low-authority answer outranking it is the expected shape,
     /// so the warning marks the demoted-best, not the ordering.
     pub staleness_warning: Option<StalenessWarning>,
-    /// Corpus coverage limitation (bajan-913, doc §4 B6): present exactly
-    /// when the persisted corpus is partially extracted — at least one
-    /// episode has no extraction output cached at any extractor version
-    /// (pending or parked/failed; run rows are in-memory, so the read
-    /// side cannot distinguish and never adjudicates). A query that
-    /// returns zero claims over such a corpus identifies this limitation
-    /// instead of answering silently; a fully extracted corpus carries
-    /// no note. Corpus metadata, not walk state — reported regardless of
-    /// the budget outcome.
+    /// Corpus coverage limitation (bajan-913, RO5U CORR-001): present
+    /// exactly when the persisted corpus has coverage gaps — at least one
+    /// episode with no live extraction output: no extraction-cache entry
+    /// at any extractor version (pending or parked/failed), or every
+    /// cache version it holds is a version at which one of its
+    /// still-rejected supersession-tombstoned claims died (orphaned
+    /// re-extraction: a version bump tombstones prior claims before the
+    /// new call, so a parked-at-v2 episode keeps its v1 cache entry while
+    /// contributing zero live claims). A query that returns zero claims
+    /// over such a corpus identifies this limitation instead of answering
+    /// silently; a fully covered corpus carries no note. Corpus metadata,
+    /// not walk state — reported regardless of the budget outcome.
     pub coverage: Option<CoverageNote>,
 }
 
-/// The corpus coverage limitation carried by a partially extracted
-/// corpus's answers (bajan-913, doc §4 B6): the parked/pending count is
-/// the honest read-side observable — episodes with no extraction-cache
-/// entry at ANY extractor version — against the persisted total.
+/// The corpus coverage limitation carried by a corpus with gaps
+/// (bajan-913, RO5U CORR-001): the gap count is the honest read-side
+/// observable — cache rows plus supersession tombstones on still-
+/// rejected claims (restaged claims are live again and don't count);
+/// run rows are in-memory, so the read side cannot distinguish pending
+/// from parked and never adjudicates which failure shape applies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CoverageNote {
-    /// Persisted episodes with no extraction output cached at any
-    /// extractor version (pending or parked/failed).
+    /// Persisted episodes with no live extraction output (pending,
+    /// parked, or orphaned re-extraction).
     pub unextracted: usize,
     /// All persisted episodes.
     pub total: usize,
     /// The limitation statement, rendered verbatim by text mode.
     pub note: String,
+}
+
+/// The shared coverage computation behind both read answers
+/// (`search_inner` and `contradictions`): counts from
+/// [`SqliteStore::extraction_coverage`], present exactly when the corpus
+/// has gaps.
+fn coverage_note(db: &SqliteStore) -> Result<Option<CoverageNote>, BajanQueryError> {
+    let (unextracted, total) = db
+        .extraction_coverage()
+        .map_err(|e| BajanQueryError(e.to_string()))?;
+    Ok(match (unextracted, total) {
+        (0, _) | (_, 0) => None,
+        (unextracted, total) => Some(CoverageNote {
+            unextracted,
+            total,
+            note: format!(
+                "corpus partially extracted: {unextracted} of {total} persisted episodes have no live extraction output (pending, parked, or orphaned re-extraction)",
+            ),
+        }),
+    })
 }
 
 /// The per-claim ranking key derived from lineage-reachable episode
@@ -342,23 +367,9 @@ fn search_inner(
     } else {
         BudgetStatus::Complete
     };
-    // Coverage surfacing (bajan-913, doc §4 B6): counts straight from
-    // the extraction cache — corpus metadata, independent of the walk.
-    // A note is present exactly when the corpus is partially extracted;
-    // a fully extracted corpus honestly reports no limitation.
-    let coverage = db
-        .extraction_coverage()
-        .map_err(|e| BajanQueryError(e.to_string()))?;
-    let coverage = match coverage {
-        (0, _) | (_, 0) => None,
-        (unextracted, total) => Some(CoverageNote {
-            unextracted,
-            total,
-            note: format!(
-                "corpus partially extracted: {unextracted} of {total} persisted episodes have no extraction output (pending or parked)",
-            ),
-        }),
-    };
+    // Coverage surfacing (bajan-913): corpus metadata, independent of
+    // the walk — a note is present exactly when the corpus has gaps.
+    let coverage = coverage_note(db)?;
     Ok(SearchResult {
         status,
         scope: scope.unwrap_or(&[]).to_vec(),
@@ -411,8 +422,10 @@ pub struct StagedInvalidation {
 }
 
 /// A contradiction answer (`qt_contradiction_query`): the typed traversal
-/// outcome, the contradict pairs over the queried claims, and the staged
-/// invalidation proposals against them.
+/// outcome, the contradict pairs over the queried claims, the staged
+/// invalidation proposals against them, and the corpus coverage
+/// limitation (bajan-913, RO5U DRAFT-001 — the same silent-corpus
+/// concern applies to every read over a gapped corpus).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContradictionResult {
     /// Typed traversal outcome (`qt_bounded_traversal`): both walks —
@@ -421,6 +434,10 @@ pub struct ContradictionResult {
     pub status: BudgetStatus,
     pub pairs: Vec<ContradictionPair>,
     pub proposals: Vec<StagedInvalidation>,
+    /// Corpus coverage limitation, identical semantics to
+    /// [`SearchResult::coverage`] — present exactly when the corpus has
+    /// gaps, independent of the walk outcome.
+    pub coverage: Option<CoverageNote>,
 }
 
 /// Contradiction read (`qt_contradiction_query`): over the claims in
@@ -544,10 +561,12 @@ pub fn contradictions(
     } else {
         BudgetStatus::Complete
     };
+    let coverage = coverage_note(db)?;
     Ok(ContradictionResult {
         status,
         pairs,
         proposals,
+        coverage,
     })
 }
 

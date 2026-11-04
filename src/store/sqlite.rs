@@ -727,27 +727,40 @@ impl SqliteStore {
         Ok(out)
     }
 
-    /// Corpus coverage counts (bajan-913, doc §4 B6): `(unextracted,
-    /// total)` — episodes persisted with NO extraction-cache entry at ANY
-    /// extractor version, and all persisted episodes. Run rows are
-    /// in-memory, so cache absence is the only honest read-side
-    /// observable for the parked/pending shape; the method never
-    /// adjudicates which. Read-only (`qt_readonly`).
+    /// Corpus coverage counts (bajan-913, RO5U CORR-001): `(gaps,
+    /// total)` — persisted episodes with no live extraction output, and
+    /// all persisted episodes. One predicate covers every gap shape: an
+    /// episode is a gap exactly when every extraction-cache version it
+    /// holds is also a version at which one of its still-rejected
+    /// supersession-tombstoned claims died. No cache rows at all →
+    /// vacuously a gap (pending/parked); a version bump that tombstoned
+    /// prior claims before a re-extraction that then parked leaves the
+    /// old cache version as the only one → a gap (orphaned
+    /// re-extraction); any cache version with no such tombstone → live
+    /// content, covered (successful extraction, section filter, healed
+    /// re-extraction). Tombstones on restaged (live) claims don't count.
+    /// Run rows are in-memory, so cache rows and tombstones are the only
+    /// honest read-side observables; the method never adjudicates which
+    /// failure shape applies. Read-only (`qt_readonly`).
     pub fn extraction_coverage(&self) -> Result<(usize, usize), StoreError> {
-        let total: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM episodes", [], |row| row.get(0))
-            .map_err(sql_err)?;
-        let unextracted: i64 = self
+        let (total, gaps): (i64, i64) = self
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM episodes e
-                 WHERE NOT EXISTS (SELECT 1 FROM extracted x WHERE x.episode_id = e.id)",
+                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN NOT EXISTS (
+                    SELECT 1 FROM extracted x
+                    WHERE x.episode_id = e.id
+                      AND x.extractor_version NOT IN (
+                        SELECT l.extractor_version
+                        FROM supersessions s
+                        JOIN lineage l ON l.claim_key = s.claim_key
+                        JOIN claims c ON c.claim_key = s.claim_key
+                        WHERE l.episode_id = e.id AND c.status = 'rejected')
+                ) THEN 1 ELSE 0 END), 0) FROM episodes e",
                 [],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(sql_err)?;
-        Ok((unextracted as usize, total as usize))
+        Ok((gaps as usize, total as usize))
     }
 
     /// Dump extraction output (`gm_embedded_store`): every claim with its

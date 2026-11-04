@@ -1263,16 +1263,24 @@ pub fn render_text(json: &str) -> String {
                     warning["data_cutoff"].as_str().unwrap_or("?"),
                 ));
             }
-            // Coverage surfacing (bajan-913): a partially extracted
-            // corpus names its limitation in text mode too — the note
-            // carries the parked/pending vs total counts verbatim.
-            if let Some(coverage) = data["coverage"].as_object() {
-                out.push_str(&format!(
-                    "  ! coverage: {}\n",
-                    coverage["note"]
-                        .as_str()
-                        .unwrap_or("corpus partially extracted"),
-                ));
+            // Coverage surfacing (bajan-913): a corpus with gaps names
+            // its limitation in text mode too. The note carries the
+            // counts verbatim; if it's ever missing (schema drift) the
+            // counts are formatted from the object's fields so the
+            // renderer never drops them (RO5U CLAR-002). Index the Value,
+            // not the Map — Map indexing panics on missing keys, Value
+            // indexing yields Null (the old unwrap_or was unreachable
+            // behind that panic).
+            if data["coverage"].as_object().is_some() {
+                let cov = &data["coverage"];
+                let note = cov["note"].as_str().map(str::to_string).unwrap_or_else(|| {
+                    format!(
+                        "corpus partially extracted: {} of {} persisted episodes have no live extraction output",
+                        cov["unextracted"].as_u64().unwrap_or(0),
+                        cov["total"].as_u64().unwrap_or(0),
+                    )
+                });
+                out.push_str(&format!("  ! coverage: {note}\n"));
             }
             return out.trim_end().to_string();
         }
@@ -1461,9 +1469,9 @@ mod tests {
         assert_eq!(v["data"]["hits"].as_array().map(Vec::len), Some(1));
     }
 
-    // Coverage surfacing at the CLI layer (bajan-913, doc §4 B6): the
-    // --json envelope carries the parked/pending vs total episode counts,
-    // and the zero-claims EARS shape still identifies the limitation.
+    // Coverage surfacing at the CLI layer (bajan-913): the --json
+    // envelope carries the gap vs total episode counts, and the
+    // zero-claims EARS shape still identifies the limitation.
     #[test]
     fn query_json_envelope_carries_coverage_counts() {
         let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
@@ -1769,8 +1777,8 @@ mod tests {
     }
 
     // Coverage note (bajan-913): text mode names the limitation when the
-    // corpus is partially extracted and stays silent on a fully
-    // extracted corpus — never noise.
+    // corpus has gaps and stays silent on a fully covered corpus —
+    // never noise.
     #[test]
     fn text_render_emits_coverage_note_only_when_partial() {
         let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
@@ -1784,14 +1792,31 @@ mod tests {
 
         let json = query_with(&db, "parser", 100, &[]);
         let text = render_text(&json.to_string());
-        assert!(text.contains("coverage"), "limitation named: {text}");
+        assert!(text.contains("! coverage:"), "limitation named: {text}");
         assert!(text.contains("1 of 2"), "both counts present: {text}");
 
         let complete = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
         ingest_with(&complete, &stream_json());
         extract_with(&complete);
         let text = render_text(&query_with(&complete, "parser", 100, &[]).to_string());
-        assert!(!text.contains("coverage"), "no note when complete: {text}");
+        assert!(
+            !text.contains("! coverage:"),
+            "no note when complete: {text}"
+        );
+    }
+
+    // CLAR-002 (RO5U): the renderer never drops the counts — when the
+    // note string is missing from the coverage object (schema drift),
+    // the line is formatted from the unextracted/total fields instead.
+    #[test]
+    fn render_text_coverage_fallback_formats_counts() {
+        let json = r#"{"ok":true,"data":{"status":"complete","hits":[],"scope":[],"staleness_warning":null,"coverage":{"unextracted":3,"total":9}}}"#;
+        let text = render_text(json);
+        assert!(
+            text.contains("! coverage:"),
+            "coverage line present: {text}"
+        );
+        assert!(text.contains("3 of 9"), "counts formatted: {text}");
     }
 
     #[test]
