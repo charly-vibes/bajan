@@ -39,3 +39,6 @@ target
 .beads-credential-key
 .dont/
 .pretender/
+
+# turu repo-local whisper workspace: share notes, ignore machine-local usage counters
+.whisper/**/*.usage.jsonl
