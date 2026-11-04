@@ -2,11 +2,11 @@
 
 Per `ev_results_checked_in` (specs/eval-claims.md): checked-in decision
 artifact. One row per (corpus, extractor) run. The eval harness is
-implemented (bajan-2k4: `bajan eval claims`); precision/recall and
-hedge-preservation rows still await a human-adjudicated golden corpus —
-gold labels are human sign-off and land in a reviewed commit before any
-metrics run. Raw counts and observed noise rates are the measured columns
-until then. **No fabricated numbers.**
+implemented (bajan-2k4: `bajan eval claims`). Gold labels are human
+sign-off and land in a reviewed commit before any metrics run; the first
+adjudicated corpus is `gold-fi4e-v1` (2026-11-04). Raw counts and
+observed noise rates are the measured columns.
+**No fabricated numbers.**
 
 The pre-harness table below records burn-in observations. Scored runs
 append to the eval-claims table (columns match `data.results_row` from
@@ -14,6 +14,15 @@ append to the eval-claims table (columns match `data.results_row` from
 
 | date | corpus | extractor | precision | recall | hedge preservation | raw counts |
 |------|--------|-----------|-----------|--------|--------------------|------------|
+| 2026-11-04 | gold-fi4e@v1 | det-0.1.0 | 0.752 | 0.884 | 0.929 | emitted=101 matched=76 golden=86 content-miss=0 spurious=25 hedge-dropped=0 |
+
+First scored run (bajan-2k4 MUST gate): the deterministic extractor's 25
+spurious candidates are exactly the questions/headings/navigation lines
+adjudication crossed out — on real prose, sentence segmentation alone is
+the precision bottleneck (all 76 kept proposals matched; the 10 golden
+unmatched are authored/recovered claims the extractor missed, e.g.
+heading-contaminated definitions). Hedge preservation 13/14: the one
+miss is an unmatched golden claim, not a dropped marker.
 
 | date | corpus | extractor | episodes | extracted | claims staged | junk claims (praise/testimonial/copyright/CTA) | notes |
 |------|--------|-----------|----------|-----------|---------------|------------------------------------------------|-------|

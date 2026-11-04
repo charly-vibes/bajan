@@ -87,9 +87,9 @@ bajan proposal list
 bajan proposal approve <from> <to> --actor you  # writes the contradicts edge
 
 # 8. Score an extraction run against a golden corpus (see
-#    "Evaluating extraction quality" below — once a corpus is
-#    adjudicated into evals/fixtures/)
-bajan eval claims --corpus evals/fixtures/gold.json --run run.json
+#    "Evaluating extraction quality" below; the adjudicated corpus
+#    lives in evals/fixtures/gold-fi4e-v1.json)
+bajan eval claims --corpus evals/fixtures/gold-fi4e-v1.json --run run.json
 ```
 
 Concepts:
