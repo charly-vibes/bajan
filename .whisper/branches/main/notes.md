@@ -112,3 +112,10 @@
   Gates: ah check 0, --run-tests 185 passed, just test-full 322, clippy 0, fmt clean; spk lint/pretender green.
   Next: bd ready — 2 P3s, both human-gated: bajan-sbs (HITL approve openspec proposal add-optional-jev-verification) and bajan-0ts (openspec 1.x upgrade, 3 validation failures, upstream-blocked). No open blockers.
   Previous entry: 77f4c7f9511ab27b358790ab937f3784f1bf5952f22c654d575465b45c0fc60a2
+- 2026-11-04T23:31:25Z [id:20e6973453b8d1850b2ea3e767a850ba4495ddaba4a75859b3403590dbb9a127] (#snap) ### 2026-11-04T23:31:25Z — snap (v0.2.0 released + gh-pages live)
+  
+  Format: 1
+  Repo: bajan, main @ 2513224 — clean, pushed.
+  v0.2.0 tagged (f82c04f): CHANGELOG.md born, Cargo.toml bumped; tag on remote.
+  gh-pages (bajan-l6w): site/index.html landing page + .github/workflows/pages.yml (deploy run 41934161215 success); https://charly-vibes.github.io/bajan/ returns 200; repo homepage set to the URL.
+  Next: option (b) upgrade available — rendered-specs docs site (mdbook) if wanted. Board otherwise: 2 P3s, human-gated.
