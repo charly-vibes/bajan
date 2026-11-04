@@ -102,3 +102,13 @@
   Gates: ah check 0, ah check --run-tests 185 passed, just test-full 322 passed, clippy 0, fmt clean, spk lint clean, spec-drift-gate wired in lefthook pre-commit.
   Next: bd ready — remaining board per prior snaps (bajan-6sw/15i/42y class work consumed earlier; check bd ready for fresh heads). No pending handoff — clean exit.
   Unknowns: none.
+- 2026-11-04T23:03:25Z [id:604ff98287017832dd07729905a350d1fbf9130df77c30f35fbdf16dbf809b45] (#snap) ### 2026-11-04 23:03 — snap (clean exit after 16o close + RO5U doc pass)
+  
+  Format: 1
+  Repo: bajan (~/para/areas/dev/gh/charly/bajan), branch main @ 22fba09 — tree clean, pushed.
+  Session: 01a1a8a4-f39b-7260-9ba7-e104c9fcefeb
+  Task: bajan-16o + bajan-aod CLOSED this session (atomic switch 0eea7bb + doc follow-up 22fba09).
+  State: 68 contracts wired; cargo filter convention now = real test paths (binary-name prefixes never match cargo substring filtering — durable gotcha); tombstone feature live (episode_tombstones, delete/revive, DeletedId gate before insert, dump/restore raw); lefthook spec-drift-gate active; README Quickstart covers delete/revive (group 5) after RO5U review verdict NEEDS_REVISION → fixed.
+  Gates: ah check 0, --run-tests 185 passed, just test-full 322, clippy 0, fmt clean; spk lint/pretender green.
+  Next: bd ready — 2 P3s, both human-gated: bajan-sbs (HITL approve openspec proposal add-optional-jev-verification) and bajan-0ts (openspec 1.x upgrade, 3 validation failures, upstream-blocked). No open blockers.
+  Previous entry: 77f4c7f9511ab27b358790ab937f3784f1bf5952f22c654d575465b45c0fc60a2
