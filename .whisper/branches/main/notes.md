@@ -119,3 +119,12 @@
   v0.2.0 tagged (f82c04f): CHANGELOG.md born, Cargo.toml bumped; tag on remote.
   gh-pages (bajan-l6w): site/index.html landing page + .github/workflows/pages.yml (deploy run 41934161215 success); https://charly-vibes.github.io/bajan/ returns 200; repo homepage set to the URL.
   Next: option (b) upgrade available — rendered-specs docs site (mdbook) if wanted. Board otherwise: 2 P3s, human-gated.
+- 2026-11-10T21:52:30Z [id:4043e508fe61c28fd6e0377efaf0207b5a5af23ee06ccbdf49825587539c0ad4] (#snap) ### 2026-11-10T21:52:30Z — snap (bajan-0ts done, pushed)
+  Format: 1
+  Repo: bajan (~/para/areas/dev/gh/charly/bajan), branch main @ 6e00f6d, pushed (origin sync).
+  Session: 01a1c761-4ec2-77b8-804d-9d21a7ecd16d. Task: bajan-0ts — openspec 1.x strict validation unblocked; CLOSED.
+  Phase: complete.
+  State: jev change delta spec.md split (4 >500-char requirements → 10 one-behavior requirements, all 14 scenarios verbatim); preamble dropped — content already carried in proposal.md, framing line added to design.md; ci.yml openspec smoke gate now --strict --no-interactive. validate --all --strict: 8/8 exit 0 under global 1.15.0 AND npx 1.17.0. Plain ah check 0 findings; ah check --changes jev = 14 no-toml (pre-existing, expected — contracts land with bajan-4hv apply).
+  Notes: acceptance #2 (keep 0.19.0 passing) MOOT — global install already 1.15.0. Real exit code verified unpiped (pipe-mask gotcha).
+  Next action: /renew → board: bajan-sbs (HUMAN gate, approve Jev proposal → unblocks bajan-4hv). Nothing else open.
+  Validation: openspec validate --all --strict --no-interactive = 8/8 exit 0 (1.15.0 + 1.17.0); ah check 0; lefthook pre-commit passed; pushed 6e00f6d.
