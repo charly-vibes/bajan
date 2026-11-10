@@ -1,5 +1,10 @@
 # Design — add-optional-jev-verification
 
+The delta in `specs/extraction-claims/spec.md` is recorded as ADDED
+requirements because the normative format is specodelic, not openspec —
+that delta is the reviewable contract for the constraint edits that land
+at apply.
+
 ## D1: Jev verifies; it never extracts
 
 Jev's capability model (introduction.md) is three question primitives —

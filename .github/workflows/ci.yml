@@ -57,7 +57,7 @@ jobs:
         run: |
           bd --version >/dev/null
           wai status >/dev/null
-          openspec validate --all >/dev/null
+          openspec validate --all --strict --no-interactive >/dev/null
           pretender --version >/dev/null
           dont --version >/dev/null
       # Run the exact same command as local development
