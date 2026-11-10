@@ -16,13 +16,16 @@ coverage*: nothing records how many episodes an import run declared, so
 no read can distinguish a complete corpus from a partial one. This change
 adds exactly that evidence, and nothing else.
 
+Standalone: no dependency on the other proposed changes
+(add-deterministic-shape-rejection, add-evidence-references).
+
 ## What Changes
 
 Spec-level (apply stage lands as specodelic constraint edits; this change
 records the deltas and design decisions):
 
 - **ingestion-contract** — one new invariant:
-  - `ic_coverage_declaration`: every accepted batch import persists a
+  - `ic_coverage_declaration`: every accepted import run persists a
     coverage declaration recording the declared episode stable-id set for
     that run, immutable once the run completes, so later reads can
     distinguish declared-but-unpersisted episodes from never-declared ids.
@@ -42,7 +45,8 @@ marker prevents a *scope* misreading, it does not change graph semantics.
 
 - **specs/ingestion-contract/spec.md** — one ADDED requirement.
 - **specs/query-tools/spec.md** — one ADDED requirement.
-- **Code** — coverage-declaration row written per batch import; coverage
+- **Code** — coverage-declaration row written per accepted import run;
+  coverage
   computation + marker on the zero-hit read path. No schema change to
   episodes or claims (new side table), no query-language change.
 - **Compatibility** — reads over fully-ingested corpora produce

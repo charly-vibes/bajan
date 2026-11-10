@@ -28,8 +28,8 @@ the declaration auditable at any size.
 
 ### D2 — Immutability on run completion
 
-A declaration is written when the batch import is accepted and is
-immutable once the run completes — re-running converges per
+A declaration is written when an import run is accepted and is immutable
+once the run completes — re-running converges per
 `ic_batch_resume`, and a new run writes its own declaration (matching
 extraction's run-row discipline: history is never rewritten).
 
@@ -51,12 +51,23 @@ exist". Budget exhaustion still reports `budget-exhausted` first: budget
 trumps coverage in the reason precedence, because a truncated scan says
 nothing definitive about either world or corpus.
 
+### D5 — Relevance is all persisted declarations
+
+`qt_coverage_status` computes coverage over ALL coverage declarations
+persisted in the store — no scoping, no staleness window. Rationale: the
+store is one corpus; an import run that declared ids it never persisted
+is a genuinely known incompleteness, and a zero-hit under it must not
+read as world-absence. A never-completed declaration therefore keeps
+zero-hits honestly `coverage-partial` until its ids land. If multi-corpus
+stores ever arrive, relevance scoping becomes an explicit follow-up
+proposal (interplay with `qt_scope_filtering`), not an unstated default.
+
 ## Risks / Trade-offs
 
-- Imports without declarations (programmatic single-episode ingest) have
-  no coverage evidence — accepted: single submits declare themselves
-  trivially (one id), so the gap is only for out-of-band writers, which
-  the CLI does not expose.
+- Coverage is only defined where a declaration exists — with the delta
+  covering every accepted import run (a single-episode run declares its
+  one id), the residual gap is out-of-band writers only, which the CLI
+  does not expose.
 - Store growth from declared-id sets — bounded by D1; digest form beyond
   the bound keeps it O(1) per over-bound run.
 
