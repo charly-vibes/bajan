@@ -2,21 +2,21 @@
 
 ## ADDED Requirements
 
-### Requirement: Evidence references are side records that leave the claim node frozen
+### Requirement: Evidence references are side records created by the explicit check command
 
 The system SHALL persist evidence references as side records keyed by
-claim — episode id, source revision digest, locator scheme version,
-resolution state, last-checked timestamp, and the supporting episode's
-authority tier as observed at creation — without altering the frozen
+claim — episode id, locator scheme version, and the supporting episode's
+authority tier as observed at the most recent check — created only by the
+explicit `bajan evidence check` command, without altering the frozen
 ClaimNode schema, and a claim without an evidence reference SHALL remain
 fully valid and queryable.
 
 #### Scenario: Reference is created without touching the claim
 
-- **WHEN** an evidence reference is created for an evidence-backed claim
-- **THEN** the claim node's fields, status, and lineage are unchanged,
-  and the reference row carries episode id, digest, scheme version,
-  tier, and last-checked timestamp
+- **WHEN** `bajan evidence check` runs for an evidence-backed claim that
+  has no reference yet
+- **THEN** the reference row is created, and the claim node's fields,
+  status, and lineage are unchanged
 
 #### Scenario: Reference-less claim behaves as before
 
@@ -27,38 +27,58 @@ fully valid and queryable.
 
 ### Requirement: Resolution yields an explicit tri-state and never fabricates an anchor
 
-The system SHALL resolve an evidence reference to exactly one explicit
-state — `resolved`, `unresolvable`, or `tombstoned` — by rechecking
-persisted store facts including span containment, SHALL NOT fabricate a
-resolved anchor from any other content, SHALL report a policy-deleted
-episode's reference as `tombstoned` and its subsequent resolution as
-`resolved` after the episode is revived, and SHALL keep an unresolvable
-claim inspectable rather than deleting or hiding it.
+The system SHALL derive each evidence check's outcome to exactly one
+explicit state — `resolved`, `unresolvable`, or `tombstoned` — by
+rechecking persisted store facts including span containment, SHALL NOT
+fabricate a resolved anchor, SHALL report a policy-deleted episode's
+reference as `tombstoned` with subsequent post-revive checks reporting
+`resolved`, and SHALL keep an unresolvable claim inspectable rather than
+deleting or hiding it.
 
 #### Scenario: Tombstone window is reported honestly
 
-- **WHEN** an evidence reference is resolved while its episode is
-  tombstoned, and resolved again after the episode is revived
-- **THEN** the first resolution reports `tombstoned`, the second reports
-  `resolved`, and no reference row was mutated by the revive itself
+- **WHEN** an evidence check runs while its episode is tombstoned, and a
+  further check runs after the episode is revived
+- **THEN** the first check records `tombstoned`, the later check records
+  `resolved`, and no prior check record is mutated by the revive
 
 #### Scenario: Missing source is unresolvable, never fabricated
 
-- **WHEN** an evidence reference names an episode that is not persisted
-  in the store
-- **THEN** resolution reports `unresolvable`, the claim stays
-  inspectable with its evidence flagged as unresolvable, and no anchor
-  content is invented
+- **WHEN** an evidence check names an episode that is not persisted in
+  the store
+- **THEN** the check records `unresolvable`, the claim stays inspectable
+  with its evidence flagged as unresolvable, and no anchor content is
+  invented
+
+### Requirement: Evidence checks are writing commands that persist immutable records
+
+The system SHALL persist an immutable check record — claim key, derived
+resolution state, checked-at timestamp — for every run of the evidence
+check command, and SHALL NOT write reference, check-record, or claim
+state from any read command, keeping `qt_readonly` intact: only the
+evidence check command writes, and prior check records are never
+rewritten.
+
+#### Scenario: Check records accumulate append-only
+
+- **WHEN** the evidence check command runs twice for the same claim
+- **THEN** two immutable check records exist with their own states and
+  timestamps, and the later check never modifies the earlier record
+
+#### Scenario: Read commands never write check state
+
+- **WHEN** a read command inspects a claim that has evidence references
+- **THEN** no check record, reference row, or claim field is written
 
 ### Requirement: Resolution never re-ranks claims
 
-The system SHALL treat the authority tier recorded on an evidence
+The system SHALL treat the authority tier carried on an evidence
 reference as provenance only, and SHALL NOT re-rank, re-weight, or
 re-order claims during resolution — ranking remains a query-time concern
 per `qt_ranking`.
 
-#### Scenario: Resolution output carries tier as data
+#### Scenario: Check output carries tier as data
 
-- **WHEN** an evidence reference is resolved
-- **THEN** the resolution reports the recorded tier as a fact about the
+- **WHEN** an evidence check resolves a reference
+- **THEN** the outcome reports the observed tier as a fact about the
   supporting episode and changes no claim ordering anywhere in the store
