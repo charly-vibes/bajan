@@ -7,7 +7,7 @@
 The system SHALL reject, in the deterministic post-pass and without any
 LLM judgment, every candidate claim whose text matches a fixed-in-code
 non-claim shape set (interrogative-final form, heading or section-title
-fragments, navigation and list boilerplate), staging the rejection with
+fragments, navigation and list boilerplate), recording the rejection with
 machine-readable reason `shape-filtered` on the run record per
 `ex_run_record` and never mutating or repairing the candidate.
 
@@ -45,3 +45,10 @@ spent on it.
 - **THEN** the episode caches as a legitimately extracted empty result
   and a later extraction pass starts no new call for it at the same
   extractor version
+
+#### Scenario: Deny-set changes are forward-only
+
+- **WHEN** the shape deny set changes in a later post-pass version
+- **THEN** already cached and staged episodes are not re-filtered,
+  because the extraction cache stores post-pass output; the new set
+  binds only extractions at the bumped version

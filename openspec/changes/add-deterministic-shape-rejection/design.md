@@ -43,11 +43,14 @@ evals/results.md per `ev_results_checked_in`. If any shape rule drops a
 matched golden claim, that rule is removed from the deny set before
 landing — the gate buys the deny set, not the reverse.
 
-### D4 — Versioning
+### D4 — Versioning and cache ordering
 
-The post-pass version bumps with the shape-set change so eval rows are
-comparable per `ev_deterministic_scoring` (same corpus, new extractor
-version = new row, never an overwrite).
+The extraction cache stores post-pass output (pinned by
+`ex_section_filter`'s extracted-empty caching), so a shape-deny-set
+change is forward-only: cached and already-staged episodes are never
+re-filtered. The post-pass version bumps with the shape-set change so
+eval rows are comparable per `ev_deterministic_scoring` (same corpus,
+new extractor version = new row, never an overwrite).
 
 ## Risks / Trade-offs
 
