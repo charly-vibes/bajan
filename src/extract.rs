@@ -53,6 +53,25 @@ impl std::fmt::Display for FailureClass {
     }
 }
 
+/// Which fixed-in-code non-claim shape rule matched a candidate
+/// (`ex_shape_rejection`, bajan-w17, design D1). Explainable per rule:
+/// each names a reason the text is not an assertion. Serializes
+/// snake_case for run-row storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapeRule {
+    /// Interrogative-final text after whitespace collapse — a question is
+    /// not an assertion.
+    InterrogativeFinal,
+    /// Heading/section-title fragment — direct markdown heading text, or a
+    /// candidate whose text aligns inside a converter-supplied heading
+    /// anchor (an `ex_deterministic_structure` marker).
+    HeadingFragment,
+    /// Navigation/list boilerplate — breadcrumb chains, menu rows, bare
+    /// list markers, or marker-led fragments with no asserted content.
+    NavBoilerplate,
+}
+
 /// Machine-readable reason for a failure outcome (`ex_run_record`).
 ///
 /// Reasons are stable snake_case codes stored on the run or rejection
@@ -80,6 +99,10 @@ pub enum Reason {
     /// (`ex_section_filter`): the episode's tags include a non-knowledge
     /// section kind. Carries the offending tag.
     SectionFiltered { tag: String },
+    /// Candidate refused by the deterministic shape filter
+    /// (`ex_shape_rejection`): its text matches the fixed-in-code
+    /// non-claim deny set. Carries the matched rule.
+    ShapeFiltered { rule: ShapeRule },
 }
 
 impl Reason {
@@ -91,6 +114,7 @@ impl Reason {
             Reason::HedgeMarkerDropped => "hedge_marker_dropped",
             Reason::SupersededByReextraction => "superseded_by_reextraction",
             Reason::SectionFiltered { .. } => "section_filtered",
+            Reason::ShapeFiltered { .. } => "shape_filtered",
         }
     }
 }
@@ -117,6 +141,10 @@ pub enum Finish {
 /// and finished timestamps (epoch millis), and finish status. Parallel
 /// to — and without changing — the `(episode id, extractor version)`
 /// cache economics: rows are additive telemetry, never cache entries.
+/// `shape_filtered` records the non-claim rules matched by candidates
+/// that the shape filter refused while the call itself succeeded
+/// (`ex_shape_rejection`): additive too — old rows without the field
+/// deserialize to an empty list, and an empty list serializes away.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtractionRun {
@@ -126,6 +154,8 @@ pub struct ExtractionRun {
     pub started_at: u64,
     pub finished_at: u64,
     pub finish: Finish,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shape_filtered: Vec<ShapeRule>,
 }
 
 /// The run-record store: append-only, one row per extraction call
@@ -753,6 +783,77 @@ pub const SECTION_FILTER_DENY: [&str; 3] = [
     "section-kind:acknowledgments",
 ];
 
+/// Remainder of `collapsed` after a leading list marker, if any
+/// (`ex_shape_rejection` rule c). Covers bullets (`-`, `*`, `+`, `•`)
+/// and numbered markers (`1.`, `2)`).
+fn list_marker_remainder(collapsed: &str) -> Option<&str> {
+    for marker in ["-", "*", "+", "•"] {
+        if let Some(rest) = collapsed.strip_prefix(marker) {
+            return Some(rest.trim_start());
+        }
+    }
+    let digits = collapsed
+        .char_indices()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .count();
+    if digits > 0 {
+        let rest = &collapsed[digits..];
+        if let Some(rest) = rest.strip_prefix('.').or_else(|| rest.strip_prefix(')')) {
+            return Some(rest.trim_start());
+        }
+    }
+    None
+}
+
+/// The fixed-in-code non-claim shape matcher (`ex_shape_rejection`,
+/// bajan-w17, design D1): conservative, deterministic, and explainable —
+/// every rule reduces to "this text is not an assertion". Returns the
+/// first matching rule in fixed order (interrogative, heading,
+/// boilerplate); `None` leaves the candidate untouched. Never an LLM
+/// judgment (`ex_no_llm_post` holds).
+pub fn non_claim_shape(text: &str, episode_text: &str) -> Option<ShapeRule> {
+    let collapsed = crate::store::collapse(text);
+    // (a) Interrogative-final: a question is not an assertion. Only the
+    // FINAL `?` counts — quoted or mid-sentence questions are prose.
+    if collapsed.ends_with('?') {
+        return Some(ShapeRule::InterrogativeFinal);
+    }
+    // (b) Heading/section-title fragment: direct markdown heading text,
+    // or a candidate whose text equals a converter-supplied heading
+    // anchor in the episode body (`ex_deterministic_structure` markers —
+    // consumed deterministically, never re-asserted as claims).
+    if collapsed.starts_with('#') {
+        return Some(ShapeRule::HeadingFragment);
+    }
+    if !collapsed.is_empty() {
+        for line in episode_text.lines() {
+            if let Some(heading) = line.strip_prefix('#')
+                && crate::store::collapse(heading) == collapsed
+            {
+                return Some(ShapeRule::HeadingFragment);
+            }
+        }
+    }
+    // (c) Navigation/list boilerplate: breadcrumb chains (` > `), menu
+    // rows (`|`-separated), bare list markers, or marker-led fragments
+    // that assert nothing (no sentence punctuation, at most a handful of
+    // words). A numbered or bulleted item with a real sentence survives.
+    if collapsed.contains(" > ") || collapsed.matches('|').count() >= 2 {
+        return Some(ShapeRule::NavBoilerplate);
+    }
+    if let Some(rest) = list_marker_remainder(&collapsed) {
+        let asserts_nothing = rest.is_empty()
+            || (!rest.contains('.')
+                && !rest.contains('!')
+                && !rest.contains('?')
+                && rest.split_whitespace().count() <= 6);
+        if asserts_nothing {
+            return Some(ShapeRule::NavBoilerplate);
+        }
+    }
+    None
+}
+
 pub fn run_extract_with(
     db: &crate::store::sqlite::SqliteStore,
     extractor: &dyn Extractor,
@@ -804,6 +905,7 @@ pub fn run_extract_with(
                     started_at,
                     finished_at: epoch_millis(),
                     finish: Finish::Parked { reason },
+                    shape_filtered: Vec::new(),
                 });
                 continue;
             }
@@ -861,13 +963,54 @@ pub fn run_extract_with(
                 started_at,
                 finished_at,
                 finish: Finish::GateRejected { reason },
+                shape_filtered: Vec::new(),
+            });
+            continue;
+        }
+        // Shape filter (`ex_shape_rejection`, bajan-w17): candidates whose
+        // TEXT matches the fixed-in-code non-claim deny set are refused per
+        // candidate — unlike the episode-level section filter — while
+        // surviving prose continues to the gate unchanged. Refusals land on
+        // the run row (`ex_run_record`), never a claim node. An episode
+        // whose every candidate is shape-rejected is CACHED as extracted,
+        // like the section filter: the shape pass is a deterministic
+        // function of the cached call output, so re-extraction would
+        // deterministically re-produce filterable shapes and burn a call on
+        // it (`ex_single_call` cache economics; deny-set changes are
+        // forward-only — they bind new extractions, never cached output).
+        let mut shape_filtered: Vec<ShapeRule> = Vec::new();
+        let mut survivors: Vec<CandidateClaim> = Vec::new();
+        for claim in proposed {
+            match non_claim_shape(&claim.text, &episode.text) {
+                Some(rule) => shape_filtered.push(rule),
+                None => survivors.push(claim),
+            }
+        }
+        if survivors.is_empty() && !shape_filtered.is_empty() {
+            let reason = Reason::ShapeFiltered {
+                rule: shape_filtered[0],
+            };
+            db.mark_extracted(&episode.id, &extractor_version)?;
+            let finished_at = epoch_millis();
+            report.gate_rejections.push(GateRejection {
+                episode_id: episode.id.clone(),
+                reason: reason.clone(),
+            });
+            runs.record(ExtractionRun {
+                episode_id: episode.id.clone(),
+                extractor_version: extractor_version.clone(),
+                model_id: model_id.clone(),
+                started_at,
+                finished_at,
+                finish: Finish::GateRejected { reason },
+                shape_filtered,
             });
             continue;
         }
         // Project every candidate into a full claim node — status, scope,
         // source type, and data cutoff come from the episode record, never
         // from the extractor.
-        let candidates: Vec<ClaimNode> = proposed
+        let candidates: Vec<ClaimNode> = survivors
             .into_iter()
             .map(|c| ClaimNode {
                 text: c.text,
@@ -959,6 +1102,7 @@ pub fn run_extract_with(
             started_at,
             finished_at,
             finish,
+            shape_filtered,
         });
     }
     Ok(report)
@@ -1103,6 +1247,7 @@ mod tests {
                 started_at,
                 finished_at,
                 finish: Finish::Succeeded,
+                shape_filtered: Vec::new(),
             };
             store.record(run);
 
@@ -1141,6 +1286,7 @@ mod tests {
                 started_at: 0,
                 finished_at: 1,
                 finish,
+                shape_filtered: Vec::new(),
             };
             // Machine-readable: a stable snake_case code, serialized on the row.
             prop_assert_eq!(reason.code(), "repeated_call_failure");
@@ -1313,5 +1459,103 @@ mod tests {
             !serialized.as_object().unwrap().contains_key("reason"),
             "claim nodes carry no reason field"
         );
+    }
+
+    // --- shape matcher (ex_shape_rejection, bajan-w17) -----------------
+
+    #[test]
+    fn interrogative_final_text_matches() {
+        assert_eq!(
+            non_claim_shape("Is bajan fast?", "Body text."),
+            Some(ShapeRule::InterrogativeFinal)
+        );
+        // Whitespace collapse before the final-? test.
+        assert_eq!(
+            non_claim_shape("Is it   fast?\n", "Body text."),
+            Some(ShapeRule::InterrogativeFinal)
+        );
+    }
+
+    #[test]
+    fn mid_sentence_question_is_prose() {
+        assert_eq!(
+            non_claim_shape("He asked \"why?\" then answered.", "Body text."),
+            None
+        );
+    }
+
+    #[test]
+    fn heading_fragments_match_directly_and_by_alignment() {
+        // Direct markdown heading text.
+        assert_eq!(
+            non_claim_shape("# Installation", "Body text."),
+            Some(ShapeRule::HeadingFragment)
+        );
+        // Aligned to a converter-supplied heading anchor in the episode.
+        let body = "# Installation Guide\n\nInstall steps follow here.\n";
+        assert_eq!(
+            non_claim_shape("Installation Guide", body),
+            Some(ShapeRule::HeadingFragment)
+        );
+        // Same text with no heading anchor to align to stays prose.
+        assert_eq!(
+            non_claim_shape("Installation Guide", "Plain prose only."),
+            None
+        );
+    }
+
+    #[test]
+    fn navigation_and_list_boilerplate_matches() {
+        assert_eq!(
+            non_claim_shape("Home > Docs > API", "Body text."),
+            Some(ShapeRule::NavBoilerplate)
+        );
+        assert_eq!(
+            non_claim_shape("Home | Docs | API", "Body text."),
+            Some(ShapeRule::NavBoilerplate)
+        );
+        for bare in ["-", "* ", "1.", "2)", "•", "• Getting Started"] {
+            assert_eq!(
+                non_claim_shape(bare, "Body text."),
+                Some(ShapeRule::NavBoilerplate),
+                "bare marker should match: {bare}"
+            );
+        }
+    }
+
+    #[test]
+    fn assertion_content_in_list_form_is_prose() {
+        // A numbered item carrying a real sentence asserts something —
+        // the deny set is conservative and leaves it alone.
+        assert_eq!(
+            non_claim_shape("1. Bajan caches extraction output for reuse.", "Body text."),
+            None
+        );
+        assert_eq!(
+            non_claim_shape("- Bajan runs locally by default.", "Body text."),
+            None
+        );
+    }
+
+    #[test]
+    fn plain_prose_matches_nothing() {
+        assert_eq!(
+            non_claim_shape(
+                "Bajan extracts claims from persisted episodes.",
+                "Bajan extracts claims from persisted episodes."
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn shape_filtered_reason_carries_stable_code_and_rule() {
+        let reason = Reason::ShapeFiltered {
+            rule: ShapeRule::InterrogativeFinal,
+        };
+        assert_eq!(reason.code(), "shape_filtered");
+        let serialized = serde_json::to_value(&reason).unwrap();
+        assert_eq!(serialized["code"], "shape_filtered");
+        assert_eq!(serialized["rule"], "interrogative_final");
     }
 }

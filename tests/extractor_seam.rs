@@ -143,6 +143,120 @@ fn section_kind_tag_refuses_candidates_and_caches_extracted() {
     assert_eq!(second.episodes_processed, 0);
 }
 
+// --- shape filter (ex_shape_rejection, bajan-w17) -------------------------
+
+/// Candidates matching the fixed-in-code non-claim deny set are refused
+/// per candidate: they never reach `staged`, the run row records the
+/// matched rules in order (`ex_run_record`), and surviving prose stages
+/// unchanged toward the gate — no episode-level rejection is reported
+/// when at least one candidate survives.
+#[test]
+fn shape_matched_candidates_are_rejected_and_prose_stages() {
+    let db = SqliteStore::open(":memory:").expect("store");
+    let body = "# Install Guide\n\nBajan runs locally on one call. Home > Docs > Index\n";
+    ingest::persist(&db, &episode("ep-shape", body)).expect("persist");
+    let outputs = [(
+        "ep-shape",
+        Ok(vec![
+            scripted_claim("Is bajan fast?"),      // interrogative-final
+            scripted_claim("Install Guide"),       // heading-aligned fragment
+            scripted_claim("Home > Docs > Index"), // breadcrumb boilerplate
+            scripted_claim("Bajan runs locally on one call."), // prose survives
+        ]),
+    )]
+    .into_iter()
+    .collect();
+    let extractor = FakeExtractor {
+        version: "9.9.8",
+        model_id: None,
+        outputs,
+    };
+    let mut runs = extract::ExtractionRunStore::default();
+    let report = extract::run_extract_with(&db, &extractor, &mut runs).expect("pass runs");
+
+    assert_eq!(
+        staged_texts(&db),
+        vec!["Bajan runs locally on one call.".to_string()]
+    );
+    assert!(
+        report.gate_rejections.is_empty(),
+        "a surviving candidate means no episode-level rejection"
+    );
+    let row = runs
+        .rows()
+        .find(|r| r.episode_id == "ep-shape")
+        .expect("run row for the partially filtered episode");
+    match &row.finish {
+        extract::Finish::Succeeded => {}
+        other => panic!("expected succeeded finish, got {other:?}"),
+    }
+    assert_eq!(
+        row.shape_filtered,
+        vec![
+            extract::ShapeRule::InterrogativeFinal,
+            extract::ShapeRule::HeadingFragment,
+            extract::ShapeRule::NavBoilerplate,
+        ]
+    );
+}
+
+/// An episode whose EVERY candidate is shape-rejected stages zero claims,
+/// reports an episode-level `shape_filtered` rejection, and is CACHED as
+/// extracted — a second pass has nothing pending (`ex_single_call` cache
+/// economics: the shape pass is deterministic over the cached output, so
+/// re-extraction would burn a call to re-produce filterable shapes).
+#[test]
+fn fully_shape_filtered_episode_caches_extracted_empty() {
+    let db = SqliteStore::open(":memory:").expect("store");
+    ingest::persist(
+        &db,
+        &episode("ep-shape-all", "Preamble sentence.\n# Contents\n"),
+    )
+    .expect("persist");
+    let outputs = [(
+        "ep-shape-all",
+        Ok(vec![
+            scripted_claim("Is this a claim?"), // interrogative-final
+            scripted_claim("Contents"),         // heading-aligned fragment
+        ]),
+    )]
+    .into_iter()
+    .collect();
+    let extractor = FakeExtractor {
+        version: "9.9.7",
+        model_id: None,
+        outputs,
+    };
+    let mut runs = extract::ExtractionRunStore::default();
+    let report = extract::run_extract_with(&db, &extractor, &mut runs).expect("pass runs");
+
+    assert_eq!(staged_texts(&db), Vec::<String>::new());
+    let rejection = report
+        .gate_rejections
+        .iter()
+        .find(|r| r.episode_id == "ep-shape-all")
+        .expect("fully filtered episode reported");
+    assert_eq!(rejection.reason.code(), "shape_filtered");
+    let row = runs
+        .rows()
+        .find(|r| r.episode_id == "ep-shape-all")
+        .expect("run row for the fully filtered episode");
+    match &row.finish {
+        extract::Finish::GateRejected { reason } => match reason {
+            extract::Reason::ShapeFiltered { rule } => {
+                assert_eq!(*rule, extract::ShapeRule::InterrogativeFinal)
+            }
+            other => panic!("expected shape_filtered reason, got {other:?}"),
+        },
+        other => panic!("expected gate-rejected finish, got {other:?}"),
+    }
+
+    // Cached as extracted-empty: a second pass has nothing pending.
+    let second = extract::run_extract_with(&db, &extractor, &mut Default::default())
+        .expect("second pass runs");
+    assert_eq!(second.episodes_processed, 0);
+}
+
 // --- dispatch ------------------------------------------------------------
 
 /// A scripted extractor's candidates reach the store through run_extract:

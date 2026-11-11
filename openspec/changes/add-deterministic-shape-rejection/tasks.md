@@ -8,22 +8,22 @@ approved.
 
 ## 1. Spec deltas (normative specodelic edits)
 
-- [ ] 1.1 `specs/extraction-claims.md`: add `ex_shape_rejection` constraint
+- [x] 1.1 `specs/extraction-claims.md`: add `ex_shape_rejection` constraint
       + deriving property (fixed-in-code deny set — interrogative-final,
       heading-fragment, navigation/boilerplate; reason `shape-filtered` on
       the run record per `ex_run_record`; prose candidates unchanged;
       fully filtered episode caches extracted-empty per `ex_single_call`)
-- [ ] 1.2 `spk lint specs`, `ah check`, `dont check` green; contract TOML
+- [x] 1.2 `spk lint specs`, `ah check`, `dont check` green; contract TOML
       `p-shape-rejection.toml` for the deriving property
 
 ## 2. Implementation (red → green)
 
-- [ ] 2.1 Shape matcher unit tests: interrogative-final, heading-anchor
+- [x] 2.1 Shape matcher unit tests: interrogative-final, heading-anchor
       span, navigation/boilerplate, and non-matching prose (red first)
-- [ ] 2.2 Wire matcher into the deterministic post-pass after
+- [x] 2.2 Wire matcher into the deterministic post-pass after
       `ex_section_filter`; rejection reason `shape-filtered` on the run
       record, never the claim node (green)
-- [ ] 2.3 Fully-filtered-episode caching: extracted-empty cache entry, no
+- [x] 2.3 Fully-filtered-episode caching: extracted-empty cache entry, no
       new call at same extractor version (red → green)
 
 ## 3. Eval gate (acceptance per design.md D3)

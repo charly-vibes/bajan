@@ -1,0 +1,12 @@
+id = "p-shape-rejection"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "shape_matched_candidates_are_rejected_and_prose_stages", timeout_seconds = 120 },
+    { flags = "fully_shape_filtered_episode_caches_extracted_empty", timeout_seconds = 120 },
+]
