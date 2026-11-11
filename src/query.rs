@@ -161,6 +161,14 @@ pub struct SearchResult {
     /// silently; a fully covered corpus carries no note. Corpus metadata,
     /// not walk state — reported regardless of the budget outcome.
     pub coverage: Option<CoverageNote>,
+    /// Ingest coverage marker (`qt_coverage_status`, bajan-alb): present
+    /// exactly when the read returned zero hits under a completed budget
+    /// and some declared episodes are not persisted (coverage-partial).
+    /// Absent on hit-carrying reads, over coverage-complete corpora, and
+    /// on declaration-free stores (bare not-found — D3/D4); budget
+    /// exhaustion outranks coverage. Deliberately separate from the
+    /// extraction-coverage `note` above.
+    pub ingest_coverage: Option<IngestCoverage>,
 }
 
 /// The corpus coverage limitation carried by a corpus with gaps
@@ -178,6 +186,21 @@ pub struct CoverageNote {
     pub total: usize,
     /// The limitation statement, rendered verbatim by text mode.
     pub note: String,
+}
+
+/// The zero-hit ingest-coverage marker (`qt_coverage_status`,
+/// add-query-coverage-evidence): the read found no matching claims while
+/// some episodes declared by persisted coverage declarations have not
+/// persisted — the question may be answerable later, which a bare
+/// `not-found` would deny. Counts cover every persisted declaration (D5):
+/// `declared` is the declared-id total, `persisted` the verifiable
+/// persisted subset (beyond-bound tails count as unpersisted, D1).
+/// Deliberately separate from [`CoverageNote`]: declared-vs-persisted
+/// episode coverage, not extracted-vs-persisted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IngestCoverage {
+    pub declared: usize,
+    pub persisted: usize,
 }
 
 /// The shared coverage computation behind both read answers
@@ -385,6 +408,22 @@ fn search_inner(
     } else {
         BudgetStatus::Complete
     };
+    // qt_coverage_status (bajan-alb, D3/D4): the zero-hit coverage
+    // marker — present exactly when the completed walk returned zero
+    // hits over a partially covered corpus. Budget exhaustion outranks
+    // coverage: a truncated scan claims neither not-found nor
+    // coverage-partial (D4 reason precedence).
+    let ingest_coverage = if hits.is_empty() && matches!(status, BudgetStatus::Complete) {
+        let (declared, persisted) = db
+            .ingest_coverage()
+            .map_err(|e| BajanQueryError(e.to_string()))?;
+        (declared > persisted).then_some(IngestCoverage {
+            declared,
+            persisted,
+        })
+    } else {
+        None
+    };
     // Coverage surfacing (bajan-913): corpus metadata, independent of
     // the walk — a note is present exactly when the corpus has gaps.
     let coverage = coverage_note(db)?;
@@ -394,6 +433,7 @@ fn search_inner(
         hits,
         staleness_warning,
         coverage,
+        ingest_coverage,
     })
 }
 

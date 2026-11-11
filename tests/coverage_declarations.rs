@@ -24,7 +24,7 @@
 
 use bajan::ingest::{EpisodeRecord, Locator, SourceMeta};
 use bajan::query::{self, BudgetStatus};
-use bajan::store::sqlite::{SqliteStore, DECLARED_ID_BOUND};
+use bajan::store::sqlite::{DECLARED_ID_BOUND, SqliteStore};
 use bajan::store::{ClaimNode, ClaimStatus, Evidence, Lineage};
 use proptest::prelude::*;
 
@@ -213,14 +213,15 @@ fn coverage_e2e_declare5_persist3_then_complete() {
 fn declared_id_set_verbatim_up_to_bound_digest_beyond() {
     let db = SqliteStore::open_in_memory().expect("open");
     let n = DECLARED_ID_BOUND + 2;
-    let stream: Vec<EpisodeRecord> = (0..n)
-        .map(|i| episode(&format!("ep-{i:05}")))
-        .collect();
+    let stream: Vec<EpisodeRecord> = (0..n).map(|i| episode(&format!("ep-{i:05}"))).collect();
     bajan::ingest::persist_stream(&db, &stream);
 
     let decls = db.coverage_declarations().expect("declarations");
     assert_eq!(decls.len(), 1);
-    assert_eq!(decls[0].declared_count, n, "the run row carries the full count");
+    assert_eq!(
+        decls[0].declared_count, n,
+        "the run row carries the full count"
+    );
     assert_eq!(
         decls[0].stored_ids, DECLARED_ID_BOUND,
         "verbatim storage is bounded"
@@ -313,15 +314,16 @@ proptest! {
             // intra-stream duplicate of the first id (first-wins)
             stream.push(episode("ep-00"));
         }
-        let declared: Vec<String> = {
-            let mut ids: Vec<String> = (0..n_good)
-                .map(|i| format!("ep-{i:02}"))
-                .chain((0..n_malformed).map(|i| format!("ep-bad-{i:02}")))
-                .collect();
-            ids.sort();
-            ids.dedup();
-            ids
-        };
+        let mut declared: Vec<String> = (0..n_good)
+            .map(|i| format!("ep-{i:02}"))
+            .chain((0..n_malformed).map(|i| format!("ep-bad-{i:02}")))
+            .collect();
+        if n_dup > 0 {
+            // the duplicated id is declared too (the set is over submissions)
+            declared.push("ep-00".to_string());
+        }
+        declared.sort();
+        declared.dedup();
         let shuffled = if shuffle {
             let mut s = stream.clone();
             s.reverse();
@@ -336,6 +338,10 @@ proptest! {
         }
 
         let decls = db.coverage_declarations().expect("declarations");
+        if declared.is_empty() {
+            prop_assert!(decls.is_empty(), "a zero-episode stream declares nothing");
+            return Ok(());
+        }
         prop_assert_eq!(decls.len(), 1, "one declaration per declared set");
         prop_assert_eq!(decls[0].declared_count, declared.len());
         prop_assert_eq!(decls[0].stored_ids, declared.len());
@@ -343,7 +349,7 @@ proptest! {
         if rerun {
             // the rerun converged: still exactly one row, unchanged
             let again = db.coverage_declarations().expect("declarations");
-            prop_assert_eq!(again[0].run_id, decls[0].run_id);
+            prop_assert!(again[0].run_id == decls[0].run_id);
         }
     }
 
@@ -375,8 +381,9 @@ proptest! {
         }
 
         let pattern = if want_hits { MATCHING } else { MISSING };
-        // Budget 1 exhausts only when at least one claim exists to walk.
-        let budget = if exhaust && n_persisted > 0 { 1 } else { 16 };
+        // Budget 0 truncates on the first walked claim, so it exhausts
+        // exactly when at least one claim exists to walk.
+        let budget = if exhaust && n_persisted > 0 { 0 } else { 16 };
         let result = query::search(&db, pattern, budget).expect("search");
 
         let exhausted = exhaust && n_persisted > 0;
@@ -389,12 +396,15 @@ proptest! {
             prop_assert!(result.ingest_coverage.is_none(), "budget outranks coverage");
             return Ok(());
         }
-        if want_hits {
+        if want_hits && n_persisted > 0 {
+            // a hit-carrying read: claims exist and the pattern matches
             prop_assert_eq!(result.hits.len(), n_persisted, "hits over claimed episodes");
             prop_assert!(result.ingest_coverage.is_none(), "hits carry no marker");
             return Ok(());
         }
-        // Zero-hit, completed: marker iff some declared id is unpersisted.
+        // Zero-hit completed read: either the missing pattern, or the
+        // matching pattern over a claim-free store (n_persisted == 0 —
+        // honestly zero-hit either way).
         match (result.ingest_coverage.as_ref(), n_missing) {
             (Some(cov), n) if n > 0 => {
                 prop_assert_eq!((cov.declared, cov.persisted), (n_persisted + n, n_persisted));

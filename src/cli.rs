@@ -1750,6 +1750,18 @@ pub fn render_text(json: &str) -> String {
                 });
                 out.push_str(&format!("  ! coverage: {note}\n"));
             }
+            // qt_coverage_status (bajan-alb): the zero-hit ingest-coverage
+            // marker — declared-but-unpersisted episodes mean the empty
+            // answer may be answerable later; a bare not-found would deny
+            // that. Same Value-indexing discipline as the note above.
+            if data["ingest_coverage"].as_object().is_some() {
+                let cov = &data["ingest_coverage"];
+                out.push_str(&format!(
+                    "  ! coverage-partial: {} of {} declared episode(s) persisted — the question may be answerable later\n",
+                    cov["persisted"].as_u64().unwrap_or(0),
+                    cov["declared"].as_u64().unwrap_or(0),
+                ));
+            }
             return out.trim_end().to_string();
         }
         if data["episodes_processed"].is_u64() {

@@ -214,6 +214,34 @@ pub fn persist_stream(
     db: &crate::store::sqlite::SqliteStore,
     records: &[EpisodeRecord],
 ) -> Vec<Result<IngestOutcome, BajanError>> {
+    // ic_coverage_declaration: the run declares its stable-id set at
+    // acceptance, before any outcome — declared ids are recorded whatever
+    // their outcome (a malformed record is declared but never persists),
+    // keyed by the declared-set digest so reruns converge without adding
+    // rows (D2 immutability). A zero-episode stream declares nothing
+    // (ic_empty_stream is a valid no-op). A failed declaration fails the
+    // whole run: every accepted run declares — an undeclared accepted run
+    // is exactly the honesty gap this closes.
+    let declared: Vec<String> = {
+        let mut ids: Vec<String> = records
+            .iter()
+            .map(|record| {
+                // Same NFC-normalized id as `persist`'s identity decision.
+                let normalized_id: String = record.id.nfc().collect();
+                normalized_id
+            })
+            .filter(|id| !id.trim().is_empty())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+    // (declare_coverage no-ops on an empty set: ic_empty_stream.)
+    if let Err(err) = db.declare_coverage(&declared, crate::query::today_days_utc()) {
+        return (0..records.len())
+            .map(|_| Err(BajanError::Store(err.to_string())))
+            .collect();
+    }
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     records
         .iter()

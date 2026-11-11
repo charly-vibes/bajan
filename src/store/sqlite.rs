@@ -162,6 +162,16 @@ CREATE TABLE IF NOT EXISTS evidence_checks (
     resolution_state TEXT NOT NULL,
     checked_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS coverage_declarations (
+    run_id TEXT PRIMARY KEY,
+    declared_count INTEGER NOT NULL,
+    created_at_days INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS coverage_declared_ids (
+    run_id TEXT NOT NULL,
+    stable_id TEXT NOT NULL,
+    PRIMARY KEY (run_id, stable_id)
+);
 ";
 
 /// Row mapper shared by `episodes()` and `get_episode()`: reconstructs a
@@ -449,6 +459,44 @@ pub struct SqliteStore {
     conn: Connection,
 }
 
+/// D1 bound (`ic_coverage_declaration`): a coverage declaration stores
+/// its declared stable-id set verbatim up to this many ids and
+/// count-plus-digest beyond it — the bound keeps pathological imports
+/// from bloating the store while the digest keeps the declaration
+/// auditable at any size.
+pub const DECLARED_ID_BOUND: usize = 10_000;
+
+/// One persisted coverage declaration (`ic_coverage_declaration`) in its
+/// audit/inspection shape: the declared-set digest key, the full declared
+/// count, and how many ids are stored verbatim (the D1 bound caps
+/// `stored_ids`; beyond-bound presence is count-plus-digest only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverageDeclaration {
+    pub run_id: String,
+    pub declared_count: usize,
+    pub stored_ids: usize,
+}
+
+/// The declaration key: an FNV-1a digest over the sorted, normalized
+/// declared-id set (newline-separated). Deterministic and
+/// order-independent, so re-running the same stream — in any order —
+/// converges to the same key and inserts nothing (D2 immutability), and
+/// an operator holding the original stream can recompute the digest to
+/// audit the declaration at any size.
+fn coverage_run_id(ids: &[String]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for id in ids {
+        for byte in id.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        // id separator, so {"ab"} and {"a", "b"} digest differently
+        hash ^= u64::from(b'\n');
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 fn sql_err(e: impl std::fmt::Display) -> StoreError {
     StoreError::Sqlite {
         message: e.to_string(),
@@ -691,6 +739,121 @@ impl SqliteStore {
     }
 
     // ---- episode tombstones (specs/ingestion-contract.md, bajan-aod) ----
+
+    /// Declare the stable-id set of one accepted import run
+    /// (`ic_coverage_declaration`): the declaration is written at
+    /// acceptance, before any outcome, so declared-but-never-persisted
+    /// ids are recorded exactly like later-landing ones. `ids` must be
+    /// the distinct normalized id set (the run path sorts and dedupes);
+    /// keyed by the declared-set digest, so re-running the same stream —
+    /// in any order — converges to the same row and inserts nothing (D2
+    /// immutability). The run row always carries the full declared
+    /// count; verbatim id storage is bounded per D1 (`DECLARED_ID_BOUND`,
+    /// count-plus-digest beyond). An empty set declares nothing
+    /// (ic_empty_stream: a zero-episode stream is a valid no-op).
+    pub fn declare_coverage(&self, ids: &[String], created_at_days: i64) -> Result<(), StoreError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let run_id = coverage_run_id(ids);
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO coverage_declarations (run_id, declared_count, created_at_days) \
+                 VALUES (?1, ?2, ?3)",
+                params![run_id, ids.len() as i64, created_at_days],
+            )
+            .map_err(sql_err)?;
+        for id in ids.iter().take(DECLARED_ID_BOUND) {
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO coverage_declared_ids (run_id, stable_id) VALUES (?1, ?2)",
+                    params![run_id, id],
+                )
+                .map_err(sql_err)?;
+        }
+        Ok(())
+    }
+
+    /// Corpus coverage over ALL persisted declarations
+    /// (`qt_coverage_status`, D5 — no scoping, no staleness window):
+    /// `(declared, persisted)` where declared is the distinct verbatim id
+    /// union plus every run's beyond-bound tail, and persisted is the
+    /// count of verbatim declared ids present as episodes. Beyond-bound
+    /// presence cannot be resolved per id (D1 count-plus-digest), so the
+    /// tail counts as unpersisted — conservative, never a false
+    /// coverage-complete. A zero declared count means no declarations
+    /// exist (the honest migration default reads as coverage-complete).
+    pub fn ingest_coverage(&self) -> Result<(usize, usize), StoreError> {
+        let declared_verbatim: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(DISTINCT stable_id) FROM coverage_declared_ids",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_err)?;
+        let persisted: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(DISTINCT d.stable_id) FROM coverage_declared_ids d \
+                 JOIN episodes e ON e.id = d.stable_id",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_err)?;
+        let tails: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(declared_count - (SELECT COUNT(*) FROM coverage_declared_ids i \
+                 WHERE i.run_id = r.run_id)), 0) FROM coverage_declarations r",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_err)?;
+        Ok((
+            declared_verbatim as usize + tails.max(0) as usize,
+            persisted as usize,
+        ))
+    }
+
+    /// Every persisted coverage declaration, keyed by declared-set digest
+    /// (audit/inspection surface behind the coverage-status read).
+    pub fn coverage_declarations(&self) -> Result<Vec<CoverageDeclaration>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT r.run_id, r.declared_count, \
+                 (SELECT COUNT(*) FROM coverage_declared_ids i WHERE i.run_id = r.run_id) \
+                 FROM coverage_declarations r ORDER BY r.run_id",
+            )
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push(CoverageDeclaration {
+                run_id: row.get(0).map_err(sql_err)?,
+                declared_count: row.get::<_, i64>(1).map_err(sql_err)? as usize,
+                stored_ids: row.get::<_, i64>(2).map_err(sql_err)? as usize,
+            });
+        }
+        Ok(out)
+    }
+
+    /// The distinct verbatim declared-id union, sorted — the declared set
+    /// coverage is computed over (beyond-bound tails are count-plus-digest
+    /// only, D1).
+    pub fn coverage_declared_ids(&self) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT stable_id FROM coverage_declared_ids ORDER BY stable_id")
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push(row.get(0).map_err(sql_err)?);
+        }
+        Ok(out)
+    }
 
     /// Delete one persisted episode (`ic_deleted_tombstone`): permitted
     /// only when no claim supports it (`gm_lineage_survives` — lineage

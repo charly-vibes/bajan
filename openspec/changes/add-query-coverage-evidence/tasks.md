@@ -19,19 +19,19 @@ not start until the proposal is approved.
 
 ## 2. Implementation (red → green)
 
-- [ ] 2.1 Coverage-declaration side table + write path on accepted batch
+- [x] 2.1 Coverage-declaration side table + write path on accepted batch
       imports; immutability after run completion (red first)
-- [ ] 2.2 Bound behavior per D1: id-set form ≤ bound, count+digest form
+- [x] 2.2 Bound behavior per D1: id-set form ≤ bound, count+digest form
       beyond (red → green)
-- [ ] 2.3 Coverage computation + zero-hit marker on the read path, reason
+- [x] 2.3 Coverage computation + zero-hit marker on the read path, reason
       precedence budget-exhausted > coverage-partial > not-found
       (red → green)
-- [ ] 2.4 No-declaration stores report `coverage-complete` (migration D
+- [x] 2.4 No-declaration stores report `coverage-complete` (migration D
       note: honest default, no backfill)
 
 ## 3. Verification
 
-- [ ] 3.1 `just test` green; partial-corpus end-to-end test: declare 5,
+- [x] 3.1 `just test` green; partial-corpus end-to-end test: declare 5,
       persist 3, zero-hit query → `coverage-partial` (5,3); persist last
       2 → same query → `not-found`
 - [ ] 3.2 clippy + fmt clean; `just test-full` green
