@@ -38,5 +38,5 @@ not start until the proposal is approved.
 
 ## 4. Tidy
 
-- [ ] 4.1 Separate tidy commit: coverage computation extracted to a pure
+- [x] 4.1 Separate tidy commit: coverage computation extracted to a pure
       helper, table-driven tests

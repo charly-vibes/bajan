@@ -246,6 +246,28 @@ fn ranking_metadata(
     (authority_tier, cutoff_days, stale)
 }
 
+/// The pure coverage-marker decision behind
+/// [`SearchResult::ingest_coverage`] (`qt_coverage_status`, D3/D4): the
+/// marker exists exactly when the completed walk returned zero hits and
+/// more ids are declared than persisted. Hit-carrying reads carry none
+/// (D3 — hit results stay byte-identical); an exhausted budget outranks
+/// coverage (D4 — a truncated scan claims neither not-found nor
+/// coverage-partial); a complete corpus answers bare not-found.
+fn coverage_marker(
+    hits_empty: bool,
+    budget_complete: bool,
+    declared: usize,
+    persisted: usize,
+) -> Option<IngestCoverage> {
+    if !hits_empty || !budget_complete {
+        return None;
+    }
+    (declared > persisted).then_some(IngestCoverage {
+        declared,
+        persisted,
+    })
+}
+
 /// Search the persisted claim graph: every claim whose text contains
 /// `pattern` (case-insensitive) **and** whose lineage resolves, at query
 /// time, to at least one persisted episode (`qt_lineage_traceable` —
@@ -409,21 +431,16 @@ fn search_inner(
         BudgetStatus::Complete
     };
     // qt_coverage_status (bajan-alb, D3/D4): the zero-hit coverage
-    // marker — present exactly when the completed walk returned zero
-    // hits over a partially covered corpus. Budget exhaustion outranks
-    // coverage: a truncated scan claims neither not-found nor
-    // coverage-partial (D4 reason precedence).
-    let ingest_coverage = if hits.is_empty() && matches!(status, BudgetStatus::Complete) {
-        let (declared, persisted) = db
-            .ingest_coverage()
-            .map_err(|e| BajanQueryError(e.to_string()))?;
-        (declared > persisted).then_some(IngestCoverage {
-            declared,
-            persisted,
-        })
+    // marker via the pure decision helper (tidy 4.1) — budget outcome
+    // and hit emptiness come from the walk, counts from the store.
+    let budget_complete = matches!(status, BudgetStatus::Complete);
+    let (declared, persisted) = if budget_complete {
+        db.ingest_coverage()
+            .map_err(|e| BajanQueryError(e.to_string()))?
     } else {
-        None
+        (0, 0)
     };
+    let ingest_coverage = coverage_marker(hits.is_empty(), budget_complete, declared, persisted);
     // Coverage surfacing (bajan-913): corpus metadata, independent of
     // the walk — a note is present exactly when the corpus has gaps.
     let coverage = coverage_note(db)?;
@@ -631,6 +648,31 @@ pub fn contradictions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // qt_coverage_status shape matrix (tidy 4.1): the pure marker
+    // decision is exhaustive over the D3/D4 combinations — hits, budget
+    // outcome, and declared-vs-persisted counts. Exact counts ride the
+    // marker; equal counts (coverage-complete) and declaration-free
+    // stores (0,0) are bare not-found.
+    #[test]
+    fn coverage_marker_shape_matrix() {
+        // Zero-hit + complete + partial corpus -> marker with counts.
+        assert_eq!(
+            coverage_marker(true, true, 5, 3),
+            Some(IngestCoverage {
+                declared: 5,
+                persisted: 3
+            })
+        );
+        // Zero-hit + complete + coverage-complete -> bare not-found.
+        assert_eq!(coverage_marker(true, true, 5, 5), None);
+        assert_eq!(coverage_marker(true, true, 0, 0), None);
+        // Hit-carrying read: never (D3).
+        assert_eq!(coverage_marker(false, true, 5, 3), None);
+        // Budget-exhausted read: never, even over a partial corpus (D4).
+        assert_eq!(coverage_marker(true, false, 5, 3), None);
+        assert_eq!(coverage_marker(false, false, 5, 3), None);
+    }
 
     // qt_query-schema: the budget-status vocabulary is exactly the two
     // published variants — complete and budget-exhausted.
