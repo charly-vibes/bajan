@@ -9,4 +9,6 @@ authored_with = "0.12.0"
 cargo = [
     { flags = "shape_matched_candidates_are_rejected_and_prose_stages", timeout_seconds = 120 },
     { flags = "fully_shape_filtered_episode_caches_extracted_empty", timeout_seconds = 120 },
+    { flags = "deny_set_change_never_refilters_cached_or_staged_episodes", timeout_seconds = 120 },
+    { flags = "version_bump_reextracts_across_extractors", timeout_seconds = 120 },
 ]

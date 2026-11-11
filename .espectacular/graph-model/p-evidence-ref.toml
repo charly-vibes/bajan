@@ -8,4 +8,5 @@ authored_with = "0.12.1"
 [tests]
 cargo = [
     { flags = "evidence_check_creates_reference_and_claim_stays_untouched", timeout_seconds = 120 },
+    { flags = "reference_less_claim_behaves_as_before", timeout_seconds = 120 },
 ]

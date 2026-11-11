@@ -257,6 +257,51 @@ fn fully_shape_filtered_episode_caches_extracted_empty() {
     assert_eq!(second.episodes_processed, 0);
 }
 
+/// Forward-only deny-set semantics (`ex_shape_rejection` over the
+/// `ex_single_call` cache): the extraction cache stores post-pass output,
+/// so a later pass never re-filters already cached or staged episodes —
+/// the set that judged pass one stands, and a changed set binds only
+/// extractions at a bumped version (`version_bump_reextracts`).
+#[test]
+fn deny_set_change_never_refilters_cached_or_staged_episodes() {
+    let db = SqliteStore::open(":memory:").expect("store");
+    let body = "# Install Guide\n\nBajan runs locally on one call. Home > Docs > Index\n";
+    ingest::persist(&db, &episode("ep-forward", body)).expect("persist");
+    let outputs = [(
+        "ep-forward",
+        Ok(vec![
+            scripted_claim("Is bajan fast?"),      // interrogative-final
+            scripted_claim("Install Guide"),       // heading-aligned fragment
+            scripted_claim("Home > Docs > Index"), // breadcrumb boilerplate
+            scripted_claim("Bajan runs locally on one call."), // prose survives
+        ]),
+    )]
+    .into_iter()
+    .collect();
+    let extractor = FakeExtractor {
+        version: "9.9.6",
+        model_id: None,
+        outputs,
+    };
+    let mut runs = extract::ExtractionRunStore::default();
+    extract::run_extract_with(&db, &extractor, &mut runs).expect("pass one");
+    let staged_after_one = staged_texts(&db);
+    let rows_after_one = runs.rows().len();
+    assert_eq!(staged_after_one.len(), 1, "prose staged, shapes filtered");
+
+    // Pass two over the same run store: the cached episode is not
+    // re-extracted, the staged prose is not re-judged, the filtered
+    // decisions are not revised, and no new run rows appear.
+    let second = extract::run_extract_with(&db, &extractor, &mut runs)
+        .expect("pass two runs");
+    assert_eq!(
+        second.episodes_processed, 0,
+        "cache hit: no re-extraction, no re-filtration"
+    );
+    assert_eq!(staged_texts(&db), staged_after_one, "staged prose untouched");
+    assert_eq!(runs.rows().len(), rows_after_one, "no new run rows");
+}
+
 // --- dispatch ------------------------------------------------------------
 
 /// A scripted extractor's candidates reach the store through run_extract:

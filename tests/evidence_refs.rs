@@ -105,6 +105,43 @@ fn evidence_check_creates_reference_and_claim_stays_untouched() {
     assert_eq!(second.reference, outcome.reference);
 }
 
+/// A claim with no evidence reference behaves exactly as before the
+/// feature (`gm_evidence_ref`): query and review paths return the same
+/// outcomes, no reference or check row exists, and the claim node stays
+/// byte-identical through the read sweep — the feature is invisible
+/// until the explicit check command runs.
+#[test]
+fn reference_less_claim_behaves_as_before() {
+    let db = SqliteStore::open(":memory:").expect("store");
+    ingest::persist(&db, &episode("ep-none", "No check has ever run here.", 2))
+        .expect("persist");
+    let claim_key = insert_claim_on(&db, "ep-none", "No check has ever run here.");
+    let before = claim_snapshot(&db, claim_key);
+
+    // Query and review paths over the reference-less claim.
+    let claims = db.claims_with_lineage().expect("claims read");
+    let (_, node, _) = claims
+        .iter()
+        .find(|(k, _, _)| *k == claim_key)
+        .expect("reference-less claim is queryable");
+    assert_eq!(node.status, ClaimStatus::Staged);
+    assert_eq!(node.text, "No check has ever run here.");
+    let _ = db.episodes().expect("episodes read");
+    let _ = db.get_episode("ep-none").expect("episode read");
+
+    assert!(
+        db.evidence_ref(claim_key).expect("ref read").is_none(),
+        "no reference exists for an unchecked claim"
+    );
+    assert!(
+        db.evidence_checks(claim_key).expect("checks read").is_empty(),
+        "no check records exist for an unchecked claim"
+    );
+
+    // Byte-identical claim node after the read sweep.
+    assert_eq!(claim_snapshot(&db, claim_key), before);
+}
+
 // --- tri-state derivation (gm_evidence_resolution / p-evidence-resolution)
 
 /// The pure derivation is table-driven over store facts: tombstoned wins
