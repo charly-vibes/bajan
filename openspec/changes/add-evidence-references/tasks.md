@@ -7,47 +7,47 @@ not start until the proposal is approved.
 
 ## 1. Spec deltas (normative specodelic edits)
 
-- [ ] 1.1 `specs/graph-model.md`: add `gm_evidence_ref` constraint +
+- [x] 1.1 `specs/graph-model.md`: add `gm_evidence_ref` constraint +
       deriving property (side record keyed by claim — episode id, locator
       scheme version, observed tier; created only by the evidence check
       command; frozen ClaimNode untouched; reference-less claims
       unchanged)
-- [ ] 1.2 `specs/graph-model.md`: add `gm_evidence_resolution` constraint
+- [x] 1.2 `specs/graph-model.md`: add `gm_evidence_resolution` constraint
       + deriving property (tri-state derivation, containment re-check per
       `ex_evidence_containment` comparison, no fabrication, tombstone /
       post-revive semantics, unresolvable stays inspectable)
-- [ ] 1.3 `specs/graph-model.md`: add `gm_evidence_check_record`
+- [x] 1.3 `specs/graph-model.md`: add `gm_evidence_check_record`
       constraint + deriving property (append-only immutable check records
       — claim key, state, checked-at; the evidence check command is the
       only writer; `qt_readonly` intact)
-- [ ] 1.4 `specs/graph-model.md`: add `gm_evidence_ref_tier` constraint +
+- [x] 1.4 `specs/graph-model.md`: add `gm_evidence_ref_tier` constraint +
       deriving property (tier = provenance only; never re-ranks per
       `qt_ranking`)
-- [ ] 1.5 `spk lint specs`, `ah check`, `dont check` green; contract
+- [x] 1.5 `spk lint specs`, `ah check`, `dont check` green; contract
       TOMLs for all four deriving properties
 
 ## 2. Implementation (red → green)
 
-- [ ] 2.1 `evidence_refs` + `evidence_checks` tables; `bajan evidence
+- [x] 2.1 `evidence_refs` + `evidence_checks` tables; `bajan evidence
       check <claim-id>` creates the reference on first check and appends
       one check record per run; claim node byte-identical before/after
       (red first)
-- [ ] 2.2 Tri-state derivation: containment re-check (whitespace-collapsed
+- [x] 2.2 Tri-state derivation: containment re-check (whitespace-collapsed
       comparison shared with the extraction gate), tombstoned/unresolvable
       from store facts (green)
-- [ ] 2.3 Tombstone interplay: check during tombstone window →
+- [x] 2.3 Tombstone interplay: check during tombstone window →
       `tombstoned`; post-revive check → `resolved`; revive never rewrites
       prior check records (red → green)
-- [ ] 2.4 Readonly discipline: read paths write nothing to either table;
+- [x] 2.4 Readonly discipline: read paths write nothing to either table;
       no-fabrication guard invents no anchor text; claim stays queryable
       (red → green)
 
 ## 3. Verification
 
-- [ ] 3.1 End-to-end: ingest → extract → check (resolved); delete episode
+- [x] 3.1 End-to-end: ingest → extract → check (resolved); delete episode
       → check (tombstoned) → revive → check (resolved); verify both check
       records persist append-only
-- [ ] 3.2 `just test` green; clippy + fmt clean; `just test-full` green
+- [x] 3.2 `just test` green; clippy + fmt clean; `just test-full` green
 
 ## 4. Tidy
 

@@ -1,0 +1,12 @@
+id = "p-evidence-resolution"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.1"
+
+[tests]
+cargo = [
+    { flags = "resolution_tri_state_derives_from_store_facts", timeout_seconds = 120 },
+    { flags = "tombstone_window_then_revive_recheck_flips_future_not_history", timeout_seconds = 120 },
+]

@@ -150,6 +150,18 @@ CREATE TABLE IF NOT EXISTS episode_tombstones (
     episode_id TEXT PRIMARY KEY,
     deleted_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS evidence_refs (
+    claim_key INTEGER PRIMARY KEY,
+    episode_id TEXT NOT NULL,
+    locator_scheme_version TEXT NOT NULL,
+    observed_tier INTEGER
+);
+CREATE TABLE IF NOT EXISTS evidence_checks (
+    check_id INTEGER PRIMARY KEY,
+    claim_key INTEGER NOT NULL,
+    resolution_state TEXT NOT NULL,
+    checked_at INTEGER NOT NULL
+);
 ";
 
 /// Row mapper shared by `episodes()` and `get_episode()`: reconstructs a
@@ -469,6 +481,106 @@ fn encode_edge_label(
 /// (`gm_contradicts_provenance`) or `None` for bare-triple rows.
 pub type EdgeWithProvenance = (usize, EdgeLabel, usize, Option<String>);
 
+// ---- evidence references + check records (specs/graph-model.md,
+// gm_evidence_ref / gm_evidence_resolution / gm_evidence_check_record /
+// gm_evidence_ref_tier, bajan-5ux) ----
+
+/// The v1 locator scheme recorded on every evidence reference: the claim's
+/// span lives in a local episode (`gm_evidence_ref`). External anchor
+/// schemes plug in later through this version field (design D5).
+pub const LOCAL_LOCATOR_SCHEME: &str = "local-span-v1";
+
+/// Derived resolution state for one evidence check
+/// (`gm_evidence_resolution`) — closed tri-state vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolutionState {
+    /// Episode persisted and the reference's span passes the containment
+    /// re-check (same whitespace-collapsed comparison as
+    /// `ex_evidence_containment`).
+    Resolved,
+    /// Episode not persisted, or the span cannot be verified — reported
+    /// honestly, never fabricated around; the claim stays inspectable.
+    Unresolvable,
+    /// Episode policy-deleted and revivable (`ic_deleted_tombstone`).
+    Tombstoned,
+}
+
+impl ResolutionState {
+    /// Stable machine-readable snake_case code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ResolutionState::Resolved => "resolved",
+            ResolutionState::Unresolvable => "unresolvable",
+            ResolutionState::Tombstoned => "tombstoned",
+        }
+    }
+}
+
+/// Side record keyed by claim (`gm_evidence_ref`): created only by the
+/// explicit evidence check command, never by extraction or a read path.
+/// `observed_tier` is provenance only (`gm_evidence_ref_tier`) — never a
+/// ranking input; `None` when the episode was not persisted at check time
+/// (nothing observed, nothing invented).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EvidenceRef {
+    pub claim_key: usize,
+    pub episode_id: String,
+    pub locator_scheme_version: String,
+    pub observed_tier: Option<u8>,
+}
+
+/// One immutable check record (`gm_evidence_check_record`): appended per
+/// check run, never rewritten — the as-of record of what was true at
+/// `checked_at`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EvidenceCheck {
+    pub check_id: usize,
+    pub claim_key: usize,
+    pub resolution_state: ResolutionState,
+    pub checked_at: u64,
+}
+
+/// Outcome of one evidence check run: the (possibly lazily created)
+/// reference plus the appended check record; `created` distinguishes the
+/// first check from a re-check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EvidenceCheckOutcome {
+    pub created: bool,
+    pub reference: EvidenceRef,
+    pub check: EvidenceCheck,
+}
+
+/// Pure resolution derivation (`gm_evidence_resolution`, design D2):
+/// tombstoned wins first (policy state outranks — a post-revive check
+/// will honestly re-derive), then episode availability, then the span
+/// containment re-check. An unknown-evidence claim or a failing span is
+/// `unresolvable` — never fabricated into `resolved`.
+pub fn derive_resolution(
+    evidence: &Evidence,
+    episode_text: Option<&str>,
+    tombstoned: bool,
+) -> ResolutionState {
+    if tombstoned {
+        return ResolutionState::Tombstoned;
+    }
+    let Some(episode_text) = episode_text else {
+        return ResolutionState::Unresolvable;
+    };
+    let span = match evidence {
+        Evidence::Span { text, .. } => text,
+        Evidence::Unknown => return ResolutionState::Unresolvable,
+    };
+    // The store-side containment predicate: whitespace-collapsed span
+    // contained in whitespace-collapsed episode text — the same
+    // comparison the extraction gate applies (`ex_evidence_containment`).
+    if crate::store::collapse(episode_text).contains(&crate::store::collapse(span)) {
+        ResolutionState::Resolved
+    } else {
+        ResolutionState::Unresolvable
+    }
+}
+
 impl SqliteStore {
     /// Open (creating if needed) an embedded store at `path`.
     ///
@@ -697,6 +809,166 @@ impl SqliteStore {
     /// Persist a claim node with one or more lineage edges and the
     /// supporting episode text (hedge-anchor check at span persistence,
     /// `gm_hedge_anchor`). Returns the assigned claim key.
+    /// The explicit evidence check (`gm_evidence_ref`/`gm_evidence_check_record`,
+    /// design D1): the ONLY writer of `evidence_refs` and `evidence_checks`.
+    /// First check lazily creates the reference; every check appends exactly
+    /// one immutable record. The claim node is never touched.
+    pub fn evidence_check(
+        &self,
+        claim_key: usize,
+        checked_at: u64,
+    ) -> Result<EvidenceCheckOutcome, StoreError> {
+        // The claim's evidence, reconstructed through the same strict
+        // vocabulary as the read-path mapper ("span" or typed Unknown).
+        let (evidence_kind, evidence_text, evidence_locator): (
+            String,
+            Option<String>,
+            Option<String>,
+        ) = self
+            .conn
+            .query_row(
+                "SELECT evidence_kind, evidence_text, evidence_locator
+                 FROM claims WHERE claim_key = ?1",
+                params![claim_key as i64],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(sql_err)?
+            .ok_or(StoreError::ClaimNotFound { claim_key })?;
+        let evidence = match evidence_kind.as_str() {
+            "span" => Evidence::Span {
+                text: evidence_text.unwrap_or_default(),
+                locator: evidence_locator.unwrap_or_default(),
+            },
+            _ => Evidence::Unknown,
+        };
+        // The supporting episode comes from the claim's lineage edge
+        // (`gm_reified` — a claim without lineage is a corrupt store).
+        let episode_id: String = self
+            .conn
+            .query_row(
+                "SELECT episode_id FROM lineage WHERE claim_key = ?1
+                 ORDER BY rowid LIMIT 1",
+                params![claim_key as i64],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_err)?
+            .ok_or_else(|| StoreError::Sqlite {
+                message: format!("claim {claim_key} has no lineage edge (gm_reified violation)"),
+                spec: "specs/graph-model.md",
+            })?;
+        let tombstoned = self.is_tombstoned(&episode_id)?;
+        let episode = self.get_episode(&episode_id)?;
+        let state = derive_resolution(
+            &evidence,
+            episode.as_ref().map(|e| e.text.as_str()),
+            tombstoned,
+        );
+
+        let existing = self.evidence_ref(claim_key)?;
+        let created = existing.is_none();
+        let reference = match existing {
+            Some(reference) => reference,
+            None => {
+                let observed_tier = episode.as_ref().map(|e| e.source.authority_tier);
+                self.conn
+                    .execute(
+                        "INSERT INTO evidence_refs
+                         (claim_key, episode_id, locator_scheme_version, observed_tier)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            claim_key as i64,
+                            episode_id,
+                            LOCAL_LOCATOR_SCHEME,
+                            observed_tier.map(i64::from),
+                        ],
+                    )
+                    .map_err(sql_err)?;
+                EvidenceRef {
+                    claim_key,
+                    episode_id,
+                    locator_scheme_version: LOCAL_LOCATOR_SCHEME.to_string(),
+                    observed_tier,
+                }
+            }
+        };
+        self.conn
+            .execute(
+                "INSERT INTO evidence_checks (claim_key, resolution_state, checked_at)
+                 VALUES (?1, ?2, ?3)",
+                params![claim_key as i64, state.code(), checked_at as i64],
+            )
+            .map_err(sql_err)?;
+        let check_id = self.conn.last_insert_rowid() as usize;
+        Ok(EvidenceCheckOutcome {
+            created,
+            reference,
+            check: EvidenceCheck {
+                check_id,
+                claim_key,
+                resolution_state: state,
+                checked_at,
+            },
+        })
+    }
+
+    /// The claim's evidence reference, if a check has ever created one
+    /// (read path — writes nothing).
+    pub fn evidence_ref(&self, claim_key: usize) -> Result<Option<EvidenceRef>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT episode_id, locator_scheme_version, observed_tier
+                 FROM evidence_refs WHERE claim_key = ?1",
+                params![claim_key as i64],
+                |row| {
+                    Ok(EvidenceRef {
+                        claim_key,
+                        episode_id: row.get(0)?,
+                        locator_scheme_version: row.get(1)?,
+                        observed_tier: row.get::<_, Option<i64>>(2)?.map(|t| t as u8),
+                    })
+                },
+            )
+            .optional()
+            .map_err(sql_err)
+    }
+
+    /// The claim's check records, append-only order (`gm_evidence_check_record`)
+    /// — read path, writes nothing.
+    pub fn evidence_checks(&self, claim_key: usize) -> Result<Vec<EvidenceCheck>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT check_id, resolution_state, checked_at
+                 FROM evidence_checks WHERE claim_key = ?1 ORDER BY check_id",
+            )
+            .map_err(sql_err)?;
+        let mut out = Vec::new();
+        let mut rows = stmt.query(params![claim_key as i64]).map_err(sql_err)?;
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            let state_raw: String = row.get(1).map_err(sql_err)?;
+            let state = match state_raw.as_str() {
+                "resolved" => ResolutionState::Resolved,
+                "unresolvable" => ResolutionState::Unresolvable,
+                "tombstoned" => ResolutionState::Tombstoned,
+                other => {
+                    return Err(StoreError::Sqlite {
+                        message: format!("corrupt evidence_checks row: {other:?}"),
+                        spec: "specs/graph-model.md",
+                    });
+                }
+            };
+            out.push(EvidenceCheck {
+                check_id: row.get::<_, i64>(0).map_err(sql_err)? as usize,
+                claim_key,
+                resolution_state: state,
+                checked_at: row.get::<_, i64>(2).map_err(sql_err)? as u64,
+            });
+        }
+        Ok(out)
+    }
+
     pub fn insert_claim(
         &self,
         node: &ClaimNode,

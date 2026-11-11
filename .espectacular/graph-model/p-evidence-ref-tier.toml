@@ -1,0 +1,11 @@
+id = "p-evidence-ref-tier"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.1"
+
+[tests]
+cargo = [
+    { flags = "observed_tier_is_provenance_never_ranking", timeout_seconds = 120 },
+]

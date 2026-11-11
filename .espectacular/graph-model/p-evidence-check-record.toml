@@ -1,0 +1,12 @@
+id = "p-evidence-check-record"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.1"
+
+[tests]
+cargo = [
+    { flags = "check_records_accumulate_append_only", timeout_seconds = 120 },
+    { flags = "read_commands_leave_evidence_tables_untouched", timeout_seconds = 120 },
+]

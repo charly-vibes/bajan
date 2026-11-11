@@ -180,6 +180,27 @@ pub enum Command {
         #[command(subcommand)]
         action: EvalAction,
     },
+    /// Evidence commands (bajan-5ux): the check action is the sole
+    /// writer of evidence references and check records
+    /// (`gm_evidence_ref`/`gm_evidence_check_record`).
+    Evidence {
+        #[command(subcommand)]
+        action: EvidenceAction,
+    },
+}
+
+/// Evidence actions: check is a writing command — the only writer of
+/// either evidence table. No read actions: claims stay inspectable
+/// through the existing query paths (`qt_readonly` untouched).
+#[derive(Debug, Subcommand)]
+pub enum EvidenceAction {
+    /// Check one claim's evidence resolution against store facts —
+    /// creates the evidence reference on first check and appends one
+    /// immutable check record per run.
+    Check {
+        /// Claim key (claims.claim_key) to check.
+        claim_key: usize,
+    },
 }
 
 /// Review actions (`er_human_resolution`): list is a read; approve and
@@ -684,6 +705,76 @@ fn adopt_envelope(db_path: &str, claims: &[usize], actor: Option<&str>) -> serde
         Err(err) => return adopt_error_envelope(&err),
     };
     adopt_with(&db, claims, actor)
+}
+
+// ---- evidence check operator surface (specs/graph-model.md,
+// gm_evidence_ref / gm_evidence_resolution / gm_evidence_check_record,
+// bajan-5ux) ----
+
+/// One evidence check in envelope form.
+#[derive(Serialize)]
+struct EvidenceCheckReport {
+    claim_key: usize,
+    resolution_state: &'static str,
+    /// True when this run created the reference (the first check);
+    /// re-checks report false.
+    created: bool,
+    episode_id: String,
+    locator_scheme_version: String,
+    observed_tier: Option<u8>,
+    checked_at: u64,
+}
+
+fn evidence_check_envelope(db_path: &str, claim_key: usize) -> serde_json::Value {
+    let db = match crate::store::sqlite::SqliteStore::open(db_path) {
+        Ok(db) => db,
+        Err(err) => return stub_envelope(&BajanError::Store(err.to_string())),
+    };
+    evidence_check_with(&db, claim_key)
+}
+
+/// The evidence check envelope over an already-open store (testable
+/// seeding point, resolve_with precedent).
+fn evidence_check_with(
+    db: &crate::store::sqlite::SqliteStore,
+    claim_key: usize,
+) -> serde_json::Value {
+    let checked_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    match db.evidence_check(claim_key, checked_at) {
+        Ok(outcome) => serde_json::to_value(Envelope::success(
+            env!("CARGO_PKG_VERSION"),
+            EnvelopeKind::Ok,
+            EvidenceCheckReport {
+                claim_key,
+                resolution_state: outcome.check.resolution_state.code(),
+                created: outcome.created,
+                episode_id: outcome.reference.episode_id,
+                locator_scheme_version: outcome.reference.locator_scheme_version,
+                observed_tier: outcome.reference.observed_tier,
+                checked_at: outcome.check.checked_at,
+            },
+            vec![],
+            vec![],
+        ))
+        .expect("envelope serialization cannot fail"),
+        Err(crate::store::StoreError::ClaimNotFound { claim_key }) => spec_error_envelope(
+            "evidence_error",
+            &format!(
+                "no claim node keyed {claim_key} in this store — evidence checks name an \
+                 existing claim key (gm_evidence_ref)"
+            ),
+            Some("specs/graph-model.md"),
+            "evidence",
+            vec![RemediationEntry {
+                command: "bajan review --json".into(),
+                description: "List staged claims with their keys, then re-run the check.".into(),
+            }],
+        ),
+        Err(err) => stub_envelope(&BajanError::Store(err.to_string())),
+    }
 }
 
 // ---- episode tombstone operator surface (specs/ingestion-contract.md,
@@ -1309,6 +1400,9 @@ pub fn run(command: Command, db_path: &str) -> String {
                 extractor_version,
                 out,
             } => eval_manifest_envelope(db_path, extractor_version.as_deref(), out.as_deref()),
+        },
+        Command::Evidence { action } => match action {
+            EvidenceAction::Check { claim_key } => evidence_check_envelope(db_path, *claim_key),
         },
     };
     serde_json::to_string(&value).expect("envelope serialization cannot fail")
@@ -2154,6 +2248,53 @@ mod tests {
         let v = adopt_with(&db, &[0], Some("sasha"));
         assert_eq!(v["ok"].as_bool(), Some(false));
         assert_eq!(v["data"]["spec_ref"], "specs/graph-model.md");
+    }
+
+    // --- evidence check envelope (bajan-5ux) ---------------------------
+
+    /// The writing command resolves a seeded claim, creates the reference
+    /// on first check, and re-checks reuse it; the envelope carries the
+    /// tri-state code and observed tier.
+    #[test]
+    fn evidence_check_envelope_resolves_seeded_claim() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        db.insert_episode(&seed_episode()).unwrap();
+        let (node, lineage) = staged_seed_node();
+        let claim_key = db
+            .insert_claim(
+                &node,
+                &[lineage],
+                "The parser resolves spans deterministically.",
+            )
+            .unwrap();
+
+        let v = evidence_check_with(&db, claim_key);
+        assert_eq!(v["ok"].as_bool(), Some(true));
+        assert_eq!(v["data"]["resolution_state"], "resolved");
+        assert_eq!(v["data"]["created"], true);
+        assert_eq!(v["data"]["episode_id"], "ep-seed");
+        assert_eq!(v["data"]["observed_tier"], 2);
+        assert_eq!(v["data"]["locator_scheme_version"], "local-span-v1");
+
+        let v2 = evidence_check_with(&db, claim_key);
+        assert_eq!(v2["ok"].as_bool(), Some(true));
+        assert_eq!(
+            v2["data"]["created"], false,
+            "re-check reuses the reference"
+        );
+        // Append-only: two records after two runs.
+        assert_eq!(db.evidence_checks(claim_key).unwrap().len(), 2);
+    }
+
+    /// An unknown claim key is an honest spec-traced error, never a
+    /// fabricated record.
+    #[test]
+    fn evidence_check_unknown_claim_is_honest_error() {
+        let db = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        let v = evidence_check_with(&db, 99);
+        assert_eq!(v["ok"].as_bool(), Some(false));
+        assert_eq!(v["data"]["spec_ref"], "specs/graph-model.md");
+        assert!(db.evidence_checks(99).unwrap().is_empty());
     }
 
     // ---- episode tombstone operator surface (bajan-aod) ----
