@@ -1,5 +1,8 @@
 # Change: Add Query Coverage Evidence for Partially Ingested Corpora
 
+*Approved: 2026-11-10, operator session approval. Implementation ticket:
+bajan-alb.*
+
 ## Why
 
 The Bajan/Sunset capability-gaps analysis (artifact

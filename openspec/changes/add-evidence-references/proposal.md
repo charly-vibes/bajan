@@ -1,5 +1,8 @@
 # Change: Add Resolvable Evidence References for Source-Backed Claims
 
+*Approved: 2026-11-10, operator session approval. Implementation ticket:
+bajan-5ux.*
+
 ## Why
 
 The Bajan/Sunset capability-gaps analysis (artifact

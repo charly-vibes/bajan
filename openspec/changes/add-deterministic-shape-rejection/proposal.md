@@ -1,5 +1,8 @@
 # Change: Add Deterministic Candidate-Shape Rejection to the Extraction Post-Pass
 
+*Approved: 2026-11-10, operator session approval. Implementation ticket:
+bajan-w17 (blocks bajan-4hv ordering).*
+
 ## Why
 
 The first scored eval run (evals/results.md, 2026-11-04, `bajan eval claims`
