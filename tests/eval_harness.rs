@@ -836,3 +836,54 @@ fn eval_manifest_export_produces_loadable_run() {
     assert_eq!(v["data"]["recall"].as_f64(), Some(1.0));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- shape post-pass replay (ex_shape_rejection, bajan-w17) ---------------
+
+/// The harness replays the deterministic shape post-pass before scoring:
+/// shape-matched candidates leave the emission counts exactly as a live
+/// extraction would never stage them, prose candidates score unchanged,
+/// and `score` itself stays pure math over the post-pass candidate set.
+#[test]
+fn shape_post_pass_filters_candidates_before_scoring() {
+    let corpus = corpus_json(
+        "v1",
+        json!([{
+            "id": "ep-1",
+            "text": "# Contents\n\nBajan runs locally on one call.\n",
+            "golden_claims": [golden_claim(
+                "Bajan runs locally on one call.",
+                "Bajan runs locally on one call.",
+                &[],
+            )],
+        }]),
+    );
+    let run = run_json(
+        "t",
+        json!([
+            candidate(
+                "ep-1",
+                "What runs locally?",
+                "Bajan runs locally on one call."
+            ),
+            candidate("ep-1", "Contents", "# Contents"),
+            candidate(
+                "ep-1",
+                "Bajan runs locally on one call.",
+                "Bajan runs locally on one call.",
+            ),
+        ]),
+    );
+    let corpus = eval::load_corpus(&corpus).expect("corpus loads");
+    let run = eval::load_run(&run).expect("run loads");
+    let post_pass = eval::apply_shape_post_pass(&corpus, &run);
+    assert_eq!(post_pass.claims.len(), 1, "two shape matches removed");
+    assert_eq!(post_pass.claims[0].text, "Bajan runs locally on one call.");
+
+    let outcome = eval::score(&corpus, &post_pass);
+    assert_eq!(outcome.counts.emitted, 1);
+    assert_eq!(outcome.counts.matched, 1);
+    assert_eq!(
+        outcome.shape_filtered, 0,
+        "score stays pure; the CLI envelope reports the replay count"
+    );
+}

@@ -153,6 +153,14 @@ pub struct EvalOutcome {
     pub hedge_preservation: Option<f64>,
     pub unknown_metrics: Vec<String>,
     pub counts: EvalCounts,
+    /// Candidates removed by the deterministic shape post-pass before
+    /// scoring (`ex_shape_rejection`, bajan-w17): the harness replays the
+    /// post-pass over the recorded call output — the same pass a live
+    /// extraction applies after the cached call — so published emission
+    /// counts reflect post-pass output. Additive telemetry; `score` stays
+    /// pure math over the post-pass candidate set.
+    #[serde(default)]
+    pub shape_filtered: usize,
     /// Candidates whose `episode_id` matches no corpus episode (bajan-t6z
     /// cross-check): each one silently scores `spurious`, so a run scored
     /// against the wrong corpus yields plausible low numbers — the count
@@ -398,6 +406,7 @@ pub fn score(corpus: &GoldenCorpus, run: &EvalRun) -> EvalOutcome {
         corpus_id: corpus.id.clone(),
         corpus_version: corpus.version.clone(),
         run_id: run.run_id.clone(),
+        shape_filtered: 0,
         extractor_version: run.extractor_version.clone(),
         judgments,
         precision,
@@ -437,4 +446,38 @@ pub fn results_row(outcome: &EvalOutcome) -> String {
         c.spurious,
         c.hedge_dropped,
     )
+}
+
+/// Replay the deterministic shape post-pass (`ex_shape_rejection`,
+/// bajan-w17) over a recorded run manifest: candidates whose text matches
+/// the fixed-in-code non-claim deny set are removed exactly as a live
+/// extraction removes them after the cached call (`ex_single_call` —
+/// deny-set changes are forward-only, never a re-extraction). Heading
+/// alignment consumes the corpus episode text: heading anchors are
+/// converter-supplied structure (`ex_deterministic_structure`). Episodes
+/// absent from the corpus align nothing — the candidate is still judged
+/// on its own text (interrogative-final, direct heading, boilerplate).
+pub fn apply_shape_post_pass(corpus: &GoldenCorpus, run: &EvalRun) -> EvalRun {
+    let episode_text = |episode_id: &str| {
+        corpus
+            .episodes
+            .iter()
+            .find(|e| e.id == episode_id)
+            .map(|e| e.text.as_str())
+            .unwrap_or_default()
+    };
+    let claims = run
+        .claims
+        .iter()
+        .filter(|candidate| {
+            crate::extract::non_claim_shape(&candidate.text, episode_text(&candidate.episode_id))
+                .is_none()
+        })
+        .cloned()
+        .collect();
+    EvalRun {
+        run_id: run.run_id.clone(),
+        extractor_version: run.extractor_version.clone(),
+        claims,
+    }
 }

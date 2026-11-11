@@ -374,7 +374,15 @@ fn eval_envelope(corpus_path: &std::path::Path, run_path: &std::path::Path) -> s
         let corpus =
             crate::eval::load_corpus(&corpus_json).map_err(|e| BajanError::Eval(e.to_string()))?;
         let run = crate::eval::load_run(&run_json).map_err(|e| BajanError::Eval(e.to_string()))?;
-        Ok(crate::eval::score(&corpus, &run))
+        // Deterministic shape post-pass replay (`ex_shape_rejection`,
+        // bajan-w17): the harness scores post-pass emission — the same
+        // pass a live extraction applies after the cached call — so the
+        // published record reflects what a real extraction would stage.
+        let post_pass = crate::eval::apply_shape_post_pass(&corpus, &run);
+        let removed = run.claims.len() - post_pass.claims.len();
+        let mut outcome = crate::eval::score(&corpus, &post_pass);
+        outcome.shape_filtered = removed;
+        Ok(outcome)
     })();
     match outcome {
         Ok(outcome) => {
