@@ -51,5 +51,5 @@ not start until the proposal is approved.
 
 ## 4. Tidy
 
-- [ ] 4.1 Separate tidy commit: check derivation extracted pure +
+- [x] 4.1 Separate tidy commit: check derivation extracted pure +
       table-driven tests; docs touch-up

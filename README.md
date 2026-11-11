@@ -101,6 +101,15 @@ bajan revive <episode_id> --actor you   # the only path that clears a tombstone
 # machine-readable deleted_id reason until revive — re-ingest never
 # resurrects, and dump-recreate carries the tombstone across rebuilds.
 
+# 5b. Evidence check — resolvable provenance for one claim (gm_evidence_ref)
+bajan evidence check <claim_key>   # derives resolved / unresolvable / tombstoned
+# The first check creates the claim's evidence reference (episode id,
+# locator scheme, observed tier — provenance only, never a ranking input);
+# every check appends one immutable record. Re-run to re-check: a
+# policy-deleted episode checks tombstoned, a post-revive re-ingest checks
+# resolved, and history is never rewritten. The check command is the only
+# writer of either evidence table (qt_readonly stays intact).
+
 # 6. Entity-review queue — the only human-only resolutions in the pipeline
 bajan review list
 bajan review approve <from> <to> --actor you   # merge a duplicate pair
