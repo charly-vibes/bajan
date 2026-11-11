@@ -156,7 +156,7 @@
   Validation: openspec validate --all --strict 11/11; ah check 0 findings; bd ready 4 claimable, no cycles; tracked export fresh; lefthook green throughout (pretender 120 advisories pre-existing, 0 new).
   Blockers: none technical. Unknowns: none.
   Conditional refs: proposals at openspec/changes/{add-deterministic-shape-rejection,add-query-coverage-evidence,add-evidence-references}/; pinky ~/para/areas/dev/gh/ak/pinky/ledger/topics/bajan-structure.org; evals/results.md (first scored row + segmentation-bottleneck diagnosis).
-- 2026-11-11T13:20:04Z [id:a6849da0f4e4b5e94a295cd627680d064773cb850a237df85533128f57cad5c5] (#resume-bajan-5ux) ### 2026-11-11 — resume bajan-5ux (TDD-RO5U ticket 2 of 3; w17 closed)
+- 2026-11-11T13:20:04Z [id:a6849da0f4e4b5e94a295cd627680d064773cb850a237df85533128f57cad5c5] (#resume-bajan-5ux) ### 2026-11-11 — resume bajan-5ux (TDD-RO5U ticket 2 of 3; w17 closed) (superseded by 39f6d5ffc7ac671455448189766b352963e6211023d432d3ce6f43be51a061aa)
   
   Format: 1
   Repo: bajan (~/para/areas/dev/gh/charly/bajan), branch main @ 09a8414 — tree carries w17 closure artifacts uncommitted (.wai ledger+review, .beads export, .whisper notes); commit them first. bajan is 10 commits ahead of origin — PUSH STILL NEEDS OPERATOR AUTHORIZATION.
@@ -174,3 +174,10 @@
   
   Next: commit closure artifacts → fresh session claims bajan-5ux (ticket 2) → then bajan-alb (ticket 3) → HITL: bajan-sbs stays operator-only.
   Unknowns: none.
+- 2026-11-11T13:21:16Z [id:39f6d5ffc7ac671455448189766b352963e6211023d432d3ce6f43be51a061aa] (#resume-bajan-5ux) ### 2026-11-11 — resume bajan-5ux (supersedes: HEAD moved after closure commit)
+  
+  Format: 1
+  Repo: bajan, main @ 7754f38 — tree CLEAN. 12 commits ahead of origin; PUSH NEEDS OPERATOR AUTHORIZATION.
+  Previous entry: a6849da0f4e4b5e94a295cd627680d064773cb850a237df85533128f57cad5c5 (same task/session — full pipeline details, gotchas and next actions carry over verbatim; only HEAD/commit-count and closure-commit set changed).
+  
+  Correction: w17 closure is FOUR commits (bfb742e impl, 09a8414 gate+results, 51ac050 beads+wai closure, 7754f38 eval post-pass harness wiring — completion of 09a8414 whose staging missed src/eval.rs+src/cli.rs+tests/eval_harness.rs; caught by post-commit no-shit pass, suite re-verified green, ah check 0). Next session: claim bajan-5ux per prior entry. (supersedes a6849da0f4e4b5e94a295cd627680d064773cb850a237df85533128f57cad5c5)
