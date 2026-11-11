@@ -85,7 +85,17 @@ proptest! {
     ) {
         let db = SqliteStore::open_in_memory().expect("open");
         let n = ids.len().min(texts.len());
+        // Ingest with first-wins semantics: a duplicate id inside the
+        // generated batch is deduped by `ic_intra_batch_duplicate` (the
+        // repeat submission never persists), so construction tracks which
+        // records actually survived — dump-recreate must reproduce exactly
+        // that constructed graph, claims included.
+        let mut kept: Vec<usize> = Vec::new();
         for i in 0..n {
+            if kept.iter().any(|&j| ids[j] == ids[i]) {
+                continue;
+            }
+            kept.push(i);
             let record = EpisodeRecord {
                 id: ids[i].clone(),
                 text: texts[i].clone(),
@@ -100,6 +110,7 @@ proptest! {
             };
             db.insert_claim(&node, &[lineage], &texts[i]).expect("insert");
         }
+        let m = kept.len();
 
         // Dump: the episode stream plus extraction output.
         let stream = ingest::dump_stream(&db).expect("stream read");
@@ -114,13 +125,13 @@ proptest! {
             .restore_extraction_output(&extraction)
             .expect("restore succeeds");
 
-        prop_assert_eq!(fresh.episodes().expect("episodes read").len(), n);
+        prop_assert_eq!(fresh.episodes().expect("episodes read").len(), m);
         prop_assert_eq!(
             fresh.dump_extraction_output().expect("fresh dump read"),
             db.dump_extraction_output().expect("db dump read")
         );
-        for (i, text) in texts.iter().take(n).enumerate() {
-            prop_assert_eq!(fresh.claim_text(i).expect("claim text read"), Some(text.clone()));
+        for (i, &idx) in kept.iter().enumerate() {
+            prop_assert_eq!(fresh.claim_text(i).expect("claim text read"), Some(texts[idx].clone()));
         }
     }
 }
