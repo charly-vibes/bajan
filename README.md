@@ -90,6 +90,15 @@ BAJAN_MAX_SPEND_USD=0.50 \
 BAJAN_EXTRACTOR_TIMEOUT_SECS=600 \
 bajan extract
 
+# After either extractor, a deterministic shape post-pass rejects non-claim
+# shapes before the validation gate (ex_shape_rejection): interrogative-
+# final text, heading/section-title fragments aligned inside converter-
+# supplied anchors, and navigation/list boilerplate never reach staged —
+# the run record carries the machine-readable shape-filtered reason with
+# the matched rule. An episode whose every candidate is rejected still
+# caches as extracted, so a rerun starts no new LLM call. The deny set is
+# fixed in code, never an LLM judgment.
+
 # 4. Human-in-the-loop adoption of staged claims
 #    (claim keys come from the extract output / `bajan query` hit list)
 bajan adopt 1 2 3
@@ -118,6 +127,13 @@ bajan review reject <from> <to> --actor you    # drop the merge candidate
 # 7. Query — ranked hits with lineage-traceable provenance
 bajan query "profit" --scope workspace:dev
 bajan query "profit" --json | jq '.data.hits'
+# Zero-hit reads over a partially covered corpus report coverage instead
+# of asserting absence (qt_coverage_status): coverage-partial with exact
+# declared/persisted counts. Ingest persisting declares corpus coverage
+# (ic_coverage_declaration); a coverage-complete or declaration-free
+# store answers bare not-found, a budget-truncated scan never claims
+# coverage, and reads with hits carry no marker. Declarations ride
+# dump-recreate, so a rebuilt store reports coverage identically.
 
 # 8. Contradictions — closed rule set over specific claims, plus an
 #    optional LLM proposal pass
@@ -255,10 +271,14 @@ humans approve. Specifications under `specs/` are linted by
   `usage.cost` (e.g. plain OpenAI) cannot be accounted: one
   unaccountable call fails the next call closed (never silently
   unbounded). Bound spend at the provider as well.
-- **Extraction precision/recall numbers are not published yet.** The eval
-  harness is built (`bajan eval claims`, bajan-2k4) but no golden corpus
-  has been adjudicated yet — gold labels are human sign-off; until a
-  corpus lands and a run is scored, adopt with judgment.
+- **Extraction quality numbers are per-model, and shape rejection is
+  corpus-gated, not published as a benchmark.** A golden corpus is
+  adjudicated (`evals/fixtures/gold-fi4e-v1.json`, bajan-2k4) and the
+  eval harness scores real runs (`bajan eval claims`); the shape-rejection
+  post-pass gates PASS 0.916/0.884/0.929 on that corpus's episode bodies
+  with zero matched drops (bajan-w17). These are burn-in numbers for one
+  model (deepseek-v4-flash) — not a cross-provider benchmark; adopt with
+  judgment and score your own runs against your own corpus.
 - **Per-call costs are logged, not reported.** The extractor logs one
   stderr line per successful LLM call carrying the response's exact
   `usage.cost` and the running spend against the cap (bajan-3w4);

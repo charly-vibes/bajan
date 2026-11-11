@@ -3,6 +3,74 @@
 All notable changes to bajan. The format is loose — this project versions by
 milestone, not by cadence. Every entry links the spec or ticket that governs it.
 
+## v0.3.0 — 2026-11-11
+
+Three RO5U-reviewed features: extraction precision, honest zero-hit reads,
+resolvable provenance — plus a strict openspec gate and two contract
+executors for clauses no test had pinned.
+
+### Deterministic shape rejection (bajan-w17, `ex_shape_rejection`)
+
+- A fixed-in-code post-pass rejects every candidate matching a non-claim
+  shape before the validation gate: interrogative-final text after
+  whitespace collapse, heading/section-title fragments aligned inside
+  converter-supplied heading anchors, navigation and list boilerplate.
+- Filtered candidates never reach `staged`; run rows carry the
+  machine-readable `shape-filtered` reason with the matched rule — never
+  a claim node (`ex_run_record`).
+- An episode whose every candidate is shape-rejected caches as
+  legitimately extracted-empty — a rerun starts no new LLM call
+  (`ex_single_call`); the cache stores post-pass output, so a changed
+  deny set binds only extractions at a bumped version (forward-only).
+- The eval harness replays the shape post-pass before scoring; the
+  heading-glued + structure-ref deny-set extensions score PASS
+  0.916/0.884/0.929 with zero matched drops on the burn-in corpus.
+
+### Evidence references + check command (bajan-5ux, `gm_evidence_ref` / `gm_evidence_resolution` / `gm_evidence_check_record` / `gm_evidence_ref_tier`)
+
+- `bajan evidence check <claim_key>` derives exactly one explicit state
+  per run — `resolved`, `unresolvable` (episode absent or span fails the
+  containment re-check), or `tombstoned` (policy-deleted) — never a
+  fabricated anchor; an unresolvable claim stays inspectable, never
+  hidden.
+- The first check creates the claim's evidence reference — supporting
+  episode id, locator scheme version, and the episode's authority tier
+  as observed (provenance only, never a ranking input). The frozen
+  ClaimNode schema is untouched, and reference-less claims behave
+  exactly as before the feature.
+- Every check appends one immutable check record — append-only, never
+  rewritten; the check command is the only writer of either evidence
+  table (read commands write nothing, `qt_readonly` intact).
+- A check inside the tombstone window records `tombstoned`; a
+  post-revive check records `resolved`; prior records keep their states.
+
+### Query coverage evidence (bajan-alb + bajan-bcu, `ic_coverage_declaration` / `qt_coverage_status`)
+
+- Import persisting declares corpus coverage; a partial run leaves an
+  honest declaration and a rerun converges without rewriting history.
+- Zero-hit reads over a partially covered corpus report `coverage-partial`
+  with exact declared/persisted counts instead of asserting absence;
+  coverage-complete and declaration-free stores answer bare `not-found`;
+  budget exhaustion outranks coverage; reads with hits carry no marker.
+- Coverage declarations ride dump/recreate raw (`DumpedCoverageDeclaration`
+  with `serde(default)` — old dumps stay loadable; restore INSERT OR
+  IGNORE converges), so a rebuilt store reports coverage identically —
+  declared-but-unpersisted ids included, since the extraction dump is
+  their only carrier.
+
+### Strict openspec gate (bajan-0ts)
+
+- The corpus passes `openspec validate --all --strict --no-interactive`
+  under openspec 1.x (8/8); CI's openspec gate now runs strict.
+
+### Contract executors (bajan-o4t)
+
+- Two corpus clauses had no executing test: shape deny-set forward-only
+  semantics and reference-less claim behavior — both pinned now
+  (`deny_set_change_never_refilters_cached_or_staged_episodes`,
+  `reference_less_claim_behaves_as_before`) and folded into the
+  `p-shape-rejection` / `p-evidence-ref` contracts.
+
 ## v0.2.0 — 2026-11-04
 
 The specs-are-the-code release: the corpus spec mirror is drift-gated, every
