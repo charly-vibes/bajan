@@ -127,4 +127,50 @@
   State: jev change delta spec.md split (4 >500-char requirements → 10 one-behavior requirements, all 14 scenarios verbatim); preamble dropped — content already carried in proposal.md, framing line added to design.md; ci.yml openspec smoke gate now --strict --no-interactive. validate --all --strict: 8/8 exit 0 under global 1.15.0 AND npx 1.17.0. Plain ah check 0 findings; ah check --changes jev = 14 no-toml (pre-existing, expected — contracts land with bajan-4hv apply).
   Notes: acceptance #2 (keep 0.19.0 passing) MOOT — global install already 1.15.0. Real exit code verified unpiped (pipe-mask gotcha).
   Next action: /renew → board: bajan-sbs (HUMAN gate, approve Jev proposal → unblocks bajan-4hv). Nothing else open.
-  Validation: openspec validate --all --strict --no-interactive = 8/8 exit 0 (1.15.0 + 1.17.0); ah check 0; lefthook pre-commit passed; pushed 6e00f6d.
+  Validation: openspec validate --all --strict --no-interactive = 8/8 exit 0 (1.15.0 + 1.17.0); ah check 0; lefthook pre-commit passed; pushed 6e00f6d. (superseded by dc4d0d8b1aca164b36f91680101a0bf34e12e935ceb4ab4f149c725bf0e5046e)
+- 2026-11-10T22:03:32Z [id:dc4d0d8b1aca164b36f91680101a0bf34e12e935ceb4ab4f149c725bf0e5046e] (#snap) ### 2026-11-10T22:03:32Z — next (quick stash: bajan-0ts closed, board idle)
+  Format: 1
+  Repo: bajan (~/para/areas/dev/gh/charly/bajan), branch main @ 990adce, pushed (origin sync, clean tree).
+  Session: 01a1c761-4ec2-77b8-804d-9d21a7ecd16d. Previous entry: 4043e508fe61c28fd6e0377efaf0207b5a5af23ee06ccbdf49825587539c0ad4 (same task/session; HEAD advanced by the whisper-notes commit 990adce after that snap).
+  Task: bajan-0ts — openspec 1.x strict validation. CLOSED + pushed.
+  Objective reached: corpus passes openspec validate --all --strict --no-interactive 8/8 exit 0 under global 1.15.0 AND npx 1.17.0. Fix: jev change delta spec.md split (4 >500-char requirements → 10 one-behavior requirements, 14 scenarios verbatim, no normative change); preamble dropped (carried in proposal.md; framing line added to design.md); ci.yml openspec gate now --strict --no-interactive. Commits 109e986 (fix), 6e00f6d (beads close), 990adce (whisper snap).
+  Phase: complete — nothing in flight.
+  Ticket ownership: bajan-0ts closed (owned by this session). Open board: bajan-sbs = HUMAN gate (approve/reject add-optional-jev-verification proposal) → unblocks bajan-4hv (implement; its apply stage will author the 14 pending contract TOMLs — ah check --changes jev currently 14 no-toml, pre-existing/expected).
+  Exact next action: /renew → user decision on bajan-sbs; no autonomous work queued.
+  Constraints: Jev delta edits were mechanical/lint-only — bajan-sbs review is untouched by them. Global openspec 1.15.0; ticket acceptance #2 (keep 0.19.0) moot.
+  Validation: validate --all --strict = 8/8 (1.15.0 + 1.17.0); ah check 0 findings; lefthook pre-commit passed; pushed.
+  Blockers: none. Unknowns: none. (supersedes 4043e508fe61c28fd6e0377efaf0207b5a5af23ee06ccbdf49825587539c0ad4)
+- 2026-11-11T12:45:10Z [id:cb684ec4f814c919faadcd77ec5a2e56fa696438604d5721a5c222bd4183fc28] (#resume-bajan-w17) ### 2026-11-10 — resume bajan-w17 (3 approved proposals + tickets filed; pushes pending)
+  
+  Format: 1
+  Repo: bajan (~/para/areas/dev/gh/charly/bajan), branch main @ 68685e1, 8 UNPUSHED commits (9821c99,9d8b956,75cb299 proposals; 277ccbf,be0c8e8,2ce7ff8 Ro5 fixes; 70773e5 approvals+tickets; 68685e1 issue-review remediation). Pinky repo (~/para/areas/dev/gh/ak/pinky) also has 2 unpushed: 441b2bc bajan-structure dossier, 7b0c40c Ro5 corrections (just audit exit 0).
+  Session: 01a1c785-7811-77b8-804d-9d22d8d12347. Previous entry: none (new task arc; prior session's dc4d0d8b snapshot was bajan-0ts, unrelated).
+  
+  Task: proposal pipeline arc COMPLETE this session — investigated pinky ledger + corpus for bajan-structure topics, filed pinky dossier (topics/bajan-structure.org, Ro5-corrected), created 3 openspec proposals, Rule-of-5 reviewed them (TypeSafe-verified CORR-001 @0.91 → redesigned evidence-check model), applied all fixes, operator APPROVED all three 2026-11-10, filed tickets bajan-w17 (P2, blocks bajan-4hv), bajan-alb (P3), bajan-5ux (P3). Issue-review remediation done: labels afk+complexity:l, metadata.files as JSON arrays, base_commit anchored @70773e5, acceptance_criteria + anti-goals on all tickets; bajan-4hv re-anchored.
+  
+  Phase: complete — nothing in flight.
+  Exact next action: (1) operator decision: push both repos (explicit authorization required; bajan 8 + pinky 2 commits). (2) Fresh session claims bajan-w17 — fully self-describing: openspec/changes/add-deterministic-shape-rejection/tasks.md is TDD-ordered; BINDING eval gate: fresh `bajan eval claims` on gold-fi4e@v1, precision>=0.9, recall>=0.884 zero golden drops, hedge>=0.929; rules dropping golden claims are removed, not tuned. (3) HITL: bajan-sbs (Jev approval) still operator-only; bajan-4hv double-gated on sbs + w17.
+  
+  Constraints: spec-first apply (specodelic edit + deriving property + TOML same commit; spk lint/ah check/dont check green); ah --changes no-toml counts 5/6/7 are expected pre-apply; cache stores post-pass output (deny-set changes forward-only); coverage relevance = ALL persisted declarations; evidence resolution = writing command `bajan evidence check`, check records append-only, read commands never write (qt_readonly). Gotcha: bd --set-metadata stores STRINGS — use --metadata '{json}' for arrays.
+  
+  Validation: openspec validate --all --strict 11/11; ah check 0 findings; bd ready 4 claimable, no cycles; tracked export fresh; lefthook green throughout (pretender 120 advisories pre-existing, 0 new).
+  Blockers: none technical. Unknowns: none.
+  Conditional refs: proposals at openspec/changes/{add-deterministic-shape-rejection,add-query-coverage-evidence,add-evidence-references}/; pinky ~/para/areas/dev/gh/ak/pinky/ledger/topics/bajan-structure.org; evals/results.md (first scored row + segmentation-bottleneck diagnosis).
+- 2026-11-11T13:20:04Z [id:a6849da0f4e4b5e94a295cd627680d064773cb850a237df85533128f57cad5c5] (#resume-bajan-5ux) ### 2026-11-11 — resume bajan-5ux (TDD-RO5U ticket 2 of 3; w17 closed)
+  
+  Format: 1
+  Repo: bajan (~/para/areas/dev/gh/charly/bajan), branch main @ 09a8414 — tree carries w17 closure artifacts uncommitted (.wai ledger+review, .beads export, .whisper notes); commit them first. bajan is 10 commits ahead of origin — PUSH STILL NEEDS OPERATOR AUTHORIZATION.
+  Session: current pi session (2026-11-11). Previous entry: cb684ec4f814c919faadcd77ec5a2e56fa696438604d5721a5c222bd4183fc28 (resume-bajan-w17 — that arc COMPLETE, ticket closed).
+  
+  Task: bajan-5ux — Implement add-evidence-references (resolvable evidence refs + check command). Claim it fresh (bd update bajan-5ux --claim). Fully self-describing: openspec/changes/add-evidence-references/tasks.md is TDD-ordered (55 lines); proposal constraint vocabulary: evidence resolution = writing command 'bajan evidence check', check records append-only, read commands never write (qt_readonly); coverage relevance = ALL persisted declarations.
+  
+  Pipeline per repo convention (tdd-ro5u): claim → spec-first apply (specodelic edit + deriving property + contract TOML SAME commit; spk lint / ah check / dont check green) → red→green per task → gates (just test, clippy -D, fmt, spk lint, ah check, dont check; pre-push: ah check --run-tests, just test-full) → eval/results only if the change demands it → RO5U review pass on the diff (artifact in .wai/projects/bajan/reviews/, findings CORR/EDGE/CLAR fixed or deferred WITH reason) → quality ledger in .wai/projects/bajan/research/ → close ticket, bd export, commit. Push only with operator authorization.
+  
+  State (this session): bajan-w17 CLOSED (shape rejection live: det-0.1.0+shape1, eval gate PASS 0.916/0.884/0.929, zero golden drops; commits bfb742e + 09a8414). Board after w17: bajan-5ux, bajan-alb (P3, standalone), bajan-sbs (P3 HITL operator-only), bajan-4hv (blocked on sbs+w17 — sbs remains the gate).
+  
+  Gotchas: bd --set-metadata stores STRINGS — use --metadata '{json}' for arrays; contract TOML cargo filters = real test-path substrings (bare unique fn names work); lefthook pre-commit runs plain ah check + spec-drift-gate (red tests CAN share the spec commit); pre-push runs ah check --run-tests + spk lint; python sim pre-port of deny-set/matcher rules validated zero golden drops before rust port (repeat that trick for eval-gated rules); .whisper/branches/main/notes.md is git-tracked — commit after turu append.
+  
+  Validation: just test-full green; ah check --run-tests 19 passed 0 findings; RO5U w17 review artifact + quality ledger written (review: GOOD, 0 critical, OBS-003 deferred).
+  
+  Next: commit closure artifacts → fresh session claims bajan-5ux (ticket 2) → then bajan-alb (ticket 3) → HITL: bajan-sbs stays operator-only.
+  Unknowns: none.
