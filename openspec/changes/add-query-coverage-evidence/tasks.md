@@ -7,14 +7,14 @@ not start until the proposal is approved.
 
 ## 1. Spec deltas (normative specodelic edits)
 
-- [ ] 1.1 `specs/ingestion-contract.md`: add `ic_coverage_declaration`
+- [x] 1.1 `specs/ingestion-contract.md`: add `ic_coverage_declaration`
       constraint + deriving property (declared stable-id set per accepted
       batch import, bounded per design D1, immutable on run completion)
-- [ ] 1.2 `specs/query-tools.md`: add `qt_coverage_status` constraint +
+- [x] 1.2 `specs/query-tools.md`: add `qt_coverage_status` constraint +
       deriving property (coverage-complete / coverage-partial with
       declared+persisted counts; zero-hit under partial carries the
       marker, never bare `not-found`; budget-exhausted outranks coverage)
-- [ ] 1.3 `spk lint specs`, `ah check`, `dont check` green; contract
+- [x] 1.3 `spk lint specs`, `ah check`, `dont check` green; contract
       TOMLs for both deriving properties
 
 ## 2. Implementation (red → green)

@@ -54,6 +54,7 @@ what's true.
 |----|------|------|-----------|-----------|
 | qt_lineage_traceable | invariant | every claim returned by a read command resolves, at query time, through its `derived_from` edges to at least one persisted supporting episode; a claim whose lineage walk reaches no episode is invisible to the query surface (deletion by lineage walk per `gm_lineage_survives`) | [[query.tools]] | |
 | qt_bounded_traversal | invariant | every read command executes under a bounded traversal budget — a maximum walked node count and depth — and reports a typed exhausted-budget marker when results are truncated; the stopping rule is honest: `not-found` is reported when the budget completed without a match, `budget-exhausted` when it stopped early — never a silent partial answer | [[query.tools]] | |
+| qt_coverage_status | invariant | a read that returns zero hits reports corpus coverage computed over every coverage declaration persisted in the store — no scoping, no staleness window: `coverage-partial` with declared and persisted counts when some declared episodes are not persisted, honest `not-found` with no marker when the corpus is coverage-complete or no declaration exists; budget exhaustion outranks coverage — a truncated scan never claims `coverage-partial`; reads with hits carry no marker and their results are otherwise unchanged | [[query.tools]] |
 | qt_ranking | invariant | multi-hit read results order by the supporting episodes' metadata reachable through lineage — authority tier first, then data cutoff recency; when a comparably-relevant higher-authority source is stale (beyond the staleness window) it demotes below fresh lower-authority hits; every hit surfaces its data cutoff, and the best-scoring hit carries a staleness warning when its cutoff is stale | [[query.tools]] | |
 | qt_scope_filtering | invariant | a read command scoped to a workspace tag set returns only claims whose resolved tag projection (the union over its lineage edges per `ex_tag_inheritance`) intersects the requested scope; a claim outside the requested scope is either excluded or labelled with its own scope in the result — never silently blended | [[query.tools]] | |
 | qt_readonly | invariant | read commands never mutate the graph — no state transition, no audit record, no derived-from edge is written by any query; a read against a claim set with active and invalid claims returns the status of every hit verbatim, never silently dropping `invalid` claims from results | [[query.tools]] | |
@@ -84,6 +85,7 @@ what's true.
 |----|------|--------------|-----------|-----------|
 | p_lineage_traceable | unit | [[query.tools.qt_lineage_traceable]] | seeded graphs mixing fully-lineaged claims, lineage-broken claims, and multi-source claims | every returned claim's walk reaches a persisted episode; lineage-broken claims never appear in any result; multi-source claims return all their sources |
 | p_bounded_traversal | unit | [[query.tools.qt_bounded_traversal]] | queries over graphs sized to complete and to overflow the budget at varied depths | runs that finish within budget report `complete` and full results; runs that hit the bound stop at the same node count deterministically and report `budget-exhausted` with the truncation marker; a no-match completed run reports `not-found` |
+| p_coverage_status | unit | [[query.tools.qt_coverage_status]] | zero-hit and hit reads over stores mixing complete corpora, partial declarations, declaration-free stores, and budget-exhausted walks | the coverage marker appears exactly on zero-hit completed reads over partially covered corpora, with exact declared and persisted counts; coverage-complete and declaration-free stores answer bare `not-found`; budget-exhausted and hit-carrying reads never carry it |
 | p_ranking | unit | [[query.tools.qt_ranking]] | hit sets mixing authority tiers, cutoffs spanning the staleness window, and equal-rank ties | results order authority-first then recency; a stale high-authority hit demotes below a fresh lower-authority hit; every hit carries its cutoff and the top hit carries the stale warning when applicable |
 | p_scope_filtering | unit | [[query.tools.qt_scope_filtering]] | claims with overlapping, disjoint, and unioned tag projections against varied requested scopes | results contain exactly the claims whose projected tags intersect the scope; out-of-scope claims appear only labelled, never unlabeled |
 | p_readonly | unit | [[query.tools.qt_readonly]] | read commands executed against stores pre-seeded with claims in every status plus staged invalidation proposals | the store is byte-identical before and after any sequence of read commands; results include `invalid` hits with their status rather than omitting them |
@@ -108,6 +110,12 @@ Every property row SHALL be verified by exactly one dedicated scenario;
 - **WHEN** queries over graphs sized to complete and to overflow the budget at varied depths
 - **THEN** runs that finish within budget report `complete` and full results; runs that hit the bound stop at the same node count deterministically and report `budget-exhausted` with the truncation marker; a no-match completed run reports `not-found`
 - **VERIFIES** [[query.tools.p_bounded_traversal]]
+
+#### Scenario: p_coverage_status
+
+- **WHEN** zero-hit and hit reads over stores mixing complete corpora, partial declarations, declaration-free stores, and budget-exhausted walks
+- **THEN** the coverage marker appears exactly on zero-hit completed reads over partially covered corpora, with exact declared and persisted counts; coverage-complete and declaration-free stores answer bare `not-found`; budget-exhausted and hit-carrying reads never carry it
+- **VERIFIES** [[query.tools.p_coverage_status]]
 
 #### Scenario: p_ranking
 

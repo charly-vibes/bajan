@@ -1,0 +1,15 @@
+id = "p-coverage-declaration"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "partial_run_declares_its_full_id_set", timeout_seconds = 120 },
+    { flags = "declaration_rerun_converges_without_new_rows", timeout_seconds = 120 },
+    { flags = "single_episode_stream_declares_one_id", timeout_seconds = 120 },
+    { flags = "declared_id_set_verbatim_up_to_bound_digest_beyond", timeout_seconds = 120 },
+    { flags = "p_coverage_declaration", timeout_seconds = 120 },
+]

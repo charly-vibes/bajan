@@ -1,0 +1,15 @@
+id = "p-coverage-status"
+description = ""
+archetype = "SA"
+status = "active"
+superseded_by = ""
+authored_with = "0.12.0"
+
+[tests]
+cargo = [
+    { flags = "coverage_e2e_declare5_persist3_then_complete", timeout_seconds = 120 },
+    { flags = "no_declaration_store_reports_no_marker", timeout_seconds = 120 },
+    { flags = "budget_exhaustion_outranks_coverage", timeout_seconds = 120 },
+    { flags = "hit_results_carry_no_marker", timeout_seconds = 120 },
+    { flags = "p_coverage_status", timeout_seconds = 120 },
+]
