@@ -229,3 +229,24 @@
   Constraints: openspec change add-query-coverage-evidence NOT archived (operator call, openspec-archive skill). gotcha: dont CLI takes no 'grounded' arg — bare 'dont check'. budget-1-with-one-claim COMPLETES; budget 0 is the exhaust shape for property tests.
   Validation: ah check 0; ah check --run-tests 203 passed 0 findings; just test-full green; clippy -D 0; fmt clean; spk lint 7 files 0; openspec validate 11/11 strict; dont check green; pre-push espectacular green at push.
   Blockers: none. Unknowns: none.
+- 2026-11-11T15:44:15Z [id:47688bb0d98d15ae2356cc1fe2f2cd38df37ca62bf75481a3a1d156e3f0b4336] (#snap) ### $(date -u +%Y-%m-%dT%H:%M:%SZ) — next (quick stash: alb shipped+archived, board idle)
+  
+  Format: 1
+  Repo: bajan (~/para/areas/dev/gh/charly/bajan), branch main @ 9a53a65 — pushed (origin sync). Whisper notes.md carries an uncommitted append (precedented carry-forward).
+  Session: pi session 2026-11-11 (renew -> alb -> archive -> next). Previous entry: 23eae2a6afb0ba178fabf4fb794619e6ec2168ead76caa9fe80d27dbbc4c11af (same session snap; this one adds the archive outcome).
+  Task: none in flight — bajan-alb CLOSED+pushed+RO5U GOOD, change add-query-coverage-evidence ARCHIVED as changes/archive/2026-11-11-add-query-coverage-evidence (task 3.2 checkbox ticked to reach 10/10 before archive; mirrors regenerated from corpus after archive — gotcha: openspec archive injects a prose requirement into the deployed spec, which breaks ah check with 6 no-toml findings + spec-drift-gate stale-stage; the fix is python3 tools/deploy_specs.py to restore the canonical property-coverage-mirror shape, commit 9a53a65).
+  Phase: complete — nothing in flight.
+  Exact next action: fresh session /renew -> bd ready. Board: bajan-bcu (P3 follow-up: dump/restore must carry coverage_declarations tables, RO5U EDGE-001), bajan-sbs (HITL operator-only: approve/reject add-optional-jev-verification), bajan-4hv (blocked on sbs alone). No autonomous work queued.
+  Constraints: no push without operator say-so (bajan-bcu work itself is fine to claim; push at close needs authorization per session rules).
+  Validation: ah check 0; ah check --run-tests 203 passed 0 findings (pre-push at b4e4970); openspec validate 10/10 strict; just test-full green; clippy/fmt/spk lint/dont green.
+  Blockers: none. Unknowns: none.
+- 2026-11-11T16:50:32Z [id:885e0bcd4323d13e9002d1f7062bfbb304d26cf7b4cf16566765f2b62c4034dc] (#snap) ### 2026-11-11T16:50:32Z — snap (bajan-bcu done, committed local; push pending operator say-so)
+  Format: 1
+  Repo: bajan (~/para/areas/dev/gh/charly/bajan), branch main @ 9789660 — LOCAL ONLY, not pushed (operator constraint from 47688bb0: push at close needs authorization).
+  Session: pi session 2026-11-11 (renew -> orchestrate bcu). Previous entry: none this session (timeline continues 47688bb0, another session — not superseded).
+  Task: bajan-bcu — carry coverage_declarations/coverage_declared_ids through dump/restore. CLOSED (local).
+  Phase: complete — nothing in flight.
+  State: RO5U EDGE-001 fix. Red-first coverage_declarations_survive_dump_recreate (rebuilt store reported (0,0) vs (5,3)); green via raw row carry on ExtractionDump (DumpedCoverageDeclaration struct + id tuples, serde(default) keeps old dumps loadable), dump reads ORDER BY rowid, restore INSERT OR IGNORE (D2 convergence; tombstone precedent bajan-aod). Key insight: declared-but-unpersisted ids have no episode row to re-enter and singles re-persist WITHOUT declaring (persist_stream is the only declaration writer) — the extraction dump is their only carrier. Commits 3c341d0 (fix), 9789660 (beads close).
+  Exact next action: operator push authorization -> git push; board: bajan-sbs (HITL, operator-only) remains, bajan-4hv blocked on it. No autonomous work queued.
+  Validation: just test calibrated green; test-full 356 passed 0 failed; ah check 0 + --run-tests 19 passed; clippy -D clean; fmt clean; spk lint 7 files 0; dont check grounded; lefthook pre-commit passed.
+  Blockers: push authorization only. Unknowns: none.
