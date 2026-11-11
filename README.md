@@ -12,9 +12,12 @@ Part of the charly-vibes suite; emits suite-envelope JSON on every command.
 
 ## Status
 
-**v0.1.0 — early release.** The deterministic pipeline is spec-complete and
-CI-gated (specodelic lint, contract tests, property tests). The LLM
-extraction path is smoke-tested against real providers at book scale but
+**v0.3.0 — three RO5U-reviewed features.** The deterministic pipeline is
+spec-complete and CI-gated (specodelic lint, strict openspec validation,
+executing contract tests, property tests). Extraction runs a deterministic
+shape post-pass, zero-hit queries report corpus coverage, and
+`bajan evidence check` derives resolvable provenance per claim. The LLM
+extraction path is burn-in tested against one provider at book scale but
 young — see [Known limitations](#known-limitations) before relying on it.
 
 ## Install
