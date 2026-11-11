@@ -218,3 +218,14 @@
   Validation: just test-full green; ah check --run-tests 193 passed 0 findings; clippy --all-targets 0; fmt clean; spk lint 7 files 0 issues; dont check grounded; spec-drift-gate green at every commit.
   
   Blockers: none technical. Unknowns: none.
+- 2026-11-11T15:38:00Z [id:23eae2a6afb0ba178fabf4fb794619e6ec2168ead76caa9fe80d27dbbc4c11af] (#snap) ### 2026-11-11T15:38:00Z — snap (bajan-alb done, pushed; TDD-RO5U trio complete)
+  
+  Format: 1
+  Repo: bajan (~/para/areas/dev/gh/charly/bajan), branch main @ b4e4970 — pushed (origin sync, clean tree).
+  Session: pi session 2026-11-11 (renew + alb implementation). Previous entry: b09abed700f10488644457cc7faea12acc1918350098a1c990ce26735fd5a1e4 (orchestration snap — its next actions both executed: 18 commits pushed on operator authorization; alb implemented and closed).
+  Task: bajan-alb — add-query-coverage-evidence CLOSED with full pipeline. Shipped 415d99f (spec-first apply: ic_coverage_declaration + p_coverage_declaration on ingestion.contract, qt_coverage_status + p_coverage_status on query.tools, mirrors redeployed, contract TOMLs, red test file per red-shares-spec-commit), 910f60c (green: coverage_declarations/coverage_declared_ids tables, declare_coverage keyed by FNV-1a declared-set digest — D2 immutability, reruns converge; DECLARED_ID_BOUND=10k verbatim, tail counts unpersisted; persist_stream declares at acceptance before outcomes; SearchResult.ingest_coverage zero-hit marker, D4 budget-outranks; CLI text line), f4447c3 (tidy: pure coverage_marker helper + shape matrix), b4e4970 (beads close + RO5U GOOD 0 critical + ledger; EDGE-001 dump/restore carry-through deferred -> NEW bajan-bcu P3).
+  Phase: complete — nothing in flight.
+  Exact next action: bd ready — board: bajan-bcu (P3 follow-up, dump/restore declarations), bajan-sbs (HITL operator-only Jev approval), bajan-4hv (blocked on sbs alone now). No pending handoff.
+  Constraints: openspec change add-query-coverage-evidence NOT archived (operator call, openspec-archive skill). gotcha: dont CLI takes no 'grounded' arg — bare 'dont check'. budget-1-with-one-claim COMPLETES; budget 0 is the exhaust shape for property tests.
+  Validation: ah check 0; ah check --run-tests 203 passed 0 findings; just test-full green; clippy -D 0; fmt clean; spk lint 7 files 0; openspec validate 11/11 strict; dont check green; pre-push espectacular green at push.
+  Blockers: none. Unknowns: none.
