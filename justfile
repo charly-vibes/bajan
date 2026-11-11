@@ -46,7 +46,13 @@ test-one name:
 test:
     #!/usr/bin/env bash
     set -uo pipefail
-    if [ ! -d .testaruda ]; then
+    # Guard on a USABLE store, not the dir: `wai status` (the CI smoke
+    # step, run before this recipe) leaves an empty .testaruda with a
+    # zero-byte store.db as its metrics-plugin side effect, which fooled
+    # the old [ ! -d .testaruda ] guard into skipping init and made exec
+    # die with "Store has not been initialized". A missing or zero-byte
+    # store.db re-inits; init heals an empty dir in place.
+    if [ ! -s .testaruda/store.db ]; then
       testaruda init || { echo "❌ testaruda init failed" >&2; exit 1; }
     fi
     code=0
