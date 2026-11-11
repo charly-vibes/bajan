@@ -201,3 +201,20 @@
   
   Next: fresh session claims bajan-alb (ticket 3) → closes it → board then: bajan-sbs (HITL operator-only), bajan-4hv (blocked on sbs only once alb done? NO — 4hv depends on sbs+w17; sbs is the only remaining gate, unrelated to alb).
   Unknowns: none.
+- 2026-11-11T14:38:06Z [id:b09abed700f10488644457cc7faea12acc1918350098a1c990ce26735fd5a1e4] (#snap) ### 2026-11-11T14:37:20Z — snap (quick stash: orchestration session, w17+5ux closed, 17 unpushed)
+  
+  Format: 1
+  Repo: bajan (~/para/areas/dev/gh/charly/bajan), branch main @ c73067c — tree clean, 17 commits AHEAD of origin, unpushed (push needs explicit operator authorization).
+  Session: 01a1caa6-0195-77b8-804d-9d2526c46fb8.
+  Task: TDD-RO5U orchestration session — bajan-w17 (shape rejection) and bajan-5ux (evidence refs + check command) both CLOSED with full pipeline; bajan-alb oriented, turnkey handoff written, NOT started (context-rule stop).
+  Phase: complete — nothing in flight.
+  
+  State: w17 shipped bfb742e (spec-first apply + impl + tests), 09a8414 (eval gate PASS — precision 0.916 >= 0.9, recall 0.884 zero golden drops, hedge 0.929, det-0.1.0+shape1 row in evals/results.md), 7754f38 (eval post-pass harness replay), 51ac050 (RO5U GOOD 0 critical + ledger). 5ux shipped 26249a8 (4 graph-model constraints + evidence_refs/evidence_checks tables + tri-state derive_resolution + bajan evidence check command + 9 tests), a1af4fe (README tidy), 41ba593 (RO5U GOOD 0 critical + ledger). Deferred-with-reason findings: w17 OBS-003 (report-level shape counter), 5ux EDGE-001 (multi-source refs record first lineage edge, D1-pinned).
+  
+  Exact next action: (1) operator decision — push the 17 commits (authorization still pending). (2) Fresh session /renew resumes resume-bajan-alb (handoff ad5437a0…) — claim bajan-alb, same pipeline; tasks.md + design D1-D5 digest + module targets are in that handoff. (3) HITL: bajan-sbs stays operator-only; bajan-4hv gates on sbs alone now (w17 done).
+  
+  Constraints/authorization limits: no push without explicit operator say-so; pipeline convention per ticket is spec-first apply (specodelic edit + deriving property + contract TOML same commit), red→green, gates (just test, clippy -D, fmt, spk lint, ah check; pre-push ah check --run-tests + just test-full), RO5U artifact + quality ledger, bd close + export (git add -f .beads).
+  
+  Validation: just test-full green; ah check --run-tests 193 passed 0 findings; clippy --all-targets 0; fmt clean; spk lint 7 files 0 issues; dont check grounded; spec-drift-gate green at every commit.
+  
+  Blockers: none technical. Unknowns: none.
