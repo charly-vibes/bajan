@@ -414,3 +414,58 @@ proptest! {
         }
     }
 }
+
+// ---- dump-recreate preservation (bajan-bcu, RO5U EDGE-001): the
+// rebuild pair re-persists episodes via the single path (no declaration
+// writer — persist_stream is the only one), and declared-but-unpersisted
+// ids have no episode row to re-enter, so the coverage tables must ride
+// the extraction dump verbatim. Without them a rebuilt partially-
+// declared store reads coverage-complete on zero-hit reads — the exact
+// dishonesty add-query-coverage-evidence removes. ----
+#[test]
+fn coverage_declarations_survive_dump_recreate() {
+    let db = SqliteStore::open_in_memory().expect("open");
+    partial_run(&db); // declare 5, persist 3 (two malformed, declared-only)
+    let before = db.ingest_coverage().expect("coverage read");
+    assert_eq!(before, (5, 3));
+
+    // Canonical dump-recreate pair (gm_embedded_store): stream dump +
+    // extraction dump. The stream dump carries only PERSISTED episodes;
+    // singles re-persist WITHOUT declaring — the extraction dump is the
+    // only carrier for the declared-but-unpersisted ids.
+    let stream = bajan::ingest::dump_stream(&db).expect("stream dump");
+    let extraction = db.dump_extraction_output().expect("extraction dump");
+    let fresh = SqliteStore::open_in_memory().expect("open fresh");
+    for record in &stream {
+        bajan::ingest::persist(&fresh, record).expect("re-persist");
+    }
+    fresh
+        .restore_extraction_output(&extraction)
+        .expect("restore");
+
+    // The rebuilt store reports the same coverage: same declarations,
+    // same declared ids, same (declared, persisted) pair.
+    assert_eq!(
+        fresh.ingest_coverage().expect("fresh coverage"),
+        before,
+        "dump-recreate drops the coverage declaration"
+    );
+    assert_eq!(
+        fresh.coverage_declarations().expect("fresh declarations"),
+        db.coverage_declarations().expect("declarations")
+    );
+    assert_eq!(
+        fresh.coverage_declared_ids().expect("fresh ids"),
+        db.coverage_declared_ids().expect("ids")
+    );
+
+    // The zero-hit marker survives the rebuild: the rebuilt partial
+    // store does not read as coverage-complete (qt_coverage_status).
+    let empty = query::search(&fresh, MISSING, 16).expect("search");
+    assert!(empty.hits.is_empty());
+    let cov = empty
+        .ingest_coverage
+        .as_ref()
+        .expect("rebuilt partial corpus still carries the marker");
+    assert_eq!((cov.declared, cov.persisted), (5, 3));
+}

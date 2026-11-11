@@ -415,6 +415,32 @@ pub struct ExtractionDump {
     /// (`ic_deleted_recreate` — no automated path clears a tombstone).
     #[serde(default)]
     pub episode_tombstones: Vec<EpisodeTombstone>,
+    /// Coverage-declaration run rows (`ic_coverage_declaration`), row
+    /// order preserved: without these a dump-recreate drops every
+    /// declaration and a rebuilt partially-declared store reads
+    /// coverage-complete on zero-hit reads (`qt_coverage_status`) — the
+    /// exact dishonesty the declaration exists to prevent. The stream
+    /// dump carries only persisted episodes and singles re-persist
+    /// without declaring (`persist_stream` is the only declaration
+    /// writer), so declared-but-unpersisted ids ride ONLY here.
+    #[serde(default)]
+    pub coverage_declarations: Vec<DumpedCoverageDeclaration>,
+    /// Verbatim declared ids (`ic_coverage_declaration`, D1-bounded),
+    /// row order preserved: the declared set the rebuilt store's
+    /// coverage status is computed over.
+    #[serde(default)]
+    pub coverage_declared_ids: Vec<(String, String)>,
+}
+
+/// One persisted coverage-declaration run row in dump form
+/// (`ic_coverage_declaration`): the declared-set digest key, the full
+/// declared count, and the acceptance-time day — raw carry, so a
+/// rebuild reproduces the declaration verbatim (`gm_embedded_store`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DumpedCoverageDeclaration {
+    pub run_id: String,
+    pub declared_count: usize,
+    pub created_at_days: i64,
 }
 
 /// One persisted edge in dump form: endpoints are claim keys, the label
@@ -1377,6 +1403,8 @@ impl SqliteStore {
         let contradiction_audits = self.contradiction_audits()?;
         let er_aliases = self.er_aliases()?;
         let episode_tombstones = self.episode_tombstones()?;
+        let coverage_declarations = self.coverage_declaration_rows()?;
+        let coverage_declared_ids = self.coverage_declared_id_rows()?;
         Ok(ExtractionDump {
             claims,
             extracted,
@@ -1397,7 +1425,47 @@ impl SqliteStore {
             contradiction_proposals,
             contradiction_audits,
             episode_tombstones,
+            coverage_declarations,
+            coverage_declared_ids,
         })
+    }
+
+    /// Raw coverage-declaration run rows, insertion row order (the dump
+    /// surface; bajan-bcu — declared-but-unpersisted ids have no episode
+    /// row to re-enter, so the rebuild pair can only carry them here).
+    fn coverage_declaration_rows(&self) -> Result<Vec<DumpedCoverageDeclaration>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT run_id, declared_count, created_at_days \
+                      FROM coverage_declarations ORDER BY rowid",
+            )
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push(DumpedCoverageDeclaration {
+                run_id: row.get(0).map_err(sql_err)?,
+                declared_count: row.get::<_, i64>(1).map_err(sql_err)? as usize,
+                created_at_days: row.get(2).map_err(sql_err)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Raw verbatim declared-id rows, insertion row order (the dump
+    /// surface, D1-bounded like the writer).
+    fn coverage_declared_id_rows(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT run_id, stable_id FROM coverage_declared_ids ORDER BY rowid")
+            .map_err(sql_err)?;
+        let mut rows = stmt.query([]).map_err(sql_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            out.push((row.get(0).map_err(sql_err)?, row.get(1).map_err(sql_err)?));
+        }
+        Ok(out)
     }
 
     fn extracted_pairs(&self) -> Result<Vec<(String, String)>, StoreError> {
@@ -1564,6 +1632,31 @@ impl SqliteStore {
                     "INSERT OR IGNORE INTO episode_tombstones (episode_id, deleted_at) \
                      VALUES (?1, ?2)",
                     params![tombstone.episode_id, tombstone.deleted_at as i64],
+                )
+                .map_err(sql_err)?;
+        }
+        // Coverage declarations restore RAW (INSERT OR IGNORE): whether
+        // a declared set exists is REBUILD state, not write-path
+        // semantics — the digest key and INSERT OR IGNORE already give
+        // D2 convergence, so a dump-recreate reproduces the declaration
+        // exactly and never re-litigates it (`ic_coverage_declaration`).
+        // Without the carry, a rebuilt partially-declared store reads
+        // coverage-complete on zero-hit reads (`qt_coverage_status`).
+        for row in &dump.coverage_declarations {
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO coverage_declarations \
+                     (run_id, declared_count, created_at_days) VALUES (?1, ?2, ?3)",
+                    params![row.run_id, row.declared_count as i64, row.created_at_days],
+                )
+                .map_err(sql_err)?;
+        }
+        for (run_id, stable_id) in &dump.coverage_declared_ids {
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO coverage_declared_ids (run_id, stable_id) \
+                     VALUES (?1, ?2)",
+                    params![run_id, stable_id],
                 )
                 .map_err(sql_err)?;
         }
