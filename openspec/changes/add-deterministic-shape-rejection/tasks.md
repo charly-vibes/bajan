@@ -28,13 +28,13 @@ approved.
 
 ## 3. Eval gate (acceptance per design.md D3)
 
-- [ ] 3.1 Re-run `bajan eval claims` on `gold-fi4e@v1`; append results row
+- [x] 3.1 Re-run `bajan eval claims` on `gold-fi4e@v1`; append results row
       per `ev_results_checked_in`; acceptance: precision ≥ 0.9, recall
       ≥ 0.884 with zero matched-golden drops, hedge ≥ 0.929
-- [ ] 3.2 Any shape rule that drops a matched golden claim is removed
+- [x] 3.2 Any shape rule that drops a matched golden claim is removed
       before landing (rule set is bought by the gate)
 
 ## 4. Tidy
 
-- [ ] 4.1 Separate tidy commit: matcher table-driven, clippy + fmt clean,
+- [x] 4.1 Separate tidy commit: matcher table-driven, clippy + fmt clean,
       `just test` green

@@ -834,6 +834,14 @@ pub fn non_claim_shape(text: &str, episode_text: &str) -> Option<ShapeRule> {
             }
         }
     }
+    // (b2) Heading-glued lead: a title phrase opening directly into a
+    // sentence with no boundary — a converter heading flattened into the
+    // prose stream, so no `#` anchor survives to align against (flat
+    // conversion loses the `ex_deterministic_structure` markers). The
+    // glued fragment leads with the title, not an assertion.
+    if heading_glued_lead(&collapsed) {
+        return Some(ShapeRule::HeadingFragment);
+    }
     // (c) Navigation/list boilerplate: breadcrumb chains (` > `), menu
     // rows (`|`-separated), bare list markers, or marker-led fragments
     // that assert nothing (no sentence punctuation, at most a handful of
@@ -851,7 +859,99 @@ pub fn non_claim_shape(text: &str, episode_text: &str) -> Option<ShapeRule> {
             return Some(ShapeRule::NavBoilerplate);
         }
     }
+    // (c2) Document-structure navigation: reading-order references
+    // ("part 2", "chapters 3 and 4", "the following chapter") are
+    // guide-talk about the text, not assertions about the world.
+    if is_structure_reference(&collapsed) {
+        return Some(ShapeRule::NavBoilerplate);
+    }
     None
+}
+
+/// Words that end a title-case lead run (`ex_shape_rejection` rule b):
+/// articles, prepositions, conjunctions, and sentence-opening pronouns —
+/// a glued title never continues past them, and a legitimate sentence
+/// almost always does.
+const TITLE_RUN_STOPWORDS: [&str; 33] = [
+    "the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "with", "by", "we", "i", "you",
+    "they", "he", "she", "it", "not", "but", "if", "when", "once", "this", "that", "as", "at",
+    "is", "was", "there", "here", "am",
+];
+
+/// Reading-order nouns whose numeric reference marks guide-talk
+/// (`ex_shape_rejection` rule c).
+const STRUCTURE_NOUNS: [&str; 8] = [
+    "part",
+    "parts",
+    "chapter",
+    "chapters",
+    "section",
+    "sections",
+    "appendix",
+    "appendices",
+];
+
+/// Fully-capitalized word (at least two letters) — a title-run member.
+fn all_caps_word(word: &str) -> bool {
+    let letters: Vec<char> = word.chars().filter(|c| c.is_alphabetic()).collect();
+    letters.len() >= 2 && letters.iter().all(|c| c.is_uppercase())
+}
+
+/// Capitalized, non-stopword, all-lowercase after the first letter — a
+/// title-run member for the title-case lead path.
+fn title_word(word: &str) -> bool {
+    let letters: Vec<char> = word.chars().filter(|c| c.is_alphabetic()).collect();
+    if letters.is_empty() || TITLE_RUN_STOPWORDS.contains(&word.to_lowercase().as_str()) {
+        return false;
+    }
+    letters[0].is_uppercase() && letters[1..].iter().all(|c| c.is_lowercase())
+}
+
+/// After a title run of `run` words: the next word opens a sentence
+/// (capitalized) at a clean boundary (no trailing punctuation on the
+/// title's last word) — the missing-sentence-boundary signature.
+fn run_opens_sentence(words: &[&str], run: usize) -> bool {
+    run < words.len()
+        && words[run].chars().next().is_some_and(|c| c.is_uppercase())
+        && words[run - 1]
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_alphanumeric())
+}
+
+/// Heading-glued lead detection (`ex_shape_rejection` rule b): an
+/// ALL-CAPS title run (any length) or a two-word title-case phrase,
+/// either followed by a sentence-opening word at a clean boundary — or
+/// ending the text entirely (a bare title fragment).
+fn heading_glued_lead(collapsed: &str) -> bool {
+    let words: Vec<&str> = collapsed.split_whitespace().collect();
+    let mut run = 0;
+    while run < words.len() && all_caps_word(words[run]) {
+        run += 1;
+    }
+    if run >= 2 && (run == words.len() || run_opens_sentence(&words, run)) {
+        return true;
+    }
+    let mut run = 0;
+    while run < words.len().min(2) && title_word(words[run]) {
+        run += 1;
+    }
+    run == 2 && (run == words.len() || run_opens_sentence(&words, run))
+}
+
+/// Document-structure reference detection (`ex_shape_rejection` rule c):
+/// a reading-order noun with a numeric marker ("part 2", "chapters 3"),
+/// or a relational chapter mention ("the following chapter").
+fn is_structure_reference(collapsed: &str) -> bool {
+    let lower = collapsed.to_lowercase();
+    if lower.contains("following chapter") || lower.contains("next chapter") {
+        return true;
+    }
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    words.windows(2).any(|pair| {
+        STRUCTURE_NOUNS.contains(&pair[0])
+            && pair[1].chars().next().is_some_and(|c| c.is_ascii_digit())
+    })
 }
 
 pub fn run_extract_with(
@@ -1497,9 +1597,14 @@ mod tests {
             non_claim_shape("Installation Guide", body),
             Some(ShapeRule::HeadingFragment)
         );
-        // Same text with no heading anchor to align to stays prose.
+        // Same text with no heading anchor to align to stays prose — but
+        // only once it asserts something (a bare two-word title is itself
+        // a heading fragment per the refined rule set, task 3.2).
         assert_eq!(
-            non_claim_shape("Installation Guide", "Plain prose only."),
+            non_claim_shape(
+                "The installation guide covers setup steps.",
+                "Plain prose only."
+            ),
             None
         );
     }
@@ -1557,5 +1662,90 @@ mod tests {
         let serialized = serde_json::to_value(&reason).unwrap();
         assert_eq!(serialized["code"], "shape_filtered");
         assert_eq!(serialized["rule"], "interrogative_final");
+    }
+
+    // --- gate-refined rules (bajan-w17 task 3.2, bought by the eval gate)
+
+    #[test]
+    fn heading_glued_leads_match() {
+        // ALL-CAPS title flattened into the prose stream.
+        assert_eq!(
+            non_claim_shape(
+                "UNDERSTANDING THE FOUNDATION Not long ago, two acquaintances ran a business.",
+                "Body text."
+            ),
+            Some(ShapeRule::HeadingFragment)
+        );
+        // Title-case phrase + sentence-start pronoun at a clean boundary.
+        assert_eq!(
+            non_claim_shape(
+                "Income Statement The income statement shows revenues and expenses.",
+                "Body text."
+            ),
+            Some(ShapeRule::HeadingFragment)
+        );
+        assert_eq!(
+            non_claim_shape(
+                "Box Definitions We want to make finance as easy as possible.",
+                "Body text."
+            ),
+            Some(ShapeRule::HeadingFragment)
+        );
+        // A bare title with nothing after the run.
+        assert_eq!(
+            non_claim_shape("Income Statement", "Body text."),
+            Some(ShapeRule::HeadingFragment)
+        );
+    }
+
+    #[test]
+    fn structure_references_match_as_navigation() {
+        assert_eq!(
+            non_claim_shape("We explain the income statement in part 2.", "Body text."),
+            Some(ShapeRule::NavBoilerplate)
+        );
+        assert_eq!(
+            non_claim_shape("Part 3 takes up the balance sheet.", "Body text."),
+            Some(ShapeRule::NavBoilerplate)
+        );
+        assert_eq!(
+            non_claim_shape(
+                "We'll consider the three main reports in parts 2, 3, and 4 of the book.",
+                "Body text."
+            ),
+            Some(ShapeRule::NavBoilerplate)
+        );
+        assert_eq!(
+            non_claim_shape(
+                "In the following chapter we'll show you some specific examples.",
+                "Body text."
+            ),
+            Some(ShapeRule::NavBoilerplate)
+        );
+    }
+
+    #[test]
+    fn discourse_prose_is_never_shape_filtered() {
+        // Gate survivors: conversational glue and teaching meta are not in
+        // the deny set — conservative by design (D1); subtler judgment
+        // belongs to the reflection pass (`ex_reflection`), not this gate.
+        for prose in [
+            "Note that word: acquired.",
+            "But that's not what we're talking about here.",
+            "But how about you? Nobody gave you an exam in finance.",
+            "But now is the time.",
+            "Let's look at each one in turn.",
+            "You can probably see where we're going with this cautionary tale.",
+            "Please don't get the idea that we are impugning anybody's integrity.",
+            "Fundamentally, financial intelligence boils down to three distinct skill sets.",
+            "Their company seemed very successful—in fact, it was doubling its sales every year.",
+            "Big companies sometimes throw the word consolidated in front of those phrases.",
+        ] {
+            assert_eq!(
+                non_claim_shape(prose, "Body text."),
+                None,
+                "discourse prose must survive: {prose}"
+            );
+        }
     }
 }

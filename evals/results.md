@@ -15,6 +15,25 @@ append to the eval-claims table (columns match `data.results_row` from
 | date | corpus | extractor | precision | recall | hedge preservation | raw counts |
 |------|--------|-----------|-----------|--------|--------------------|------------|
 | 2026-11-04 | gold-fi4e@v1 | det-0.1.0 | 0.752 | 0.884 | 0.929 | emitted=101 matched=76 golden=86 content-miss=0 spurious=25 hedge-dropped=0 |
+| 2026-11-11 | gold-fi4e@v1 | det-0.1.0+shape1 | 0.916 | 0.884 | 0.929 | emitted=83 matched=76 golden=86 content-miss=0 spurious=7 hedge-dropped=0 |
+
+## Shape-rejection delta (bajan-w17, det-0.1.0+shape1)
+
+- Same recorded run manifest (`evals/fixtures/gold-fi4e-v1-run.json`,
+  extractor det-0.1.0) replayed through the deterministic shape post-pass
+  (`ex_shape_rejection`): 18 of 101 candidates shape-filtered
+  (8 interrogative/heading/nav + 10 heading-glued leads and
+  document-structure references the gate demanded), matched=76 and
+  hedge-dropped=0 unchanged — zero matched-golden drops, so the deny set
+  is bought by the gate (D3); no rule needed removal.
+- 7 spurious survive as discourse glue ("But now is the time.") —
+  conservatively out of the deny set per D1; subtler judgment belongs to
+  the reflection pass (`ex_reflection`) or human review, not this gate.
+- Rule extensions validated against matched candidates before landing:
+  heading-glued lead (ALL-CAPS title run or two-word title-case phrase
+  opening into a sentence at a clean boundary) and structure references
+  ("part 2", "parts 2, 3, and 4", "following chapter") — zero matched
+  drops, verified per-candidate before the gate run.
 
 First scored run (bajan-2k4 MUST gate): the deterministic extractor's 25
 spurious candidates are exactly the questions/headings/navigation lines
