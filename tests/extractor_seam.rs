@@ -292,13 +292,16 @@ fn deny_set_change_never_refilters_cached_or_staged_episodes() {
     // Pass two over the same run store: the cached episode is not
     // re-extracted, the staged prose is not re-judged, the filtered
     // decisions are not revised, and no new run rows appear.
-    let second = extract::run_extract_with(&db, &extractor, &mut runs)
-        .expect("pass two runs");
+    let second = extract::run_extract_with(&db, &extractor, &mut runs).expect("pass two runs");
     assert_eq!(
         second.episodes_processed, 0,
         "cache hit: no re-extraction, no re-filtration"
     );
-    assert_eq!(staged_texts(&db), staged_after_one, "staged prose untouched");
+    assert_eq!(
+        staged_texts(&db),
+        staged_after_one,
+        "staged prose untouched"
+    );
     assert_eq!(runs.rows().len(), rows_after_one, "no new run rows");
 }
 

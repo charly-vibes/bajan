@@ -113,8 +113,7 @@ fn evidence_check_creates_reference_and_claim_stays_untouched() {
 #[test]
 fn reference_less_claim_behaves_as_before() {
     let db = SqliteStore::open(":memory:").expect("store");
-    ingest::persist(&db, &episode("ep-none", "No check has ever run here.", 2))
-        .expect("persist");
+    ingest::persist(&db, &episode("ep-none", "No check has ever run here.", 2)).expect("persist");
     let claim_key = insert_claim_on(&db, "ep-none", "No check has ever run here.");
     let before = claim_snapshot(&db, claim_key);
 
@@ -134,7 +133,9 @@ fn reference_less_claim_behaves_as_before() {
         "no reference exists for an unchecked claim"
     );
     assert!(
-        db.evidence_checks(claim_key).expect("checks read").is_empty(),
+        db.evidence_checks(claim_key)
+            .expect("checks read")
+            .is_empty(),
         "no check records exist for an unchecked claim"
     );
 
