@@ -34,7 +34,7 @@ not start until the proposal is approved.
 - [x] 3.1 `just test` green; partial-corpus end-to-end test: declare 5,
       persist 3, zero-hit query → `coverage-partial` (5,3); persist last
       2 → same query → `not-found`
-- [ ] 3.2 clippy + fmt clean; `just test-full` green
+- [x] 3.2 clippy + fmt clean; `just test-full` green
 
 ## 4. Tidy
 
