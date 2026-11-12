@@ -250,3 +250,13 @@
   Exact next action: operator push authorization -> git push; board: bajan-sbs (HITL, operator-only) remains, bajan-4hv blocked on it. No autonomous work queued.
   Validation: just test calibrated green; test-full 356 passed 0 failed; ah check 0 + --run-tests 19 passed; clippy -D clean; fmt clean; spk lint 7 files 0; dont check grounded; lefthook pre-commit passed.
   Blockers: push authorization only. Unknowns: none.
+- 2026-11-12T14:39:04Z [id:5e628fcbf337db01e5c1595caa800e4169a7232c77b1c77091d35c310cb63b9f] (#snap) ### 2026-11-12T11:37Z — snap (v0.3.0+v0.3.1 released, crates.io first publish, CI green; board idle except HITL)
+  Format: 1
+  Repo: bajan (~/para/areas/dev/gh/charly/bajan), branch main @ be5d603 — pushed, origin synced, clean tree.
+  Session: pi session 2026-11-11/12 (renew -> status audit -> release 1-2-3 -> CI onion -> v0.3.1). Previous entry: 885e0bc (bajan-bcu, another session line — not superseded).
+  Task: steps 1-3 of the release plan + CI-red repair + bajan-r4u verification. ALL CLOSED.
+  Phase: complete — nothing in flight.
+  State: specs debt closed (bajan-o4t: 2 executors authored, p-shape-rejection/p-evidence-ref folded, shape-rejection + evidence-references changes archived, mirrors regen net-zero; ah check --run-tests 206/0). v0.3.0 + v0.3.1 released (tags + GitHub releases + Pages + taps). v0.3.1 = first crates.io publication (registry confirms 0.3.1 stable; CARGO_REGISTRY_TOKEN rotated + verified; release.yml now idempotent — redrive via --clobber). CI onion root causes (bajan-nsh): openspec pin 0.19.0->1.15.0 (jev delta is 1.x-strict), testaruda v0.5.9 missing, wai-status empty-.testaruda fooling init guard (justfile now guards usable store). Latent proptest fixed (bajan-r2a: dump_then_recreate asserts constructed first-wins graph).
+  Exact next action: /renew -> operator decision on bajan-sbs (HITL Jev approval) -> bajan-4hv apply (authors 14 contract TOMLs; ah check --changes add-optional-jev-verification). No autonomous work queued.
+  Validation: CI run 43115678316 + 43131134340 green; release run 43131133953 green; test-full 358/0; ah check 0; spk lint 0.
+  Blockers: none. Unknowns: none. Upstream candidate noted in journal inbox: wai status mutates workspace.
