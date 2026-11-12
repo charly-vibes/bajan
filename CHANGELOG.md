@@ -3,6 +3,37 @@
 All notable changes to bajan. The format is loose — this project versions by
 milestone, not by cadence. Every entry links the spec or ticket that governs it.
 
+## v0.3.1 — 2026-11-11
+
+Maintenance release: no pipeline behavior changes — CI repair, one latent
+proptest fix, and an idempotent release workflow.
+
+### CI pipeline repaired (bajan-4gg / bajan-1an / bajan-nsh)
+
+- The CI pipeline had been red for 6+ runs behind three stacked causes,
+  each masked by the previous: openspec pinned at 0.19.0 while the corpus
+  is authored against 1.x strict (7/8 vs 8/8 on the jev change) — now
+  1.15.0, the deliberately verified version; `testaruda` missing from the
+  install step — now pinned v0.5.9; and `wai status` (the smoke step)
+  leaving an empty `.testaruda` that fooled the init guard — the guard
+  now checks for a usable store, not directory presence. `wai` itself is
+  pinned to v2026.11.11.
+
+### Latent proptest fix (bajan-r2a, `gm_embedded_store`)
+
+- `dump_then_recreate_reproduces_the_graph` asserted the generated batch
+  count while ingest first-wins dedup legitimately persists fewer
+  episodes on duplicate ids (`ids = [---, ---]`); the store was right,
+  the test now asserts exact reproduction of the *constructed* graph.
+  Surfaced by full unpruned `ah check --run-tests` contract execution —
+  206 passed, 0 findings.
+
+### Release workflow hardening
+
+- `release.yml` release creation is idempotent: an existing release is
+  redriven via asset upload with `--clobber` instead of failing, so a
+  failed publish step can be rerun without deleting the release.
+
 ## v0.3.0 — 2026-11-11
 
 Three RO5U-reviewed features: extraction precision, honest zero-hit reads,

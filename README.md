@@ -12,9 +12,10 @@ Part of the charly-vibes suite; emits suite-envelope JSON on every command.
 
 ## Status
 
-**v0.3.0 — three RO5U-reviewed features.** The deterministic pipeline is
+**v0.3.1 — CI-hardened.** The deterministic pipeline is
 spec-complete and CI-gated (specodelic lint, strict openspec validation,
-executing contract tests, property tests). Extraction runs a deterministic
+executing contract tests, property tests), and the CI pipeline itself is
+back to green end-to-end. Extraction runs a deterministic
 shape post-pass, zero-hit queries report corpus coverage, and
 `bajan evidence check` derives resolvable provenance per claim. The LLM
 extraction path is burn-in tested against one provider at book scale but

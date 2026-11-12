@@ -159,16 +159,22 @@ jobs:
           VERSION="${{ steps.pkg.outputs.version }}"
           PRERELEASE=""
           [[ "${TAG}" == *-* ]] && PRERELEASE="--prerelease"
-          gh release create "${TAG}" \
-            --title "${TAG}" \
-            --generate-notes \
-            $PRERELEASE \
-            dist/bajan_${VERSION}_linux_amd64.tar.gz \
-            dist/bajan_${VERSION}_linux_arm64.tar.gz \
-            dist/bajan_${VERSION}_darwin_amd64.tar.gz \
-            dist/bajan_${VERSION}_darwin_arm64.tar.gz \
-            dist/bajan_${VERSION}_windows_amd64.zip \
-            dist/checksums.txt
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            # Rerun / redrive: the release already exists — refresh assets
+            # in place instead of failing on duplicate creation.
+            gh release upload "${TAG}" --clobber dist/*
+          else
+            gh release create "${TAG}" \
+              --title "${TAG}" \
+              --generate-notes \
+              $PRERELEASE \
+              dist/bajan_${VERSION}_linux_amd64.tar.gz \
+              dist/bajan_${VERSION}_linux_arm64.tar.gz \
+              dist/bajan_${VERSION}_darwin_amd64.tar.gz \
+              dist/bajan_${VERSION}_darwin_arm64.tar.gz \
+              dist/bajan_${VERSION}_windows_amd64.zip \
+              dist/checksums.txt
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
