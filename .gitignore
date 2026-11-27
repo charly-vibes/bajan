@@ -31,6 +31,9 @@ target
 .kaya/build-state.json
 .kaya/capture.lock
 
+# hegel — machine-local engine state from hegeltest runs
+.hegel/
+
 # beads — global gitignore excludes .beads/; re-include the passive export
 !.beads/
 .beads/*

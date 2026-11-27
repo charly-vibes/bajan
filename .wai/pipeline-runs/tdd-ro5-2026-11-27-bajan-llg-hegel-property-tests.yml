@@ -1,0 +1,11 @@
+run_id: tdd-ro5-2026-11-27-bajan-llg-hegel-property-tests
+pipeline: tdd-ro5
+topic: bajan-llg Hegel property tests
+created_at: '2026-11-27T22:53:31.450535506+00:00'
+current_step: 1
+approvals: {}
+epic: null
+child_issues: []
+child_runs: []
+handoff_artifact: null
+bypasses: []

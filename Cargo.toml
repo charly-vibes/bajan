@@ -32,6 +32,7 @@ ureq = "=3.4.2"
 
 [dev-dependencies]
 proptest = "1"
+hegeltest = { version = "=0.52.7", features = ["static-engine"] }
 simhash = "=0.3.0"                  # dep-audit smoke test (tests/deps_pinned.rs): distance-metric ordering
 
 [profile.release]
