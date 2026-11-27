@@ -96,6 +96,28 @@ fmt:
 fmt-check:
     cargo fmt -- --check
 
+# === Research Record (kaya) ===
+
+# Capture new observations: wai artifacts + git history, then rebuild
+# projections. Serialized under .kaya/capture.lock; skipped on a dirty tree.
+record-capture:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	mkdir -p .kaya
+	exec 9>.kaya/capture.lock
+	flock 9
+	if [ -n "$(git status --porcelain)" ]; then
+		echo "record-capture: SKIP - working tree is dirty; commit or stash first"
+		exit 0
+	fi
+	kaya import wai --project bajan
+	kaya import git --project bajan --exclude-message-prefix "chore(record):"
+	kaya build
+
+# Verify the committed record against its projections without writing
+record-verify:
+	kaya check
+
 # === Spec-Corpus Gates ===
 
 # Lint the specodelic spec corpus

@@ -27,6 +27,10 @@ target
 .ddl/doctor-cache.json
 .ddl/compatibility-cache.json
 
+# kaya — machine-local build state and capture lock (ledger + seeds are committed)
+.kaya/build-state.json
+.kaya/capture.lock
+
 # beads — global gitignore excludes .beads/; re-include the passive export
 !.beads/
 .beads/*
