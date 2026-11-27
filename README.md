@@ -1,14 +1,51 @@
 # bajan
 
-A spec-driven knowledge-graph pipeline CLI — ingest sources, extract claims,
-query the graph. Rust, SQLite-backed triple store, provenance as graph
-structure.
+A spec-driven knowledge-graph pipeline CLI for researchers and writers who
+want verifiable claims extracted from a corpus of sources — ingest sources,
+extract claims, query the graph. Rust, SQLite-backed triple store,
+provenance as graph structure.
 
-Encodes the best practices from
-[`knowledge-graphs-report.md`](knowledge-graphs-report.md) as enforced,
-lint-checked specifications (`specs/`, `openspec/`).
+> **Why:** claim extraction from books and documents is either opaque LLM
+> output with no provenance or hand-built pipelines with no guarantees.
+> Bajan encodes the best practices from
+> [`knowledge-graphs-report.md`](knowledge-graphs-report.md) as enforced,
+> lint-checked specifications (`specs/`, `openspec/`): deterministic-first,
+> LLM passes only propose, humans approve, and every claim carries
+> lineage-traceable provenance in the graph itself.
+>
+> **Status:** [experimental](#status) · v0.3.1 — deterministic pipeline
+> spec-complete and CI-gated; LLM extraction path young ·
+> Part of the charly-vibes suite; emits suite-envelope JSON on every command.
+>
+> Questions? Read the [FAQ](docs/src/faq.md) — extractor choice, spend cap,
+> parked episodes, coverage status, evidence checks.
 
-Part of the charly-vibes suite; emits suite-envelope JSON on every command.
+## When to use
+
+- Use bajan when you want claims extracted from a corpus into a queryable
+  graph where provenance is part of the structure — every claim links back
+  to its supporting episode and evidence span.
+- Use bajan when extraction must be auditable: deterministic-first passes,
+  machine-readable reasons for every rejection, human-in-the-loop adoption,
+  and an eval harness that scores runs against an adjudicated golden corpus.
+- Use bajan when the graph must be reproducible: one SQLite file,
+  exact-pinned NLP/IR crates, dump-recreate carries tombstones and coverage
+  declarations across rebuilds.
+
+**Don't use it when:**
+
+- you need PDF/document extraction itself — use
+  [sunset](https://github.com/charly-vibes/sunset) instead (PDFs → searchable
+  text with verifiable page-level references; bajan consumes normalized
+  episode streams produced by its own `converters/` crates).
+- you want usage/behavior analytics over logs — use
+  [coffee](https://github.com/charly-vibes/coffee) instead; bajan analyzes
+  source texts, not activity data.
+
+Bajan assumes you can express your sources as normalized episode streams
+(the `converters/` crate ships epub/html/md/pdf converters) and that you
+will review staged claims before they become active — extraction proposes,
+adoption is yours.
 
 ## Status
 
@@ -24,16 +61,62 @@ young — see [Known limitations](#known-limitations) before relying on it.
 ## Install
 
 ```sh
-cargo install --path .          # from a checkout — the bajan CLI only
 cargo install bajan             # once published
 ```
 
-Requires Rust 1.85+ (edition 2024). The source converters live in the
-separate `converters/` crate and are built separately:
+Requires Rust 1.85+ (edition 2024). To build from a checkout instead, see
+[Development](#development) — the source converters live in the separate
+`converters/` crate and are built separately.
+
+## Quick start
+
+Every command writes a JSON suite envelope to stdout; add `--json` after the
+subcommand for machine consumption (text mode renders the same envelope in a
+short human form — same content, never a second format).
 
 ```sh
-cargo build --release --manifest-path converters/Cargo.toml
-# binaries land in converters/target/release/{epub,html,md,pdf}2bajan
+# Confirm the tool answers — the suite envelope every command emits:
+bajan version
+```
+
+Expected output (`ok: true`, exit 0; `data` carries the tool identity and
+the spec corpus it is gated on — `meta` fields elided):
+
+```json
+{
+  "ok": true,
+  "envelope_version": "0.1",
+  "cli_version": "0.3.1",
+  "envelope_kind": "version",
+  "data": {
+    "name": "bajan",
+    "version": "0.3.1",
+    "status": "vertical-slice",
+    "specs": [
+      "specs/ingestion-contract.md",
+      "specs/extraction-claims.md",
+      "specs/graph-model.md",
+      "specs/query-tools.md",
+      "specs/entity-review.md",
+      "specs/eval-claims.md",
+      "specs/contradiction-review.md"
+    ]
+  },
+  "warnings": []
+}
+```
+
+Then the first meaningful pass, ingesting a normalized episode stream and
+extracting claims (full walkthrough under [Common workflows](#common-workflows)):
+
+```sh
+bajan ingest < episodes.json
+# → ok:true ingest envelope; one outcome record per episode, persisted verbatim
+bajan extract
+# → ok:true extract envelope; deterministic `atomic` extractor proposes
+#   staged claims; data carries per-episode/per-claim counts (never claim text)
+bajan query "profit" --json | jq '.data.hits'
+# → ranked hits, each with claim key and lineage-traceable provenance
 ```
 
 ## Data & state
@@ -63,11 +146,7 @@ API keys never go in this file — the strict key set refuses anything but
 these three keys; keys stay env-var-NAME based (`BAJAN_EXTRACTOR_*`). Config
 is not store state: dump-recreate is unaffected.
 
-## Quickstart
-
-Every command writes a JSON suite envelope to stdout; add `--json` after the
-subcommand for machine consumption (text mode renders the same envelope in a
-short human form — same content, never a second format).
+## Common workflows
 
 ```sh
 # 1. Convert a source into a normalized episode stream (JSON array)
@@ -159,8 +238,8 @@ Concepts:
   authority metadata; persisted verbatim, never rewritten.
 - **Claim** — a claim node derived from episodes, staged until adopted;
   lineage edges make provenance part of the graph structure.
-- **Envelope** — every command answers `{ok, envelope_version, envelope_kind,
-  data}`; exit status mirrors `ok`.
+- **Envelope** — every command answers `{ok, envelope_version, cli_version,
+  envelope_kind, data, warnings, meta}`; exit status mirrors `ok`.
 
 ## Evaluating extraction quality
 
@@ -268,13 +347,15 @@ humans approve. Specifications under `specs/` are linted by
   failure class (timeout / http-N / transport / schema) and attempt
   count (bajan-gso). Retries back off 2s·2^(n−1) with jitter, capped at
   60s (bajan-266); a rerun recovers parked episodes (cache intact;
-  burn-in reruns recovered 2/12).
+  burn-in reruns recovered 2/12). See the
+  [FAQ](docs/src/faq.md#why-are-some-episodes-parked-and-how-do-i-recover-them).
 - **Spend cap needs `usage.cost`.** The LLM extractor requires
   `BAJAN_MAX_SPEND_USD` and stops the pass when known spend reaches the
   cap (bajan-8cc) — but providers that do not report per-call cost in
   `usage.cost` (e.g. plain OpenAI) cannot be accounted: one
   unaccountable call fails the next call closed (never silently
-  unbounded). Bound spend at the provider as well.
+  unbounded). Bound spend at the provider as well. See the
+  [FAQ](docs/src/faq.md#why-did-extraction-stop-before-finishing-all-episodes-spend-cap).
 - **Extraction quality numbers are per-model, and shape rejection is
   corpus-gated, not published as a benchmark.** A golden corpus is
   adjudicated (`evals/fixtures/gold-fi4e-v1.json`, bajan-2k4) and the
@@ -292,6 +373,16 @@ humans approve. Specifications under `specs/` are linted by
   [`docs/burnin-deepseek-v4-flash-profit-first.org`](docs/burnin-deepseek-v4-flash-profit-first.org).
 
 ## Development
+
+Build from a checkout:
+
+```sh
+cargo install --path .          # the bajan CLI only
+cargo build --release --manifest-path converters/Cargo.toml
+# binaries land in converters/target/release/{epub,html,md,pdf}2bajan
+```
+
+Repository recipes:
 
 ```sh
 just ci        # full gate: fmt, clippy, tests, spec lint, hooks parity
