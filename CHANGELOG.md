@@ -3,6 +3,40 @@
 All notable changes to bajan. The format is loose — this project versions by
 milestone, not by cadence. Every entry links the spec or ticket that governs it.
 
+## v0.4.0 — 2026-11-27
+
+Adoption release: the shared-infrastructure and research-record layers of the
+charly-vibes fleet land here — a breaking genesis-vibes bump and a fully
+event-sourced research record.
+
+### genesis-vibes 0.8 → 0.14.0 (bajan-rai, genesis-svt)
+
+- Envelope call sites rewritten for the breaking `Envelope::success`
+  signature; output envelope shape may differ on the wire.
+- New additive `feedback` subcommand adopted from genesis.
+
+### Research record as single source of truth (epic bajan-s7e, kaya 0.4.1)
+
+- `bajan adopt kaya` bootstrap: append-only event ledger
+  (`.kaya/ledger.jsonl`, schema `kaya.event/v0`) seeded with the
+  Question/Hypothesis/Experiment/Model chain plus 45 pinned sources
+  (openspec changes, `.wai` research, docs) at `@64792fe` (bajan-s7e.1).
+- Capture recipe + gates: `kaya import wai` + `kaya import git` serialized
+  under `.kaya/capture.lock`, skipped on dirty tree; `kaya check` and
+  `record-lag` (bound 60) wired into hooks and CI (bajan-s7e.5).
+- Generated research dossier published into `docs/` with link check;
+  digest-stable builds verified (`ledger_digest` identical across clean-tree
+  rebuilds) (bajan-s7e.6).
+- SSOT cutover: kaya pinned `= "0.4.1"` in `versions.ddl.toml`;
+  duplicate hand-maintained docs dispositioned against the generated record
+  (bajan-s7e.7).
+
+### Docs
+
+- README restructured to the front-door standard v0.4 §5.1 (bajan-pu8).
+- Hegel/antithesis property-based testing plan: 2 defects confirmed,
+  1 acceptance hole (bajan-hsf).
+
 ## v0.3.1 — 2026-11-11
 
 Maintenance release: no pipeline behavior changes — CI repair, one latent

@@ -1,6 +1,6 @@
 [package]
 name = "bajan"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "Spec-driven knowledge-graph pipeline CLI — ingest sources, extract claims, query the graph"
 license = "Apache-2.0"
@@ -27,12 +27,12 @@ unicode-normalization = "=0.1.25"   # NFC id canonicalization (ic_id_canon)
 unicode-segmentation = "=1.13.3"    # UAX #29 sentence boundaries (alignment aid only)
 text-splitter = { version = "=0.33.0", features = ["tiktoken-rs"] }           # chunk assembly — input for ONE extraction call (ex_single_call)
 tiktoken-rs = "=0.12.1"             # token budget counting
-simhash = "=0.3.0"                  # simhash dedup (length-guarded: exact match below threshold)
 aho-corasick = "=1.1.5"             # whitespace-collapsed containment search (pure string ops)
 ureq = "=3.4.2"
 
 [dev-dependencies]
 proptest = "1"
+simhash = "=0.3.0"                  # dep-audit smoke test (tests/deps_pinned.rs): distance-metric ordering
 
 [profile.release]
 lto = true
