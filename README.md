@@ -300,3 +300,14 @@ just --list    # all recipes
 
 Issue tracking and burn-in history live in `.beads/`; the spec corpus is
 under `specs/` with change proposals under `openspec/`.
+
+## Research record
+
+Bajan's research/design/decision record is event-sourced and verifiable
+(kaya, pinned in [`versions.ddl.toml`](versions.ddl.toml)): observations live
+in `.kaya/ledger.jsonl`, and the docs under `docs/research/` and
+`docs/public/` are **generated projections** — never edit them by hand.
+
+- `just record-capture` — import wai artifacts + git history into the ledger and rebuild projections (clean tree only)
+- `just record-verify` — check the committed record against its projections (also a pre-push hook and CI step)
+- Hand-maintained docs are dispositioned against the projections in [`docs/record-inventory.md`](docs/record-inventory.md).
