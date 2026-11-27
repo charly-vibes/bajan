@@ -260,3 +260,4 @@
   Exact next action: /renew -> operator decision on bajan-sbs (HITL Jev approval) -> bajan-4hv apply (authors 14 contract TOMLs; ah check --changes add-optional-jev-verification). No autonomous work queued.
   Validation: CI run 43115678316 + 43131134340 green; release run 43131133953 green; test-full 358/0; ah check 0; spk lint 0.
   Blockers: none. Unknowns: none. Upstream candidate noted in journal inbox: wai status mutates workspace.
+- 2026-11-27T23:25:06Z [id:00c836159c1e3d018763957235e73f057c2dc902ee38ffad236823b303d8083f] 2026-11-27 handoff (bajan main @8f7a119, tree clean): kaya epic s7e done (ledger 166 events, check ok), Hegel property tests bajan-llg done (4 passed/7 ignored in tests/hegel_test), v0.4.0 released+pushed. Next: bajan-sbs is a HITL user gate on openspec proposal add-optional-jev-verification — do not decide for the user. When bugs 4rj/7n3/trd get fixed, un-ignore their red tests in tests/hegel_test (they are the regression guard).
