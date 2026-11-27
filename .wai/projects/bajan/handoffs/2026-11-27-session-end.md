@@ -32,24 +32,21 @@ phase: research
 
 ## Context
 
-### git_status
-
-```
-?? .whisper/env.md
-```
-
 ### open_issues
 
 ```
-○ bajan-llg P1 Implement Hegel property tests
+○ bajan-4rj P2 [bug] bug: days_from_iso accepts non-canonical dates — leading + year and month/day beyond calendar
+○ bajan-7n3 P2 [bug] bug: dump/restore drops the audits, restages, evidence_refs, evidence_checks tables — human decision trail lost on rebuild
 ○ bajan-a57 P2 Burn-in: real-provider LLM smoke run at book scale — cost/latency/failure profile
+○ bajan-trd P2 [bug] bug: insert_claim returns claim_count()-1, not the written row's key — lineage attaches to wrong/sparse key
 ○ bajan-4hv P3 Implement openspec change add-optional-jev-verification
 ○ bajan-sbs P3 HITL gate: approve openspec proposal add-optional-jev-verification
 
 --------------------------------------------------------------------------------
-Total: 4 issues (4 open, 0 in progress)
+Total: 6 issues (6 open, 0 in progress)
 
 Status: ○ open  ◐ in_progress  ● blocked  ✓ closed  ❄ deferred
 Priority: P0–P4 (label only; not a status icon)
+
 ```
 
