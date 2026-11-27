@@ -23,6 +23,10 @@ pre-commit:
 
 pre-push:
   commands:
+    # Capture runs on a clean tree only, so the ledger gate lives on pre-push:
+    # verify the committed record against its projections without writing.
+    record-verify:
+      run: kaya check
     dont-gate:
       run: dont prime --json > /dev/null
     espectacular:

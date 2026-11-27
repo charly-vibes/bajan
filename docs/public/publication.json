@@ -1,0 +1,189 @@
+{
+  "collections": [
+    {
+      "emitted": false,
+      "name": "api-catalogue",
+      "reason": "no-backing-document"
+    },
+    {
+      "emitted": false,
+      "name": "example-gallery",
+      "reason": "no-backing-document"
+    },
+    {
+      "emitted": true,
+      "name": "glossary"
+    },
+    {
+      "emitted": false,
+      "name": "knowledge-index",
+      "reason": "no-backing-document"
+    },
+    {
+      "emitted": true,
+      "name": "topic-map"
+    }
+  ],
+  "packages": [
+    {
+      "members": [
+        {
+          "emitted": true,
+          "name": "getting-started"
+        },
+        {
+          "emitted": true,
+          "name": "how-to"
+        },
+        {
+          "emitted": false,
+          "name": "concept"
+        },
+        {
+          "emitted": false,
+          "name": "example"
+        },
+        {
+          "emitted": false,
+          "name": "troubleshooting"
+        },
+        {
+          "emitted": false,
+          "name": "faq"
+        }
+      ],
+      "name": "developer-guide"
+    },
+    {
+      "members": [
+        {
+          "emitted": true,
+          "name": "overview"
+        },
+        {
+          "emitted": true,
+          "name": "reference"
+        }
+      ],
+      "name": "project-site"
+    }
+  ],
+  "products": [
+    {
+      "documents": [
+        {
+          "event_ids": [],
+          "kind": "orientation.research-map"
+        }
+      ],
+      "emitted": true,
+      "name": "architecture-design",
+      "question": "how is it structured and why"
+    },
+    {
+      "documents": [],
+      "emitted": false,
+      "name": "concept",
+      "question": "why does it work this way"
+    },
+    {
+      "documents": [],
+      "emitted": false,
+      "name": "example",
+      "question": "what can I do with it"
+    },
+    {
+      "documents": [],
+      "emitted": false,
+      "name": "faq",
+      "question": "what do people keep asking"
+    },
+    {
+      "documents": [
+        {
+          "event_ids": [],
+          "kind": "orientation.project-overview"
+        },
+        {
+          "event_ids": [],
+          "kind": "reuse-handoff.reproduction-package"
+        }
+      ],
+      "emitted": true,
+      "name": "getting-started",
+      "question": "how do I reach a first result"
+    },
+    {
+      "documents": [
+        {
+          "event_ids": [],
+          "kind": "reuse-handoff.reproduction-package"
+        }
+      ],
+      "emitted": true,
+      "name": "how-to",
+      "question": "how do I accomplish this task"
+    },
+    {
+      "documents": [
+        {
+          "event_ids": [],
+          "kind": "orientation.project-overview"
+        }
+      ],
+      "emitted": true,
+      "name": "overview",
+      "question": "what is this and why does it matter"
+    },
+    {
+      "documents": [
+        {
+          "event_ids": [],
+          "kind": "orientation.research-map"
+        }
+      ],
+      "emitted": true,
+      "name": "reference",
+      "question": "what exactly is this"
+    },
+    {
+      "documents": [
+        {
+          "event_ids": [],
+          "kind": "orientation.project-overview"
+        }
+      ],
+      "emitted": true,
+      "name": "release-migration",
+      "question": "what changed and what must I do"
+    },
+    {
+      "documents": [
+        {
+          "event_ids": [],
+          "kind": "orientation.project-overview"
+        }
+      ],
+      "emitted": true,
+      "name": "status-compatibility",
+      "question": "what can I rely on"
+    },
+    {
+      "documents": [],
+      "emitted": false,
+      "name": "troubleshooting",
+      "question": "why is this broken and how do I fix it"
+    },
+    {
+      "documents": [
+        {
+          "event_ids": [],
+          "kind": "exploration.exploration-brief"
+        }
+      ],
+      "emitted": true,
+      "name": "tutorial",
+      "question": "can you teach me through a guided outcome"
+    }
+  ]
+}

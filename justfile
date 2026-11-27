@@ -118,6 +118,11 @@ record-capture:
 record-verify:
 	kaya check
 
+# Fail when the record's capture frontier is more than `bound` commits behind
+# HEAD (record-relevant paths only: src, docs, openspec, .wai)
+record-lag mode="fail" bound="60":
+	python3 tools/record_lag.py --mode {{mode}} --bound {{bound}}
+
 # === Spec-Corpus Gates ===
 
 # Lint the specodelic spec corpus

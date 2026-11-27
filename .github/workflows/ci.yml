@@ -51,6 +51,8 @@ jobs:
           # which must not clobber the repo checkout
           tar -xzf "$tmp/bd.tgz" -C "$tmp" bd
           sudo mv "$tmp/bd" /usr/local/bin/bd
+      - name: Install kaya (pinned to released tag)
+        run: cargo install --locked kaya@0.4.1
       # §4 dogfood: installed tools must run, not just install
       - name: Smoke dogfooded tools
         env:
@@ -61,6 +63,14 @@ jobs:
           openspec validate --all --strict --no-interactive >/dev/null
           pretender --version >/dev/null
           dont --version >/dev/null
+          kaya --version >/dev/null
+      # Verify the COMMITTED record (git index), not the worktree: CI parity
+      # with the pre-push `record-verify` hook (bajan-s7e.5).
+      - name: Verify committed record
+        run: kaya check --index
+
+      - name: Record lag gate (bound 60)
+        run: python3 tools/record_lag.py --bound 60
       # Run the exact same command as local development
       - name: Run CI pipeline
         run: just ci
