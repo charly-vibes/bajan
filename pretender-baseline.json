@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "adopted_at": "2026-11-27T23:00:56Z",
+  "adopted_at": "2026-11-27T23:25:05Z",
   "finding_ids": [
     "converters/src/bin/html2bajan.rs::::mut_ratio",
     "converters/src/bin/md2bajan.rs::::mut_ratio",
