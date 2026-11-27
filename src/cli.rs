@@ -187,6 +187,25 @@ pub enum Command {
         #[command(subcommand)]
         action: EvidenceAction,
     },
+    /// Agent issue reporting (genesis feedback integration): assemble,
+    /// redact, and optionally file an issue via `gh`. Wraps
+    /// `genesis::feedback::handle_feedback`.
+    Feedback {
+        /// Kind of feedback: bug, feature, question, chore, or aix-gap.
+        kind: String,
+        /// User-supplied issue title (overrides the derived title).
+        #[arg(long)]
+        title: Option<String>,
+        /// Print the issue body and gh command without submitting.
+        #[arg(long)]
+        dry_run: bool,
+        /// Read the last error from the scratch to auto-populate the body.
+        #[arg(long)]
+        from_last_error: bool,
+        /// Target GitHub repository in owner/repo format.
+        #[arg(long)]
+        repo: String,
+    },
 }
 
 /// Evidence actions: check is a writing command — the only writer of
@@ -336,6 +355,7 @@ struct VersionData {
 
 fn version_envelope() -> Envelope<VersionData> {
     Envelope::success(
+        "0.1",
         env!("CARGO_PKG_VERSION"),
         EnvelopeKind::Version,
         VersionData {
@@ -369,8 +389,82 @@ fn spec_error_envelope(
 ) -> serde_json::Value {
     let error = ErrorResult::new(code, message, None, spec, Some(module), vec![], remediation)
         .expect("remediation is non-empty by construction (Invariant 3.2.5)");
-    serde_json::to_value(Envelope::error(env!("CARGO_PKG_VERSION"), error, vec![]))
+    serde_json::to_value(Envelope::error(
+        "0.1",
+        env!("CARGO_PKG_VERSION"),
+        error,
+        vec![],
+    ))
         .expect("envelope serialization cannot fail")
+}
+
+/// Feedback envelope (genesis feedback integration): assemble, redact, and
+/// optionally file an issue via `genesis::feedback::handle_feedback`. The
+/// result maps the `GhResult` outcome into envelope data; failures surface
+/// as error envelopes with the message verbatim.
+fn feedback_envelope(
+    kind: String,
+    title: Option<&str>,
+    dry_run: bool,
+    from_last_error: bool,
+    repo: &str,
+) -> serde_json::Value {
+    let mut args = genesis::feedback::FeedbackArgs::new(kind, dry_run, from_last_error);
+    if let Some(title) = title {
+        args = args.with_title(title);
+    }
+    match genesis::feedback::handle_feedback(
+        &args,
+        "bajan",
+        env!("CARGO_PKG_VERSION"),
+        repo,
+        &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    ) {
+        Ok(result) => {
+            use genesis::feedback::gh::GhResult;
+            let data = match result {
+                GhResult::Created { url, number } => {
+                    serde_json::json!({ "outcome": "created", "url": url, "number": number })
+                }
+                GhResult::FallbackUrl(url) => {
+                    serde_json::json!({ "outcome": "fallback_url", "url": url })
+                }
+                GhResult::LocalFile(path) => serde_json::json!({
+                    "outcome": "local_file",
+                    "path": path.display().to_string()
+                }),
+            };
+            serde_json::to_value(Envelope::success(
+                env!("CARGO_PKG_VERSION"),
+                env!("CARGO_PKG_VERSION"),
+                EnvelopeKind::Ok,
+                data,
+                vec![],
+                vec![],
+            ))
+            .expect("envelope serialization cannot fail")
+        }
+        Err(message) => serde_json::to_value(Envelope::error(
+            env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_VERSION"),
+            ErrorResult::new(
+                "feedback_failed",
+                &message,
+                None,
+                None,
+                None,
+                vec![],
+                vec![RemediationEntry {
+                    command: String::new(),
+                    description: "Check the `gh` CLI is installed and authenticated, then retry."
+                        .into(),
+                }],
+            )
+            .expect("remediation is non-empty by construction (Invariant 3.2.5)"),
+            vec![],
+        ))
+        .expect("envelope serialization cannot fail"),
+    }
 }
 
 /// Convert a pipeline error into its error envelope (bajan-cdi: no
@@ -435,6 +529,7 @@ fn eval_envelope(corpus_path: &std::path::Path, run_path: &std::path::Path) -> s
             }
             let row = crate::eval::results_row(&outcome);
             serde_json::to_value(Envelope::success(
+                env!("CARGO_PKG_VERSION"),
                 env!("CARGO_PKG_VERSION"),
                 EnvelopeKind::Ok,
                 EvalReport {
@@ -557,6 +652,7 @@ fn eval_manifest_envelope(
         }
     }
     serde_json::to_value(Envelope::success(
+        "0.1",
         env!("CARGO_PKG_VERSION"),
         EnvelopeKind::Ok,
         EvalManifestReport {
@@ -645,6 +741,7 @@ fn resolve_with(
         None => match resolve::resolve(db) {
             Ok(report) => serde_json::to_value(Envelope::success(
                 env!("CARGO_PKG_VERSION"),
+                env!("CARGO_PKG_VERSION"),
                 EnvelopeKind::Ok,
                 report,
                 vec![],
@@ -664,6 +761,7 @@ fn resolve_with(
                 .unwrap_or_default();
             match resolve::restage(db, claim_key, &actor, now) {
                 Ok(record) => serde_json::to_value(Envelope::success(
+                    env!("CARGO_PKG_VERSION"),
                     env!("CARGO_PKG_VERSION"),
                     EnvelopeKind::Ok,
                     record,
@@ -745,6 +843,7 @@ fn evidence_check_with(
         .unwrap_or(0);
     match db.evidence_check(claim_key, checked_at) {
         Ok(outcome) => serde_json::to_value(Envelope::success(
+            env!("CARGO_PKG_VERSION"),
             env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,
             EvidenceCheckReport {
@@ -829,6 +928,7 @@ fn delete_with(
     match db.delete_episode(episode_id, now) {
         Ok(()) => serde_json::to_value(Envelope::success(
             env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,
             TombstoneReport {
                 action: "delete",
@@ -876,6 +976,7 @@ fn revive_with(
     let actor = operator_actor(actor);
     match db.revive_episode(episode_id) {
         Ok(()) => serde_json::to_value(Envelope::success(
+            env!("CARGO_PKG_VERSION"),
             env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,
             TombstoneReport {
@@ -932,6 +1033,7 @@ fn adopt_with(
         }
     }
     serde_json::to_value(Envelope::success(
+        "0.1",
         env!("CARGO_PKG_VERSION"),
         EnvelopeKind::Ok,
         audits,
@@ -999,6 +1101,7 @@ fn er_with(db: &crate::store::sqlite::SqliteStore, budget: usize) -> serde_json:
     match review::run_er_pass(db, budget, now) {
         Ok(report) => serde_json::to_value(Envelope::success(
             env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,
             report,
             vec![],
@@ -1023,6 +1126,7 @@ fn scan_envelope(db_path: &str, budget: usize) -> serde_json::Value {
         .unwrap_or_default();
     match contradict::run_contradiction_pass(&db, budget, now) {
         Ok(report) => serde_json::to_value(Envelope::success(
+            env!("CARGO_PKG_VERSION"),
             env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,
             report,
@@ -1076,6 +1180,7 @@ fn review_list_with(db: &crate::store::sqlite::SqliteStore) -> serde_json::Value
         })
         .collect();
     serde_json::to_value(Envelope::success(
+        "0.1",
         env!("CARGO_PKG_VERSION"),
         EnvelopeKind::Ok,
         serde_json::json!({ "queue": entries }),
@@ -1139,6 +1244,7 @@ fn review_resolve_with(
                 .cloned()
                 .unwrap_or_else(|| panic!("just-written audit record must read back"));
             serde_json::to_value(Envelope::success(
+                env!("CARGO_PKG_VERSION"),
                 env!("CARGO_PKG_VERSION"),
                 EnvelopeKind::Ok,
                 record,
@@ -1213,6 +1319,7 @@ fn propose_envelope(db_path: &str, budget: usize) -> serde_json::Value {
     match crate::propose::run_propose_pass(&db, &proposer, budget, now) {
         Ok(report) => serde_json::to_value(Envelope::success(
             env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,
             report,
             vec![],
@@ -1236,6 +1343,7 @@ fn proposal_list_envelope(db_path: &str) -> serde_json::Value {
         Err(err) => return proposal_store_error_envelope(&err, "proposal"),
     };
     serde_json::to_value(Envelope::success(
+        "0.1",
         env!("CARGO_PKG_VERSION"),
         EnvelopeKind::Ok,
         serde_json::json!({ "proposals": queue }),
@@ -1291,6 +1399,7 @@ fn proposal_resolve_envelope(
                 .cloned()
                 .unwrap_or_else(|| panic!("just-written audit record must read back"));
             serde_json::to_value(Envelope::success(
+                env!("CARGO_PKG_VERSION"),
                 env!("CARGO_PKG_VERSION"),
                 EnvelopeKind::Ok,
                 record,
@@ -1404,6 +1513,13 @@ pub fn run(command: Command, db_path: &str) -> String {
         Command::Evidence { action } => match action {
             EvidenceAction::Check { claim_key } => evidence_check_envelope(db_path, *claim_key),
         },
+        Command::Feedback {
+            kind,
+            title,
+            dry_run,
+            from_last_error,
+            repo,
+        } => feedback_envelope(kind.clone(), title.as_deref(), *dry_run, *from_last_error, repo),
     };
     serde_json::to_string(&value).expect("envelope serialization cannot fail")
 }
@@ -1480,6 +1596,7 @@ fn ingest_with(db: &crate::store::sqlite::SqliteStore, stream: &str) -> serde_js
         })
         .collect();
     serde_json::to_value(Envelope::success(
+        "0.1",
         env!("CARGO_PKG_VERSION"),
         EnvelopeKind::Ok,
         serde_json::json!({ "outcomes": outcomes }),
@@ -1535,6 +1652,7 @@ fn extract_with(
     match extract::run_extract_with(db, extractor.as_ref(), &mut runs) {
         Ok(report) => serde_json::to_value(Envelope::success(
             env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,
             report,
             vec![],
@@ -1584,6 +1702,7 @@ fn query_with(
     match result {
         Ok(result) => serde_json::to_value(Envelope::success(
             env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,
             result,
             vec![],
@@ -1615,6 +1734,7 @@ fn contradict_with(
 ) -> serde_json::Value {
     match query::contradictions(db, claims, budget) {
         Ok(result) => serde_json::to_value(Envelope::success(
+            env!("CARGO_PKG_VERSION"),
             env!("CARGO_PKG_VERSION"),
             EnvelopeKind::Ok,
             result,
