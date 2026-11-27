@@ -123,6 +123,10 @@ record-verify:
 record-lag mode="fail" bound="60":
 	python3 tools/record_lag.py --mode {{mode}} --bound {{bound}}
 
+# Fail when the generated dossier contains a relative link it cannot resolve
+record-links:
+	python3 tools/check_links.py
+
 # === Spec-Corpus Gates ===
 
 # Lint the specodelic spec corpus

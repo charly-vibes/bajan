@@ -71,6 +71,9 @@ jobs:
 
       - name: Record lag gate (bound 60)
         run: python3 tools/record_lag.py --bound 60
+
+      - name: Dossier link check
+        run: just record-links
       # Run the exact same command as local development
       - name: Run CI pipeline
         run: just ci

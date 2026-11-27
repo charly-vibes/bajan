@@ -23,6 +23,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Ship the generated dossier alongside the static site (kaya's docs
+      # workflow builds the dossier into the Pages artifact; the dossier is
+      # pre-generated and committed here, so deploy copies it in).
+      - name: Copy generated dossier into site
+        run: |
+          mkdir -p site/docs
+          cp -r docs/research site/docs/research
+          cp -r docs/public site/docs/public
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
